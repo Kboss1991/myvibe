@@ -61,7 +61,7 @@ export default defineConfig({
       },
       workbox: {
         // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
-        cacheId: 'myvibe-radio-delay-20260729',
+        cacheId: 'myvibe-my-radios-browser-20260729',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,

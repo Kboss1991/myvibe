@@ -6,7 +6,7 @@ import { deleteBinary } from '../lib/opfs'
 import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
-import { getRadioStation, type RadioStation } from '../lib/radios'
+import { getRadioStation, type RadioStation } from '../lib/myRadios'
 
 interface PlayerState {
   queue: string[]
@@ -271,7 +271,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({
       currentRadioId: station.id,
       currentTrackId: null,
-      coverUrl: station.logoUrl,
+      coverUrl: station.logoUrl || null,
       queue: [],
       originalQueue: [],
       index: 0,
@@ -279,6 +279,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       duration: 0,
     })
     try {
+      const { reportStationClick } = await import('../lib/radioBrowser')
+      reportStationClick(station.id)
       await audioEngine.loadLive(station.streamUrl)
       audioEngine.applyPlaybackSession()
       await audioEngine.play()
@@ -411,7 +413,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   next: async () => {
     if (get().currentRadioId) {
-      const list = (await import('../lib/radios')).RADIO_STATIONS
+      const { listMyRadios } = await import('../lib/myRadios')
+      const list = listMyRadios()
+      if (!list.length) return
       const i = list.findIndex((s) => s.id === get().currentRadioId)
       const next = list[(i + 1) % list.length]
       if (next) await get().playRadio(next.id)
@@ -452,7 +456,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   previous: async () => {
     if (get().currentRadioId) {
-      const list = (await import('../lib/radios')).RADIO_STATIONS
+      const { listMyRadios } = await import('../lib/myRadios')
+      const list = listMyRadios()
+      if (!list.length) return
       const i = list.findIndex((s) => s.id === get().currentRadioId)
       const prev = list[(i - 1 + list.length) % list.length]
       if (prev) await get().playRadio(prev.id)

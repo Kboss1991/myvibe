@@ -1,12 +1,31 @@
+import { useEffect, useMemo, useState, useSyncExternalStore, type MouseEvent } from 'react'
 import { audioEngine } from '../lib/audioEngine'
-import { RADIO_STATIONS } from '../lib/radios'
+import { searchStations } from '../lib/radioBrowser'
+import {
+  addMyRadio,
+  hasMyRadio,
+  listMyRadios,
+  removeMyRadio,
+  subscribeMyRadios,
+  type RadioStation,
+} from '../lib/myRadios'
 import { usePlayerStore } from '../store/playerStore'
-import { IconPause, IconPlay, IconRadio } from '../components/Icons'
+import { IconClose, IconPause, IconPlay, IconPlus, IconRadio, IconSearch, IconTrash } from '../components/Icons'
 import './pages.css'
 
 function formatRadioDelay(sec: number) {
   if (sec <= 0) return '0 s'
   return `${sec.toLocaleString('es-ES', { maximumFractionDigits: 1 })} s`
+}
+
+function useMyRadios(): RadioStation[] {
+  return useSyncExternalStore(subscribeMyRadios, listMyRadios, listMyRadios)
+}
+
+const GROUP_LABEL: Record<RadioStation['group'], string> = {
+  catalunya: 'Catalunya',
+  espana: 'España',
+  world: 'Internacional',
 }
 
 export function RadiosPage() {
@@ -18,8 +37,57 @@ export function RadiosPage() {
   const radioDelay = usePlayerStore((s) => s.radioDelay)
   const maxDelay = audioEngine.maxRadioDelay
 
-  const catalunya = RADIO_STATIONS.filter((s) => s.group === 'catalunya')
-  const espana = RADIO_STATIONS.filter((s) => s.group === 'espana')
+  const myRadios = useMyRadios()
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState<RadioStation[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState<string | null>(null)
+
+  const q = query.trim()
+  const hasQuery = q.length >= 2
+
+  useEffect(() => {
+    if (!hasQuery) {
+      setResults([])
+      setSearching(false)
+      setSearchError(null)
+      return
+    }
+    let cancelled = false
+    setSearching(true)
+    setSearchError(null)
+    const timer = window.setTimeout(() => {
+      void searchStations(q)
+        .then((stations) => {
+          if (cancelled) return
+          setResults(stations)
+          setSearching(false)
+        })
+        .catch(() => {
+          if (cancelled) return
+          setResults([])
+          setSearching(false)
+          setSearchError('No se pudo buscar. Revisa la conexión e inténtalo de nuevo.')
+        })
+    }, 320)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [q, hasQuery])
+
+  const groups = useMemo(() => {
+    const order: RadioStation['group'][] = ['catalunya', 'espana', 'world']
+    const present = order.filter((g) => myRadios.some((s) => s.group === g))
+    if (present.length <= 1) {
+      return [{ key: 'all' as const, title: 'Mis radios', stations: myRadios }]
+    }
+    return present.map((g) => ({
+      key: g,
+      title: GROUP_LABEL[g],
+      stations: myRadios.filter((s) => s.group === g),
+    }))
+  }, [myRadios])
 
   const onSelect = (id: string) => {
     if (currentRadioId === id) void toggle()
@@ -30,6 +98,23 @@ export function RadiosPage() {
     setRadioDelay(Math.round((radioDelay + delta) * 2) / 2)
   }
 
+  const onAdd = (station: RadioStation) => {
+    addMyRadio(station)
+  }
+
+  const onRemove = (id: string, e: MouseEvent) => {
+    e.stopPropagation()
+    removeMyRadio(id)
+    if (currentRadioId === id) {
+      usePlayerStore.getState().pause()
+    }
+  }
+
+  const playFromSearch = (station: RadioStation) => {
+    if (!hasMyRadio(station.id)) addMyRadio(station)
+    void playRadio(station.id)
+  }
+
   return (
     <div className="page radios-page">
       <header className="page-header">
@@ -37,9 +122,33 @@ export function RadiosPage() {
           <IconRadio size={28} /> Radios
         </h1>
         <p className="page-header__sub">
-          Emisoras en directo. Toca una para sintonizarla en el reproductor.
+          Busca entre miles de emisoras y añade solo las tuyas.
         </p>
       </header>
+
+      <label className="search-box radios-search">
+        <IconSearch size={20} />
+        <input
+          type="search"
+          placeholder="Buscar emisoras (RAC1, BBC, jazz…)"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          enterKeyHint="search"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+        />
+        {query ? (
+          <button
+            type="button"
+            className="search-box__clear"
+            aria-label="Limpiar búsqueda"
+            onClick={() => setQuery('')}
+          >
+            <IconClose size={18} />
+          </button>
+        ) : null}
+      </label>
 
       <section className="radio-sync" aria-label="Sincronizar con la tele">
         <div className="radio-sync__text">
@@ -95,61 +204,120 @@ export function RadiosPage() {
         ) : null}
       </section>
 
-      <section className="section">
-        <h2 className="section__title">Catalunya</h2>
-        <div className="radio-grid">
-          {catalunya.map((s) => {
-            const active = currentRadioId === s.id
-            const playing = active && isPlaying
-            return (
-              <button
-                key={s.id}
-                type="button"
-                className={`radio-card ${active ? 'is-active' : ''}`}
-                onClick={() => onSelect(s.id)}
-              >
-                <span className="radio-card__logo">
-                  <img src={s.logoUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
-                  <span className="radio-card__play" aria-hidden>
-                    {playing ? <IconPause size={22} /> : <IconPlay size={22} />}
-                  </span>
-                </span>
-                <strong>{s.name}</strong>
-                <span>{active ? (playing ? 'En antena' : 'Pausada') : s.tagline}</span>
-                {active && playing ? <span className="radio-card__live">EN DIRECTO</span> : null}
-              </button>
-            )
-          })}
-        </div>
-      </section>
-
-      <section className="section">
-        <h2 className="section__title">España</h2>
-        <div className="radio-grid">
-          {espana.map((s) => {
-            const active = currentRadioId === s.id
-            const playing = active && isPlaying
-            return (
-              <button
-                key={s.id}
-                type="button"
-                className={`radio-card ${active ? 'is-active' : ''}`}
-                onClick={() => onSelect(s.id)}
-              >
-                <span className="radio-card__logo">
-                  <img src={s.logoUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
-                  <span className="radio-card__play" aria-hidden>
-                    {playing ? <IconPause size={22} /> : <IconPlay size={22} />}
-                  </span>
-                </span>
-                <strong>{s.name}</strong>
-                <span>{active ? (playing ? 'En antena' : 'Pausada') : s.tagline}</span>
-                {active && playing ? <span className="radio-card__live">EN DIRECTO</span> : null}
-              </button>
-            )
-          })}
-        </div>
-      </section>
+      {hasQuery ? (
+        <section className="section">
+          <h2 className="section__title">Resultados</h2>
+          {searching ? <p className="radios-hint">Buscando…</p> : null}
+          {searchError ? <p className="radios-hint radios-hint--error">{searchError}</p> : null}
+          {!searching && !searchError && results.length === 0 ? (
+            <p className="radios-hint">No hay emisoras para “{q}”.</p>
+          ) : null}
+          <ul className="radio-results">
+            {results.map((s) => {
+              const saved = hasMyRadio(s.id)
+              return (
+                <li key={s.id} className="radio-result">
+                  <button
+                    type="button"
+                    className="radio-result__main"
+                    onClick={() => playFromSearch(s)}
+                  >
+                    <span className="radio-result__logo">
+                      {s.logoUrl ? (
+                        <img src={s.logoUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                      ) : (
+                        <IconRadio size={22} />
+                      )}
+                    </span>
+                    <span className="radio-result__meta">
+                      <strong>{s.name}</strong>
+                      <span>{s.tagline}</span>
+                    </span>
+                  </button>
+                  {saved ? (
+                    <button
+                      type="button"
+                      className="radio-result__action is-saved"
+                      aria-label={`Quitar ${s.name}`}
+                      onClick={(e) => onRemove(s.id, e)}
+                    >
+                      <IconTrash size={18} />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="radio-result__action"
+                      aria-label={`Añadir ${s.name}`}
+                      onClick={() => onAdd(s)}
+                    >
+                      <IconPlus size={18} />
+                    </button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      ) : (
+        <>
+          {myRadios.length === 0 ? (
+            <section className="section radios-empty">
+              <h2 className="section__title">Mis radios</h2>
+              <p className="radios-hint">
+                Aún no tienes emisoras. Usa el buscador para encontrarlas y pulsa + para añadirlas.
+              </p>
+            </section>
+          ) : (
+            groups.map((g) => (
+              <section key={g.key} className="section">
+                <h2 className="section__title">{g.title}</h2>
+                <div className="radio-grid">
+                  {g.stations.map((s) => {
+                    const active = currentRadioId === s.id
+                    const playing = active && isPlaying
+                    return (
+                      <div key={s.id} className={`radio-card ${active ? 'is-active' : ''}`}>
+                        <button type="button" className="radio-card__hit" onClick={() => onSelect(s.id)}>
+                          <span className="radio-card__logo">
+                            {s.logoUrl ? (
+                              <img
+                                src={s.logoUrl}
+                                alt=""
+                                loading="lazy"
+                                referrerPolicy="no-referrer"
+                              />
+                            ) : (
+                              <span className="radio-card__logo-fallback">
+                                <IconRadio size={36} />
+                              </span>
+                            )}
+                            <span className="radio-card__play" aria-hidden>
+                              {playing ? <IconPause size={22} /> : <IconPlay size={22} />}
+                            </span>
+                            {active && playing ? (
+                              <span className="radio-card__live">EN DIRECTO</span>
+                            ) : null}
+                          </span>
+                          <strong>{s.name}</strong>
+                          <span>{active ? (playing ? 'En antena' : 'Pausada') : s.tagline}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="radio-card__remove"
+                          aria-label={`Quitar ${s.name}`}
+                          onClick={(e) => onRemove(s.id, e)}
+                        >
+                          <IconTrash size={16} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </section>
+            ))
+          )}
+        </>
+      )}
     </div>
   )
 }

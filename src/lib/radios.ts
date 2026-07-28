@@ -4,11 +4,14 @@ export type RadioStation = {
   tagline: string
   streamUrl: string
   logoUrl: string
-  group: 'catalunya' | 'espana'
+  group: 'catalunya' | 'espana' | 'world'
 }
 
-/** Emisoras en directo (URLs públicas de streaming). */
-export const RADIO_STATIONS: RadioStation[] = [
+/**
+ * Semillas locales (primera visita a Mis radios).
+ * La UI ya no lista este catálogo entero: el usuario busca en Radio Browser y añade.
+ */
+export const RADIO_SEED_STATIONS: RadioStation[] = [
   {
     id: 'rac1',
     name: 'RAC1',
@@ -101,10 +104,8 @@ export const RADIO_STATIONS: RadioStation[] = [
   },
 ]
 
-export function getRadioStation(id: string | null | undefined): RadioStation | null {
-  if (!id) return null
-  return RADIO_STATIONS.find((s) => s.id === id) ?? null
-}
+/** @deprecated Usa listMyRadios(); se mantiene por compatibilidad temporal. */
+export const RADIO_STATIONS = RADIO_SEED_STATIONS
 
 export function isHlsUrl(url: string): boolean {
   return /\.m3u8(\?|$)/i.test(url) || /\/hls\//i.test(url) || /m3u8/i.test(url)
