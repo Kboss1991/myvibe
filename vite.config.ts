@@ -19,31 +19,40 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons/*.png'],
+      includeAssets: [
+        'favicon.ico',
+        'favicon.png',
+        'apple-touch-icon.png',
+        'apple-touch-icon-precomposed.png',
+        'icons/*.png',
+      ],
       manifest: {
         name: 'MyVibe',
         short_name: 'MyVibe',
-        description: 'Tu música local, sin anuncios. Escucha en el coche.',
+        description: 'Tu música local, sin anuncios.',
         theme_color: '#121212',
         background_color: '#121212',
         display: 'standalone',
         orientation: 'portrait',
         start_url: '/',
+        id: '/',
         // Ayuda a iOS/Android a tratar la PWA como app de música
         categories: ['music', 'entertainment'],
         icons: [
           {
-            src: 'icons/icon-192.png',
+            src: 'icons/icon-192-v4.png',
             sizes: '192x192',
             type: 'image/png',
+            purpose: 'any',
           },
           {
-            src: 'icons/icon-512.png',
+            src: 'icons/icon-512-v4.png',
             sizes: '512x512',
             type: 'image/png',
+            purpose: 'any',
           },
           {
-            src: 'icons/icon-512.png',
+            src: 'icons/icon-512-v4.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'maskable',
@@ -52,7 +61,7 @@ export default defineConfig({
       },
       workbox: {
         // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
-        cacheId: 'myvibe-baby-cover-fix-20260728',
+        cacheId: 'myvibe-radio-delay-20260729',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,

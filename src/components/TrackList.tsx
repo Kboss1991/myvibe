@@ -1,12 +1,13 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { Track } from '../types'
-import { isAppleMobile, isLibraryHostDevice } from '../lib/folderImport'
+import { isAppleMobile } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
 import { saveFilesVisibly, myVibeDownloadName, deleteVisibleCopies } from '../lib/visibleStorage'
-import { getTrackLocalStorageInfo, type TrackStorageInfo } from '../lib/trackStorageInfo'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
+import { CoverCropSheet } from './CoverCropSheet'
 import {
   IconHeart,
   IconMore,
@@ -23,21 +24,13 @@ import {
   IconDownload,
   IconUpload,
 } from './Icons'
+import { getCoverBlob } from '../lib/library'
 import './TrackList.css'
 
-function trackLocationLabel(track: Track): string {
-  const remote = track.hasLocalAudio === false
-  const onPc = isLibraryHostDevice()
-  const onIphone = isAppleMobile()
-
-  if (remote) {
-    return onPc
-      ? 'Almacenamiento: sin audio local · toca para ver'
-      : 'Almacenamiento: en el PC · toca para ver'
-  }
-  if (onPc) return 'Almacenamiento local (este PC) · toca para ver'
-  if (onIphone) return 'Almacenamiento local (este iPhone) · toca para ver'
-  return 'Almacenamiento local · toca para ver'
+/** Evita que el dock (reproductor) tape el menú en móvil. */
+function SheetPortal({ children }: { children: ReactNode }) {
+  if (typeof document === 'undefined') return null
+  return createPortal(children, document.body)
 }
 
 interface Props {
@@ -49,6 +42,8 @@ interface Props {
   selectable?: boolean
   /** Columnas: título, álbum, fecha, duración */
   showColumns?: boolean
+  /** Si el encabezado Título/Tiempo va fuera (sticky) */
+  hideColumnHead?: boolean
 }
 
 export function TrackList({
@@ -58,6 +53,7 @@ export function TrackList({
   emptyHint = 'Sube tu música para empezar',
   selectable = true,
   showColumns = false,
+  hideColumnHead = false,
 }: Props) {
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
@@ -71,6 +67,7 @@ export function TrackList({
   const playlists = useLibraryStore((s) => s.playlists)
   const addToPlaylist = useLibraryStore((s) => s.addToPlaylist)
   const updateTrack = useLibraryStore((s) => s.updateTrack)
+  const setCover = useLibraryStore((s) => s.setCover)
   const enrichTrack = useLibraryStore((s) => s.enrichTrack)
   const enrichSelected = useLibraryStore((s) => s.enrichSelected)
   const setLiked = useLibraryStore((s) => s.setLiked)
@@ -83,7 +80,6 @@ export function TrackList({
   const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
 
   const [menuTrack, setMenuTrack] = useState<Track | null>(null)
-  const [storageInfo, setStorageInfo] = useState<TrackStorageInfo | null>(null)
   const [enrichingId, setEnrichingId] = useState<string | null>(null)
   const [deleteNotice, setDeleteNotice] = useState<{
     count: number
@@ -109,6 +105,18 @@ export function TrackList({
     [selectedTracks],
   )
   const allSelected = tracks.length > 0 && selected.size === tracks.length
+
+  useEffect(() => {
+    const open = Boolean(menuTrack || playlistPickIds || deleteNotice || editTrack)
+    if (!open) return
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    document.body.classList.add('sheet-open')
+    return () => {
+      document.body.style.overflow = prev
+      document.body.classList.remove('sheet-open')
+    }
+  }, [menuTrack, playlistPickIds, deleteNotice, editTrack])
 
   async function downloadIds(ids: string[]) {
     if (!ids.length) return
@@ -308,7 +316,7 @@ export function TrackList({
       )}
 
       <ul className={`track-list ${selectMode ? 'is-selecting' : ''} ${showColumns ? 'track-list--cols' : ''}`}>
-        {showColumns && (
+        {showColumns && !hideColumnHead && (
           <li className="track-row track-row--head" aria-hidden>
             {selectMode && <span className="track-col track-col--check" />}
             <span className="track-col track-col--title">Título</span>
@@ -322,10 +330,19 @@ export function TrackList({
           const active = track.id === currentTrackId
           const isSelected = selected.has(track.id)
           const remote = track.hasLocalAudio === false
+          const downloading =
+            Boolean(downloadProgress?.ids.includes(track.id)) &&
+            (remote || downloadProgress?.trackId === track.id)
+          const dlPercent =
+            downloadProgress?.trackId === track.id
+              ? downloadProgress.percent
+              : downloading
+                ? 0
+                : null
           return (
             <li
               key={track.id}
-              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''}`}
+              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${downloading ? 'is-downloading' : ''}`}
               style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}
             >
               {selectMode && (
@@ -361,14 +378,19 @@ export function TrackList({
                 <CoverArt
                   trackId={track.id}
                   hasCover={track.hasCover}
-                  refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}`}
+                  refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}|${track.coverUpdatedAt ?? 0}`}
                   size={48}
                 />
                 <div className="track-row__meta">
                   <span className="track-row__title">
                     {active && isPlaying ? <IconPlay size={12} /> : null}
                     {track.title}
-                    {remote ? <em className="track-remote-tag"> · sin audio</em> : null}
+                    {remote && !downloading ? (
+                      <em className="track-remote-tag"> · sin audio</em>
+                    ) : null}
+                    {downloading && downloadProgress?.trackId === track.id ? (
+                      <em className="track-dl-tag"> · {dlPercent}%</em>
+                    ) : null}
                   </span>
                   <span className="track-row__sub">{track.artist}</span>
                 </div>
@@ -441,16 +463,64 @@ export function TrackList({
                   </button>
                 </div>
               )}
+              {downloading && dlPercent != null && (
+                <div className="track-dl" aria-label={`Descarga ${dlPercent}%`}>
+                  <div className="track-dl__bar">
+                    <div
+                      className="track-dl__fill"
+                      style={{
+                        width: `${
+                          downloadProgress?.trackId === track.id
+                            ? Math.max(dlPercent, 2)
+                            : 0
+                        }%`,
+                      }}
+                    />
+                  </div>
+                  <span className="track-dl__pct">
+                    {downloadProgress?.trackId === track.id ? `${dlPercent}%` : 'En cola'}
+                  </span>
+                </div>
+              )}
             </li>
           )
         })}
       </ul>
 
       {downloadProgress && (
-        <p className="enrich-progress-text">
-          Descargando {downloadProgress.done}/{downloadProgress.total}
-          {downloadProgress.name ? ` · ${downloadProgress.name}` : ''}
-        </p>
+        <div className="download-banner" role="status">
+          <div className="download-banner__top">
+            <strong>
+              Descargando {downloadProgress.done}/{downloadProgress.total}
+            </strong>
+            <span>
+              {downloadProgress.trackId
+                ? `${downloadProgress.percent}%`
+                : '…'}
+            </span>
+          </div>
+          <div className="download-banner__bar">
+            <div
+              style={{
+                width: `${
+                  downloadProgress.total
+                    ? Math.min(
+                        100,
+                        Math.round(
+                          ((downloadProgress.done + downloadProgress.percent / 100) /
+                            downloadProgress.total) *
+                            100,
+                        ),
+                      )
+                    : 0
+                }%`,
+              }}
+            />
+          </div>
+          {downloadProgress.name ? (
+            <p className="download-banner__name">{downloadProgress.name}</p>
+          ) : null}
+        </div>
       )}
 
       {selectMode && selected.size > 0 && (
@@ -580,6 +650,7 @@ export function TrackList({
       )}
 
       {menuTrack && (
+        <SheetPortal>
         <div className="sheet track-actions-sheet">
           <button
             type="button"
@@ -593,23 +664,12 @@ export function TrackList({
               <CoverArt
                 trackId={menuTrack.id}
                 hasCover={menuTrack.hasCover}
-                refreshKey={`${menuTrack.artist}|${menuTrack.album}|${menuTrack.externalUrl ?? ''}`}
+                refreshKey={`${menuTrack.artist}|${menuTrack.album}|${menuTrack.externalUrl ?? ''}|${menuTrack.coverUpdatedAt ?? 0}`}
                 size={48}
               />
               <div>
                 <strong>{menuTrack.title}</strong>
                 <span>{menuTrack.artist}</span>
-                <button
-                  type="button"
-                  className="track-actions-location"
-                  onClick={() => {
-                    const track = menuTrack
-                    setMenuTrack(null)
-                    void getTrackLocalStorageInfo(track).then(setStorageInfo)
-                  }}
-                >
-                  {trackLocationLabel(menuTrack)}
-                </button>
               </div>
             </div>
 
@@ -810,9 +870,11 @@ export function TrackList({
             </div>
           </div>
         </div>
+        </SheetPortal>
       )}
 
       {playlistPickIds && (
+        <SheetPortal>
         <div className="sheet">
           <button
             type="button"
@@ -845,9 +907,11 @@ export function TrackList({
             )}
           </div>
         </div>
+        </SheetPortal>
       )}
 
       {deleteNotice && (
+        <SheetPortal>
         <div className="sheet track-actions-sheet">
           <button
             type="button"
@@ -900,50 +964,23 @@ export function TrackList({
             </button>
           </div>
         </div>
-      )}
-
-      {storageInfo && (
-        <div className="sheet track-actions-sheet">
-          <button
-            type="button"
-            className="sheet-backdrop"
-            aria-label="Cerrar"
-            onClick={() => setStorageInfo(null)}
-          />
-          <div className="sheet__panel" role="dialog" aria-label="Almacenamiento local">
-            <div className="track-actions-head">
-              <div>
-                <strong>Almacenamiento local</strong>
-                <span>{storageInfo.summary}</span>
-              </div>
-            </div>
-            <pre className="track-storage-info">{storageInfo.lines.join('\n')}</pre>
-            <button
-              type="button"
-              className="sheet__item"
-              onClick={() => {
-                void navigator.clipboard?.writeText(storageInfo.trackId)
-                alert('ID copiado')
-              }}
-            >
-              Copiar ID de la canción
-            </button>
-            <button type="button" className="sheet__item" onClick={() => setStorageInfo(null)}>
-              Cerrar
-            </button>
-          </div>
-        </div>
+        </SheetPortal>
       )}
 
       {editTrack && (
-        <EditTrackModal
-          track={editTrack}
-          onClose={() => setEditTrack(null)}
-          onSave={async (patch) => {
-            await updateTrack(editTrack.id, patch)
-            setEditTrack(null)
-          }}
-        />
+        <SheetPortal>
+          <EditTrackModal
+            track={editTrack}
+            onClose={() => setEditTrack(null)}
+            onSave={async (patch) => {
+              await updateTrack(editTrack.id, patch)
+              setEditTrack(null)
+            }}
+            onSetCover={async (file) => {
+              await setCover(editTrack.id, file)
+            }}
+          />
+        </SheetPortal>
       )}
     </>
   )
@@ -953,45 +990,154 @@ function EditTrackModal({
   track,
   onClose,
   onSave,
+  onSetCover,
 }: {
   track: Track
   onClose: () => void
   onSave: (patch: Partial<Pick<Track, 'title' | 'artist' | 'album' | 'genre'>>) => Promise<void>
+  onSetCover: (file: File) => Promise<void>
 }) {
   const [title, setTitle] = useState(track.title)
   const [artist, setArtist] = useState(track.artist)
   const [album, setAlbum] = useState(track.album)
   const [genre, setGenre] = useState(track.genre)
+  const [hasCover, setHasCover] = useState(track.hasCover)
+  const [coverRev, setCoverRev] = useState(track.coverUpdatedAt ?? 0)
+  const [coverBusy, setCoverBusy] = useState(false)
+  const [cropSource, setCropSource] = useState<{ blob: Blob; name: string } | null>(null)
+  const coverInputRef = useRef<HTMLInputElement>(null)
+
+  const openCrop = (file: File | Blob | undefined, name?: string) => {
+    if (!file) return
+    if (file instanceof File) {
+      const okType = !file.type || file.type.startsWith('image/')
+      if (!okType) return
+      setCropSource({ blob: file, name: file.name })
+    } else {
+      setCropSource({ blob: file, name: name || 'cover.jpg' })
+    }
+    if (coverInputRef.current) coverInputRef.current.value = ''
+  }
+
+  const applyCrop = async (file: File) => {
+    setCoverBusy(true)
+    try {
+      await onSetCover(file)
+      setHasCover(true)
+      setCoverRev(Date.now())
+      setCropSource(null)
+    } finally {
+      setCoverBusy(false)
+    }
+  }
+
+  const adjustExisting = async () => {
+    setCoverBusy(true)
+    try {
+      const blob = await getCoverBlob(track.id)
+      if (!blob) {
+        coverInputRef.current?.click()
+        return
+      }
+      openCrop(blob, `${track.title}-cover.jpg`)
+    } finally {
+      setCoverBusy(false)
+    }
+  }
 
   return (
-    <div className="sheet">
-      <button type="button" className="sheet-backdrop" onClick={onClose} />
-      <div className="sheet__panel">
-        <h3>Editar canción</h3>
-        <label className="field">
-          Título
-          <input value={title} onChange={(e) => setTitle(e.target.value)} />
-        </label>
-        <label className="field">
-          Artista
-          <input value={artist} onChange={(e) => setArtist(e.target.value)} />
-        </label>
-        <label className="field">
-          Álbum
-          <input value={album} onChange={(e) => setAlbum(e.target.value)} />
-        </label>
-        <label className="field">
-          Género
-          <input value={genre} onChange={(e) => setGenre(e.target.value)} />
-        </label>
-        <button
-          type="button"
-          className="btn-primary"
-          onClick={() => void onSave({ title, artist, album, genre })}
-        >
-          Guardar
-        </button>
+    <>
+      <div className="sheet">
+        <button type="button" className="sheet-backdrop" onClick={onClose} />
+        <div className="sheet__panel">
+          <h3>Editar canción</h3>
+
+          <div className="edit-cover">
+            <button
+              type="button"
+              className="edit-cover__art"
+              onClick={() => (hasCover ? void adjustExisting() : coverInputRef.current?.click())}
+              disabled={coverBusy}
+              aria-label="Cambiar portada"
+            >
+              <CoverArt
+                trackId={track.id}
+                hasCover={hasCover}
+                refreshKey={coverRev}
+                size={120}
+                rounded="md"
+              />
+              <span className="edit-cover__hint">
+                <IconUpload size={18} />
+                {coverBusy ? 'Cargando…' : hasCover ? 'Ajustar / cambiar' : 'Añadir imagen'}
+              </span>
+            </button>
+            <input
+              ref={coverInputRef}
+              type="file"
+              accept="image/*"
+              hidden
+              onChange={(e) => openCrop(e.target.files?.[0])}
+            />
+            <div className="edit-cover__actions">
+              <button
+                type="button"
+                className="edit-cover__link"
+                onClick={() => coverInputRef.current?.click()}
+                disabled={coverBusy}
+              >
+                Subir imagen
+              </button>
+              {hasCover && (
+                <button
+                  type="button"
+                  className="edit-cover__link"
+                  onClick={() => void adjustExisting()}
+                  disabled={coverBusy}
+                >
+                  Reposicionar
+                </button>
+              )}
+            </div>
+            <p className="edit-cover__help">
+              Puedes subir una foto y moverla o hacer zoom antes de guardarla
+            </p>
+          </div>
+
+          <label className="field">
+            Título
+            <input value={title} onChange={(e) => setTitle(e.target.value)} />
+          </label>
+          <label className="field">
+            Artista
+            <input value={artist} onChange={(e) => setArtist(e.target.value)} />
+          </label>
+          <label className="field">
+            Álbum
+            <input value={album} onChange={(e) => setAlbum(e.target.value)} />
+          </label>
+          <label className="field">
+            Género
+            <input value={genre} onChange={(e) => setGenre(e.target.value)} />
+          </label>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={() => void onSave({ title, artist, album, genre })}
+          >
+            Guardar
+          </button>
+        </div>
       </div>
-    </div>
+
+      {cropSource && (
+        <CoverCropSheet
+          file={cropSource.blob}
+          fileName={cropSource.name}
+          onCancel={() => setCropSource(null)}
+          onConfirm={applyCrop}
+        />
+      )}
+    </>
   )
 }

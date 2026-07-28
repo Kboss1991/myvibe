@@ -1,0 +1,27 @@
+.brand-wordmark {
+  margin: 0;
+  font-family: var(--font-brand);
+  font-weight: 800;
+  letter-spacing: -0.05em;
+  line-height: 1;
+  color: var(--brand-amber);
+  background: linear-gradient(
+    165deg,
+    var(--brand-amber-bright) 0%,
+    var(--brand-amber) 42%,
+    var(--brand-amber-deep) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  text-shadow: none;
+}
+
+@supports not ((-webkit-background-clip: text) or (background-clip: text)) {
+  .brand-wordmark {
+    color: var(--brand-amber);
+    background: none;
+    -webkit-text-fill-color: currentColor;
+  }
+}

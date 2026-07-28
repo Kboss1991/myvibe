@@ -1,5 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { IconHome, IconLibrary, IconSearch, IconUpload } from './Icons'
+import { IconHome, IconLibrary, IconRadio, IconSearch } from './Icons'
 import { UserAvatar } from './UserAvatar'
 import { useAuthStore } from '../store/authStore'
 import './BottomNav.css'
@@ -8,7 +8,7 @@ const links = [
   { to: '/', label: 'Inicio', icon: IconHome, end: true },
   { to: '/search', label: 'Buscar', icon: IconSearch },
   { to: '/library', label: 'Biblioteca', icon: IconLibrary },
-  { to: '/upload', label: 'Subir', icon: IconUpload },
+  { to: '/radios', label: 'Radios', icon: IconRadio },
 ]
 
 export function BottomNav() {

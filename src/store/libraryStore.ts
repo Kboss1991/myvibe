@@ -10,11 +10,54 @@ import {
   pruneCloudDuplicateTracks,
   pullLibraryCatalog,
   pushLibraryMetadata,
+  pushLibraryLikes,
+  pushLibraryPlaylists,
+  removeCloudPlaylist,
   removeCloudTracks,
+  syncLibraryTaste,
 } from '../lib/cloudLibrary'
 import { isLibraryHostDevice } from '../lib/folderImport'
 import { downloadTracksFromPc } from '../lib/libraryHost'
 import { useAuthStore } from './authStore'
+
+let tasteSyncTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleTasteSync() {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  if (tasteSyncTimer) clearTimeout(tasteSyncTimer)
+  tasteSyncTimer = setTimeout(() => {
+    tasteSyncTimer = null
+    void syncLibraryTaste(userId).catch((e) => {
+      console.warn('Sync me gusta/playlists', e)
+    })
+  }, 800)
+}
+
+async function pushLikeNow(trackId: string) {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  try {
+    await pushLibraryLikes(userId, trackId)
+  } catch (e) {
+    console.warn('Push like', e)
+    scheduleTasteSync()
+  }
+}
+
+async function pushPlaylistNow(playlistId?: string) {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  try {
+    await pushLibraryPlaylists(userId, playlistId)
+  } catch (e) {
+    console.warn('Push playlist', e)
+    scheduleTasteSync()
+  }
+}
 
 interface LibraryState {
   tracks: Track[]
@@ -23,7 +66,14 @@ interface LibraryState {
   importProgress: { done: number; total: number; name: string } | null
   enrichProgress: { done: number; total: number; name: string } | null
   pcOnline: boolean | null
-  downloadProgress: { done: number; total: number; name: string } | null
+  downloadProgress: {
+    done: number
+    total: number
+    name: string
+    trackId: string | null
+    percent: number
+    ids: string[]
+  } | null
   lastSyncMessage: string | null
   init: () => () => void
   importFiles: (files: File[], options?: { mp3Only?: boolean; enrich?: boolean }) => Promise<Track[]>
@@ -348,16 +398,23 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       pruned = await pruneCloudDuplicateTracks(userId)
       pulled = await pullLibraryCatalog(userId)
       deduped += await library.dedupeLibraryTracks()
+      const taste = await syncLibraryTaste(userId)
       const cloudCount = await getCloudCatalogCount(userId)
       const peer = await getDevicePeer(userId)
       const age = peer ? Date.now() - Date.parse(peer.updatedAt) : Infinity
       const localCount = get().tracks.filter((t) => t.hasLocalAudio !== false).length
+      const likedCount = get().tracks.filter((t) => t.liked).length
+      const playlistCount = get().playlists.length
       set({
         pcOnline: Boolean(peer && age < 3 * 60 * 1000),
         lastSyncMessage:
           `Local: ${localCount} · Nube: ${cloudCount}` +
+          ` · Me gusta: ${likedCount} · Listas: ${playlistCount}` +
           (pushed ? ` · Subidas ahora: ${pushed}` : '') +
           (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
+          (taste.likesIn || taste.playlistsIn
+            ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`
+            : '') +
           (deduped ? ` · Duplicados quitados: ${deduped}` : '') +
           (pruned ? ` · Nube limpia: −${pruned}` : '') +
           (localCount === 0 && cloudCount === 0
@@ -377,17 +434,37 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   downloadFromPc: async (ids) => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) throw new Error('Inicia sesión')
-    set({ downloadProgress: { done: 0, total: ids.length, name: '' } })
+    const uniqueIds = [...new Set(ids)]
+    set({
+      downloadProgress: {
+        done: 0,
+        total: uniqueIds.length,
+        name: 'Conectando…',
+        trackId: null,
+        percent: 0,
+        ids: uniqueIds,
+      },
+    })
     try {
-      return await downloadTracksFromPc(userId, ids, {
-        onStatus: (msg) =>
+      return await downloadTracksFromPc(userId, uniqueIds, {
+        onStatus: (msg) => {
+          const prev = get().downloadProgress
+          if (!prev) return
+          set({ downloadProgress: { ...prev, name: msg } })
+        },
+        onProgress: (done, total, name, detail) => {
+          const prev = get().downloadProgress
           set({
             downloadProgress: {
-              ...(get().downloadProgress || { done: 0, total: ids.length, name: '' }),
-              name: msg,
+              done,
+              total,
+              name,
+              trackId: detail?.trackId ?? prev?.trackId ?? null,
+              percent: detail?.percent ?? prev?.percent ?? 0,
+              ids: prev?.ids ?? uniqueIds,
             },
-          }),
-        onProgress: (done, total, name) => set({ downloadProgress: { done, total, name } }),
+          })
+        },
         onError: () => {},
       })
     } finally {
@@ -412,7 +489,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     }
   },
 
-  setLiked: (ids, liked) => library.setTracksLiked(ids, liked),
   deleteTracks: async (ids) => {
     await library.deleteTracks(ids)
     const userId = useAuthStore.getState().user?.id
@@ -487,15 +563,44 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
   toggleLike: async (id) => {
     await library.toggleLike(id)
+    void pushLikeNow(id)
   },
-  createPlaylist: (name) => library.createPlaylist(name),
-  renamePlaylist: (id, name) => library.renamePlaylist(id, name),
-  updatePlaylistInfo: (id, patch) => library.updatePlaylistInfo(id, patch),
-  setPlaylistCover: (id, file) => library.setPlaylistCover(id, file),
-  deletePlaylist: (id) => library.deletePlaylist(id),
-  addToPlaylist: (playlistId, trackIds) => library.addTracksToPlaylist(playlistId, trackIds),
-  removeFromPlaylist: (playlistId, trackId) =>
-    library.removeTrackFromPlaylist(playlistId, trackId),
+  setLiked: async (ids, liked) => {
+    await library.setTracksLiked(ids, liked)
+    scheduleTasteSync()
+  },
+  createPlaylist: async (name) => {
+    const p = await library.createPlaylist(name)
+    void pushPlaylistNow(p.id)
+    return p
+  },
+  renamePlaylist: async (id, name) => {
+    await library.renamePlaylist(id, name)
+    void pushPlaylistNow(id)
+  },
+  updatePlaylistInfo: async (id, patch) => {
+    await library.updatePlaylistInfo(id, patch)
+    void pushPlaylistNow(id)
+  },
+  setPlaylistCover: async (id, file) => {
+    await library.setPlaylistCover(id, file)
+    void pushPlaylistNow(id)
+  },
+  deletePlaylist: async (id) => {
+    await library.deletePlaylist(id)
+    const userId = useAuthStore.getState().user?.id
+    if (userId && isCloudAuthEnabled()) {
+      void removeCloudPlaylist(userId, id).catch((e) => console.warn('Delete cloud playlist', e))
+    }
+  },
+  addToPlaylist: async (playlistId, trackIds) => {
+    await library.addTracksToPlaylist(playlistId, trackIds)
+    void pushPlaylistNow(playlistId)
+  },
+  removeFromPlaylist: async (playlistId, trackId) => {
+    await library.removeTrackFromPlaylist(playlistId, trackId)
+    void pushPlaylistNow(playlistId)
+  },
 
   getLiked: () => get().tracks.filter((t) => t.liked),
   getRecent: () =>

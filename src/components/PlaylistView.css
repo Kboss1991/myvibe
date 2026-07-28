@@ -1,8 +1,12 @@
 .sp-playlist {
-  margin: -16px -16px 0;
+  margin: 0;
   padding-bottom: 32px;
   min-height: 100%;
   background: linear-gradient(180deg, #3a4a38 0%, #121212 42%);
+}
+
+.sp-hero {
+  padding-top: calc(var(--safe-top-pad) + 16px);
 }
 
 .sp-playlist--liked {
@@ -154,16 +158,17 @@
   width: 56px;
   height: 56px;
   border-radius: 50%;
-  background: #f5a623;
+  background: var(--accent);
   color: #000;
   display: grid;
   place-items: center;
-  transition: transform 0.15s ease;
+  transition: transform 0.15s ease, background 0.15s ease;
+  box-shadow: 0 6px 20px rgba(245, 166, 35, 0.25);
 }
 
 .sp-play:hover:not(:disabled) {
   transform: scale(1.06);
-  background: #ffc04d;
+  background: var(--accent-hover);
 }
 
 .sp-play:disabled {
@@ -179,12 +184,12 @@
   border-radius: 50%;
 }
 
-.sp-icon:hover:not(:disabled) {
-  color: #fff;
+.sp-icon.is-on {
+  color: var(--accent);
 }
 
-.sp-icon.is-on {
-  color: #f5a623;
+.sp-icon:hover:not(:disabled) {
+  color: var(--brand-amber-bright);
 }
 
 .sp-icon:disabled {

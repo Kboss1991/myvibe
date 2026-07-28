@@ -22,10 +22,11 @@
   align-items: center;
   gap: 10px;
   padding: 4px 12px 8px;
-  font-size: 1.35rem;
-  font-weight: 700;
-  letter-spacing: -0.03em;
   flex-shrink: 0;
+}
+
+.sidebar__brand-text {
+  font-size: 1.4rem;
 }
 
 .sidebar__nav {
@@ -52,7 +53,12 @@
 }
 
 .sidebar__link.is-active {
-  color: #fff;
+  color: var(--accent);
+}
+
+.sidebar__add:hover {
+  color: var(--accent);
+  background: var(--accent-dim);
 }
 
 .sidebar__library {
@@ -116,11 +122,11 @@
 }
 
 .sidebar__item.is-active {
-  background: #282828;
+  background: rgba(245, 166, 35, 0.12);
 }
 
 .sidebar__item.is-active strong {
-  color: #fff;
+  color: var(--accent);
 }
 
 .sidebar__liked-thumb {
@@ -130,8 +136,8 @@
   border-radius: 4px;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #450af5, #c4efd9);
-  color: #fff;
+  background: linear-gradient(135deg, var(--accent-2), var(--brand-amber-bright));
+  color: #000;
 }
 
 .sidebar__item-text {

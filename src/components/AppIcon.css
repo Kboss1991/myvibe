@@ -1,76 +1,19 @@
 .app-icon {
-  --icon-amber: #c9a84c;
-  --icon-circle: #2e2e2e;
-  --icon-bg: #000000;
-  position: relative;
   flex-shrink: 0;
-  display: grid;
-  place-items: center;
+  display: block;
+  object-fit: contain;
   box-sizing: border-box;
+  user-select: none;
+  -webkit-user-drag: none;
+  background: transparent;
 }
 
 .app-icon--app {
-  background: var(--icon-bg);
   border-radius: 22.5%;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
+  background: transparent;
 }
 
 .app-icon--badge {
-  background: transparent;
-  box-shadow: none;
-}
-
-.app-icon__circle {
-  width: 68%;
-  height: 68%;
   border-radius: 50%;
-  background: var(--icon-circle);
-  border: 2.5px solid var(--icon-amber);
-  display: grid;
-  place-items: center;
-  box-sizing: border-box;
-}
-
-.app-icon--badge .app-icon__circle {
-  width: 100%;
-  height: 100%;
-  border-width: 3px;
-}
-
-.app-icon__wave {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 5.5%;
-  width: 62%;
-  height: 62%;
-}
-
-.app-icon__wave > span {
-  width: 7.5%;
-  max-width: 6px;
-  min-width: 3px;
-  border-radius: 999px;
-  background: var(--icon-amber);
-  align-self: center;
-}
-
-.app-icon__wave-split {
-  display: flex !important;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 18%;
-  height: 82% !important;
-  background: transparent !important;
-  width: 7.5%;
-  max-width: 6px;
-  min-width: 3px;
-}
-
-.app-icon__wave-split i {
-  display: block;
-  width: 100%;
-  border-radius: 999px;
-  background: var(--icon-amber);
+  background: transparent;
 }

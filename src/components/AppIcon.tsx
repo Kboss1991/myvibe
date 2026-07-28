@@ -3,34 +3,22 @@ import './AppIcon.css'
 type Props = {
   size?: number
   className?: string
-  /** Squircle app-icon frame (default) or just the badge circle */
+  /** Squircle frame (default) or circular badge */
   variant?: 'app' | 'badge'
 }
 
-/** Icono MyVibe: círculo ámbar + forma de onda (réplica CSS). */
+/** Imagotipo MyVibe (PNG transparente). */
 export function AppIcon({ size = 64, className = '', variant = 'app' }: Props) {
   return (
-    <div
+    <img
+      src="/icons/icon-512-v4.png"
+      alt=""
+      width={size}
+      height={size}
+      draggable={false}
       className={`app-icon app-icon--${variant} ${className}`}
       style={{ width: size, height: size }}
       aria-hidden
-    >
-      <div className="app-icon__circle">
-        <div className="app-icon__wave">
-          <span style={{ height: '18%' }} />
-          <span style={{ height: '34%' }} />
-          <span style={{ height: '58%' }} />
-          <span style={{ height: '82%' }} />
-          <span className="app-icon__wave-split">
-            <i style={{ height: '42%' }} />
-            <i style={{ height: '28%' }} />
-          </span>
-          <span style={{ height: '82%' }} />
-          <span style={{ height: '58%' }} />
-          <span style={{ height: '34%' }} />
-          <span style={{ height: '18%' }} />
-        </div>
-      </div>
-    </div>
+    />
   )
 }

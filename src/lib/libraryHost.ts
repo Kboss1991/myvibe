@@ -270,7 +270,12 @@ async function sendTracks(
 
 export type DownloadHandlers = {
   onStatus: (msg: string) => void
-  onProgress: (done: number, total: number, name: string) => void
+  onProgress: (
+    done: number,
+    total: number,
+    name: string,
+    detail?: { trackId: string; percent: number },
+  ) => void
   onError: (msg: string) => void
 }
 
@@ -415,6 +420,13 @@ export async function downloadTracksFromPc(
             currentCover.parts.push(bytes)
           } else if (current) {
             current.parts.push(bytes)
+            const received = current.parts.reduce((n, p) => n + p.byteLength, 0)
+            const size = Math.max(1, current.meta.size)
+            const percent = Math.min(99, Math.round((received / size) * 100))
+            handlers.onProgress(imported, total, current.meta.title, {
+              trackId: current.meta.id,
+              percent,
+            })
           }
           continue
         }
@@ -435,13 +447,37 @@ export async function downloadTracksFromPc(
         if (data.t === 'track-start') {
           current = { meta: data, parts: [] }
           currentCover = null
-          handlers.onProgress(imported, total, data.title)
+          handlers.onProgress(imported, total, data.title, {
+            trackId: data.id,
+            percent: 0,
+          })
           continue
         }
-        if (data.t === 'chunk-info') continue
+        if (data.t === 'chunk-info') {
+          if (
+            current &&
+            !currentCover &&
+            data.id === current.meta.id &&
+            data.total > 0
+          ) {
+            const percent = Math.min(
+              99,
+              Math.round(((data.offset + 1) / data.total) * 100),
+            )
+            handlers.onProgress(imported, total, current.meta.title, {
+              trackId: data.id,
+              percent,
+            })
+          }
+          continue
+        }
         if (data.t === 'track-end') {
           if (!current || current.meta.id !== data.id) continue
           const meta = current.meta
+          handlers.onProgress(imported, total, meta.title, {
+            trackId: meta.id,
+            percent: 99,
+          })
           const received = current.parts.reduce((n, p) => n + p.byteLength, 0)
           if (received < meta.size * 0.98 || received < 1024) {
             pcErrors.push(
@@ -498,7 +534,10 @@ export async function downloadTracksFromPc(
             blob: visibleBlob,
           })
           imported += 1
-          handlers.onProgress(imported, total, meta.title)
+          handlers.onProgress(imported, total, meta.title, {
+            trackId: meta.id,
+            percent: 100,
+          })
           // Si el PC no mandó carátula, buscar online en el móvil
           if (!meta.hasCover) {
             try {

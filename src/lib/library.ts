@@ -724,19 +724,24 @@ export async function setTrackCover(id: string, file: File): Promise<void> {
   revokeCachedUrls(id)
   objectUrlCache.delete(`cover:${id}`)
   await saveCoverBlob(id, file)
-  await db.tracks.update(id, { hasCover: true })
+  await db.tracks.update(id, {
+    hasCover: true,
+    enriched: true,
+    coverUpdatedAt: Date.now(),
+  })
 }
 
 export async function toggleLike(id: string): Promise<boolean> {
   const track = await db.tracks.get(id)
   if (!track) return false
   const liked = !track.liked
-  await db.tracks.update(id, { liked })
+  await db.tracks.update(id, { liked, likedUpdatedAt: Date.now() })
   return liked
 }
 
 export async function setTracksLiked(ids: string[], liked: boolean): Promise<void> {
-  await Promise.all(ids.map((id) => db.tracks.update(id, { liked })))
+  const now = Date.now()
+  await Promise.all(ids.map((id) => db.tracks.update(id, { liked, likedUpdatedAt: now })))
 }
 
 export async function deleteTracks(ids: string[]): Promise<void> {

@@ -6,12 +6,15 @@ import { deleteBinary } from '../lib/opfs'
 import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
+import { getRadioStation, type RadioStation } from '../lib/radios'
 
 interface PlayerState {
   queue: string[]
   originalQueue: string[]
   index: number
   currentTrackId: string | null
+  /** Emisora de radio en directo (null = biblioteca) */
+  currentRadioId: string | null
   isPlaying: boolean
   shuffle: boolean
   repeat: RepeatMode
@@ -21,7 +24,6 @@ interface PlayerState {
   muted: boolean
   nowPlayingOpen: boolean
   queueOpen: boolean
-  carMode: boolean
   coverUrl: string | null
   hydrated: boolean
 
@@ -32,6 +34,9 @@ interface PlayerState {
     startId?: string,
     options?: { shuffle?: boolean },
   ) => Promise<void>
+  playRadio: (stationId: string) => Promise<void>
+  setRadioDelay: (seconds: number) => void
+  radioDelay: number
   toggle: () => Promise<void>
   pause: () => void
   play: () => Promise<void>
@@ -48,9 +53,9 @@ interface PlayerState {
   clearQueue: () => void
   setNowPlayingOpen: (open: boolean) => void
   setQueueOpen: (open: boolean) => void
-  setCarMode: (open: boolean) => void
   syncFromEngine: () => void
   getCurrentTrack: (tracks: Track[]) => Track | null
+  getCurrentRadio: () => RadioStation | null
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null
@@ -90,9 +95,9 @@ async function loadAndMaybePlay(
   }
 
   const coverUrl = await getCoverObjectUrl(trackId)
-  set({ coverUrl, currentTrackId: trackId })
+  set({ coverUrl, currentTrackId: trackId, currentRadioId: null })
   try {
-    await audioEngine.load(url, resumeAt)
+    await audioEngine.loadObjectUrl(url, resumeAt)
   } catch {
     // Fallo al cargar: probar copia alternativa antes de rendirse
     const retried = await retryAlternateAudioSource(trackId, resumeAt)
@@ -183,7 +188,7 @@ async function retryAlternateAudioSource(trackId: string, resumeAt: number): Pro
   const stable = await getAudioObjectUrl(trackId)
   if (!stable) return false
   try {
-    await audioEngine.load(stable, resumeAt)
+    await audioEngine.loadObjectUrl(stable, resumeAt)
     return true
   } catch {
     return false
@@ -195,6 +200,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   originalQueue: [],
   index: 0,
   currentTrackId: null,
+  currentRadioId: null,
+  radioDelay: audioEngine.radioDelay,
   isPlaying: false,
   shuffle: false,
   repeat: 'off',
@@ -204,7 +211,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   muted: false,
   nowPlayingOpen: false,
   queueOpen: false,
-  carMode: false,
   coverUrl: null,
   hydrated: false,
 
@@ -217,7 +223,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       index: snap.index,
       currentTrackId: snap.currentTrackId,
       shuffle: snap.shuffle,
-      repeat: snap.repeat,
+      // Migrar estado antiguo 'one' → 'all'
+      repeat: snap.repeat === 'all' || (snap.repeat as string) === 'one' ? 'all' : 'off',
       position: snap.position,
       volume: snap.volume,
       hydrated: true,
@@ -256,6 +263,42 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const id = get().currentTrackId
     if (!id) return null
     return tracks.find((t) => t.id === id) ?? null
+  },
+
+  playRadio: async (stationId) => {
+    const station = getRadioStation(stationId)
+    if (!station) return
+    set({
+      currentRadioId: station.id,
+      currentTrackId: null,
+      coverUrl: station.logoUrl,
+      queue: [],
+      originalQueue: [],
+      index: 0,
+      position: 0,
+      duration: 0,
+    })
+    try {
+      await audioEngine.loadLive(station.streamUrl)
+      audioEngine.applyPlaybackSession()
+      await audioEngine.play()
+      set({ isPlaying: !audioEngine.paused })
+      setMediaPlaybackState(!audioEngine.paused)
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: station.name,
+          artist: 'En directo',
+          album: station.tagline,
+          artwork: station.logoUrl
+            ? [{ src: station.logoUrl, sizes: '200x200', type: 'image/png' }]
+            : [],
+        })
+      }
+    } catch (e) {
+      console.warn('Radio', e)
+      set({ isPlaying: false, currentRadioId: null })
+      alert(`No se pudo sintonizar ${station.name}. Prueba otra emisora.`)
+    }
   },
 
   playTrack: async (trackId, queue) => {
@@ -336,7 +379,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   play: async () => {
-    const { currentTrackId, queue, index } = get()
+    const { currentTrackId, currentRadioId, queue, index } = get()
+    if (currentRadioId) {
+      const station = getRadioStation(currentRadioId)
+      if (!station) return
+      // Si el stream se cortó, volver a cargar
+      if (!audioEngine.element.src && !audioEngine.isLive) {
+        await get().playRadio(currentRadioId)
+        return
+      }
+      audioEngine.applyPlaybackSession()
+      const ok = await audioEngine.play()
+      if (!ok) {
+        await get().playRadio(currentRadioId)
+        return
+      }
+      set({ isPlaying: !audioEngine.paused })
+      setMediaPlaybackState(!audioEngine.paused)
+      return
+    }
     if (!currentTrackId && queue.length) {
       await loadAndMaybePlay(queue[index] ?? queue[0], 0, true, set)
       return
@@ -349,14 +410,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   next: async () => {
-    const { queue, index, repeat, currentTrackId } = get()
-    if (!queue.length) return
-
-    if (repeat === 'one' && currentTrackId) {
-      audioEngine.seek(0)
-      await audioEngine.play()
+    if (get().currentRadioId) {
+      const list = (await import('../lib/radios')).RADIO_STATIONS
+      const i = list.findIndex((s) => s.id === get().currentRadioId)
+      const next = list[(i + 1) % list.length]
+      if (next) await get().playRadio(next.id)
       return
     }
+    const { queue, index, repeat } = get()
+    if (!queue.length) return
 
     let nextIndex = index + 1
     if (nextIndex >= queue.length) {
@@ -389,6 +451,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   previous: async () => {
+    if (get().currentRadioId) {
+      const list = (await import('../lib/radios')).RADIO_STATIONS
+      const i = list.findIndex((s) => s.id === get().currentRadioId)
+      const prev = list[(i - 1 + list.length) % list.length]
+      if (prev) await get().playRadio(prev.id)
+      return
+    }
     const { queue, index, position } = get()
     if (!queue.length) return
     if (position > 3) {
@@ -403,6 +472,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   seek: (time) => {
+    if (get().currentRadioId || audioEngine.isLive) return
     audioEngine.seek(time)
     persistSoon({ position: time })
   },
@@ -446,8 +516,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   cycleRepeat: () => {
-    const order: RepeatMode[] = ['off', 'all', 'one']
-    const next = order[(order.indexOf(get().repeat) + 1) % order.length]
+    const next: RepeatMode = get().repeat === 'off' ? 'all' : 'off'
     set({ repeat: next })
     persistSoon({ repeat: next })
   },
@@ -484,17 +553,50 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   clearQueue: () => {
     get().pause()
-    set({ queue: [], originalQueue: [], index: 0, currentTrackId: null, coverUrl: null })
+    set({
+      queue: [],
+      originalQueue: [],
+      index: 0,
+      currentTrackId: null,
+      currentRadioId: null,
+      coverUrl: null,
+    })
     persistSoon({ queue: [], index: 0, currentTrackId: null, position: 0 })
   },
 
   setNowPlayingOpen: (open) => set({ nowPlayingOpen: open, ...(open ? {} : {}) }),
   setQueueOpen: (open) => set({ queueOpen: open }),
-  setCarMode: (open) => set({ carMode: open }),
+
+  getCurrentRadio: () => getRadioStation(get().currentRadioId),
+
+  setRadioDelay: (seconds) => {
+    audioEngine.setRadioDelay(seconds)
+    set({ radioDelay: audioEngine.radioDelay })
+  },
 }))
 
 export async function bindMediaSession(tracks: Track[]) {
   const state = usePlayerStore.getState()
+  if (state.currentRadioId) {
+    const station = getRadioStation(state.currentRadioId)
+    if (station && 'mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: station.name,
+        artist: 'En directo',
+        album: station.tagline,
+        artwork: station.logoUrl
+          ? [{ src: station.logoUrl, sizes: '200x200', type: 'image/png' }]
+          : [],
+      })
+      navigator.mediaSession.setActionHandler('play', () => void usePlayerStore.getState().play())
+      navigator.mediaSession.setActionHandler('pause', () => usePlayerStore.getState().pause())
+      navigator.mediaSession.setActionHandler('previoustrack', () =>
+        void usePlayerStore.getState().previous(),
+      )
+      navigator.mediaSession.setActionHandler('nexttrack', () => void usePlayerStore.getState().next())
+    }
+    return
+  }
   const track = tracks.find((t) => t.id === state.currentTrackId) ?? null
   await updateMediaSession(track, state.coverUrl, {
     play: () => void usePlayerStore.getState().play(),

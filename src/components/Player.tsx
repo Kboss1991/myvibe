@@ -1,19 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { audioEngine } from '../lib/audioEngine'
 import { formatTime } from '../lib/mediaSession'
 import { useLibraryStore } from '../store/libraryStore'
 import { bindMediaSession, usePlayerStore } from '../store/playerStore'
-import { BluetoothSheet } from './BluetoothSheet'
 import { CoverArt } from './CoverArt'
 import {
-  IconBluetooth,
-  IconCar,
   IconHeart,
   IconPause,
   IconPlay,
   IconQueue,
   IconRepeat,
-  IconRepeatOne,
   IconShuffle,
   IconSkipBack,
   IconSkipForward,
@@ -26,6 +22,7 @@ import './Player.css'
 export function PlayerBar() {
   const tracks = useLibraryStore((s) => s.tracks)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const currentRadioId = usePlayerStore((s) => s.currentRadioId)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const position = usePlayerStore((s) => s.position)
   const duration = usePlayerStore((s) => s.duration)
@@ -36,30 +33,31 @@ export function PlayerBar() {
   const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
   const track = tracks.find((t) => t.id === currentTrackId)
+  const radio = usePlayerStore((s) => s.getCurrentRadio())
   const coverUrl = usePlayerStore((s) => s.coverUrl)
-  const [btOpen, setBtOpen] = useState(false)
+  const radioDelay = usePlayerStore((s) => s.radioDelay)
+  const setRadioDelay = usePlayerStore((s) => s.setRadioDelay)
 
-  // Metadatos + carátula grande en pantalla de bloqueo (no en cada play/pause)
   useEffect(() => {
     void bindMediaSession(tracks)
-  }, [tracks, currentTrackId, coverUrl])
+  }, [tracks, currentTrackId, currentRadioId, coverUrl])
 
-  // Mantener sesión de audio al bloquear / cambiar de app
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible') {
         audioEngine.applyPlaybackSession()
         void bindMediaSession(tracks)
       } else {
-        // Al bloquear, reafirma artwork por si iOS lo había sustituido por el icono
         void bindMediaSession(tracks)
       }
     }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
-  }, [tracks, currentTrackId, coverUrl])
+  }, [tracks, currentTrackId, currentRadioId, coverUrl])
 
-  if (!track) return null
+  if (!track && !radio) return null
+
+  const isLive = Boolean(radio)
 
   return (
     <div className="player-bar" role="region" aria-label="Reproductor">
@@ -67,46 +65,45 @@ export function PlayerBar() {
         <button
           type="button"
           className="player-bar__main"
-          onClick={() => setNowPlayingOpen(true)}
-          aria-label="Abrir ahora suena"
+          onClick={() => (isLive ? undefined : setNowPlayingOpen(true))}
+          aria-label={isLive ? radio!.name : 'Abrir ahora suena'}
         >
-          <CoverArt
-            trackId={track.id}
-            hasCover={track.hasCover}
-            refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}`}
-            size={48}
-            rounded="sm"
-          />
+          {radio ? (
+            <img className="player-bar__radio-logo" src={radio.logoUrl} alt="" referrerPolicy="no-referrer" />
+          ) : (
+            <CoverArt
+              trackId={track!.id}
+              hasCover={track!.hasCover}
+              refreshKey={`${track!.artist}|${track!.album}|${track!.externalUrl ?? ''}|${track!.coverUpdatedAt ?? 0}`}
+              size={48}
+              rounded="sm"
+            />
+          )}
           <div className="player-bar__meta">
-            <span className="player-bar__title">{track.title}</span>
-            <span className="player-bar__artist">{track.artist}</span>
+            <span className="player-bar__title">{radio ? radio.name : track!.title}</span>
+            <span className="player-bar__artist">
+              {radio ? radio.tagline : track!.artist}
+            </span>
           </div>
         </button>
         <div className="player-bar__actions">
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="Altavoz Bluetooth"
-            title="Conectar altavoz"
-            onClick={() => setBtOpen(true)}
-          >
-            <IconBluetooth size={20} />
-          </button>
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label="Cola"
-            onClick={() => setQueueOpen(true)}
-          >
-            <IconQueue size={20} />
-          </button>
+          {!isLive && (
+            <button
+              type="button"
+              className="icon-btn player-bar__queue"
+              aria-label="Cola"
+              onClick={() => setQueueOpen(true)}
+            >
+              <IconQueue size={22} />
+            </button>
+          )}
           <button
             type="button"
             className="icon-btn player-bar__skip"
             aria-label="Anterior"
             onClick={() => void previous()}
           >
-            <IconSkipBack size={22} />
+            <IconSkipBack size={26} />
           </button>
           <button
             type="button"
@@ -114,7 +111,7 @@ export function PlayerBar() {
             aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
             onClick={() => void toggle()}
           >
-            {isPlaying ? <IconPause size={20} /> : <IconPlay size={20} />}
+            {isPlaying ? <IconPause size={22} /> : <IconPlay size={22} />}
           </button>
           <button
             type="button"
@@ -122,24 +119,54 @@ export function PlayerBar() {
             aria-label="Siguiente"
             onClick={() => void next()}
           >
-            <IconSkipForward size={22} />
+            <IconSkipForward size={26} />
           </button>
         </div>
       </div>
-      <div className="player-bar__seek">
-        <span className="player-bar__time">{formatTime(position)}</span>
-        <input
-          type="range"
-          min={0}
-          max={duration || 0}
-          step={0.1}
-          value={Math.min(position, duration || 0)}
-          onChange={(e) => seek(Number(e.target.value))}
-          aria-label="Progreso"
-        />
-        <span className="player-bar__time">{formatTime(duration)}</span>
-      </div>
-      <BluetoothSheet open={btOpen} onClose={() => setBtOpen(false)} />
+      {isLive ? (
+        <div className="player-bar__seek player-bar__seek--live">
+          <span className="player-bar__live">EN DIRECTO</span>
+          <div className="player-bar__delay" title="Retraso para sincronizar con la tele">
+            <button
+              type="button"
+              className="player-bar__delay-btn"
+              aria-label="Menos retraso"
+              disabled={radioDelay <= 0}
+              onClick={() => setRadioDelay(Math.round((radioDelay - 0.5) * 2) / 2)}
+            >
+              −
+            </button>
+            <span className="player-bar__delay-val">
+              {radioDelay <= 0
+                ? 'Sync TV'
+                : `${radioDelay.toLocaleString('es-ES', { maximumFractionDigits: 1 })} s`}
+            </span>
+            <button
+              type="button"
+              className="player-bar__delay-btn"
+              aria-label="Más retraso"
+              disabled={radioDelay >= audioEngine.maxRadioDelay}
+              onClick={() => setRadioDelay(Math.round((radioDelay + 0.5) * 2) / 2)}
+            >
+              +
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="player-bar__seek">
+          <span className="player-bar__time">{formatTime(position)}</span>
+          <input
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.1}
+            value={Math.min(position, duration || 0)}
+            onChange={(e) => seek(Number(e.target.value))}
+            aria-label="Progreso"
+          />
+          <span className="player-bar__time">{formatTime(duration)}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -165,10 +192,8 @@ export function NowPlaying() {
   const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
   const setVolume = usePlayerStore((s) => s.setVolume)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
-  const setCarMode = usePlayerStore((s) => s.setCarMode)
   const track = tracks.find((t) => t.id === currentTrackId)
   const seekRef = useRef<HTMLInputElement>(null)
-  const [btOpen, setBtOpen] = useState(false)
 
   if (!open || !track) return null
 
@@ -182,19 +207,7 @@ export function NowPlaying() {
           <p className="now-playing__eyebrow">Reproduciendo</p>
           <p className="now-playing__album">{track.album}</p>
         </div>
-        <div className="now-playing__header-actions">
-          <button
-            className="icon-btn"
-            aria-label="Altavoz Bluetooth"
-            title="Conectar altavoz"
-            onClick={() => setBtOpen(true)}
-          >
-            <IconBluetooth size={24} />
-          </button>
-          <button className="icon-btn" aria-label="Modo coche" onClick={() => setCarMode(true)}>
-            <IconCar size={24} />
-          </button>
-        </div>
+        <span aria-hidden className="now-playing__header-spacer" />
       </header>
 
       <div className="now-playing__art-wrap">
@@ -264,7 +277,7 @@ export function NowPlaying() {
           aria-label="Repetir"
           onClick={cycleRepeat}
         >
-          {repeat === 'one' ? <IconRepeatOne size={22} /> : <IconRepeat size={22} />}
+          <IconRepeat size={22} />
         </button>
       </div>
 
@@ -283,7 +296,6 @@ export function NowPlaying() {
           <IconQueue size={22} />
         </button>
       </div>
-      <BluetoothSheet open={btOpen} onClose={() => setBtOpen(false)} />
     </div>
   )
 }

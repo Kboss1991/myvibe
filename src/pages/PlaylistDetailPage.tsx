@@ -33,7 +33,7 @@ export function PlaylistDetailPage() {
   }
 
   return (
-    <div className="page" style={{ paddingTop: 0, paddingLeft: 0, paddingRight: 0 }}>
+    <div className="page playlist-page" style={{ paddingTop: 0, paddingLeft: 0, paddingRight: 0 }}>
       <PlaylistView
         title={playlist.name}
         description={playlist.description || ''}

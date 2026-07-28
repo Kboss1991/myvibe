@@ -1,8 +1,7 @@
 import { Link } from 'react-router-dom'
-import { TrackList } from '../components/TrackList'
 import { CoverArt } from '../components/CoverArt'
 import { UserAvatar } from '../components/UserAvatar'
-import { IconCar, IconPlay, IconHeart } from '../components/Icons'
+import { IconPlay, IconHeart } from '../components/Icons'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
@@ -15,10 +14,9 @@ export function HomePage() {
   const getRecent = useLibraryStore((s) => s.getRecent)
   const getLiked = useLibraryStore((s) => s.getLiked)
   const playTracks = usePlayerStore((s) => s.playTracks)
-  const setCarMode = usePlayerStore((s) => s.setCarMode)
   const recent = getRecent()
   const liked = getLiked()
-  const latest = tracks.slice(0, 8)
+  const latest = tracks.slice(0, 12)
   const hour = new Date().getHours()
   const greet =
     hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches'
@@ -32,9 +30,6 @@ export function HomePage() {
             {user ? `, ${user.displayName.split(' ')[0]}` : ''}
           </h1>
           <div className="spotify-hero__actions">
-            <button className="btn-ghost" onClick={() => setCarMode(true)}>
-              <IconCar size={18} /> Modo coche
-            </button>
             <Link to="/profile" className="home-avatar-link" aria-label="Perfil">
               <UserAvatar user={user} size={32} className="home-avatar" />
             </Link>
@@ -64,7 +59,7 @@ export function HomePage() {
           ))}
           {!tracks.length && (
             <Link to="/upload" className="home-quick">
-              <span className="home-quick__liked" style={{ background: '#f5a623' }}>
+              <span className="home-quick__liked" style={{ background: 'var(--accent)' }}>
                 +
               </span>
               <span>Subir tu primera carpeta MP3</span>
@@ -78,25 +73,53 @@ export function HomePage() {
           <div className="section__head">
             <h2>Escuchado recientemente</h2>
           </div>
-          <TrackList tracks={recent.slice(0, 6)} />
+          <div className="h-scroll home-cover-row">
+            {recent.slice(0, 12).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="home-cover-card"
+                onClick={() =>
+                  void playTracks(
+                    tracks.filter((x) => x.hasLocalAudio !== false).map((x) => x.id),
+                    t.id,
+                  )
+                }
+              >
+                <span className="home-cover-card__art">
+                  <CoverArt
+                    trackId={t.id}
+                    hasCover={t.hasCover}
+                    refreshKey={`${t.artist}|${t.album}|${t.externalUrl ?? ''}|${t.coverUpdatedAt ?? 0}`}
+                    size={200}
+                    rounded="md"
+                  />
+                </span>
+                <strong>{t.title}</strong>
+                <span>{t.artist}</span>
+              </button>
+            ))}
+          </div>
         </section>
       )}
 
       {playlists.length > 0 && (
         <section className="section">
           <div className="section__head">
-            <h2>Hecho para ti</h2>
+            <h2>Tus playlists</h2>
             <Link to="/library">Mostrar todos</Link>
           </div>
-          <div className="h-scroll">
+          <div className="h-scroll home-cover-row">
             {playlists.slice(0, 10).map((p) => (
-              <Link key={p.id} to={`/playlist/${p.id}`} className="spotify-card">
-                <CoverArt
-                  trackId={p.trackIds[0]}
-                  hasCover={!!p.trackIds[0]}
-                  size={160}
-                  rounded="md"
-                />
+              <Link key={p.id} to={`/playlist/${p.id}`} className="home-cover-card">
+                <span className="home-cover-card__art">
+                  <CoverArt
+                    trackId={p.trackIds[0]}
+                    hasCover={!!p.trackIds[0]}
+                    size={200}
+                    rounded="md"
+                  />
+                </span>
                 <strong>{p.name}</strong>
                 <span>{p.trackIds.length} canciones</span>
               </Link>
@@ -105,24 +128,61 @@ export function HomePage() {
         </section>
       )}
 
-      <section className="section">
-        <div className="section__head">
-          <h2>{tracks.length ? 'Tus canciones' : 'Empieza aquí'}</h2>
-          {tracks.length > 0 && (
+      {latest.length > 0 && (
+        <section className="section">
+          <div className="section__head">
+            <h2>Tus canciones</h2>
             <button
+              type="button"
               className="chip-play"
               onClick={() => void playTracks(tracks.map((t) => t.id))}
             >
               <IconPlay size={16} /> Reproducir
             </button>
-          )}
-        </div>
-        <TrackList
-          tracks={latest}
-          emptyTitle="Tu biblioteca está vacía"
-          emptyHint="Sube una carpeta de MP3 y completamos el perfil de cada canción online"
-        />
-      </section>
+          </div>
+          <div className="h-scroll home-cover-row">
+            {latest.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="home-cover-card"
+                onClick={() =>
+                  void playTracks(
+                    tracks.filter((x) => x.hasLocalAudio !== false).map((x) => x.id),
+                    t.id,
+                  )
+                }
+              >
+                <span className="home-cover-card__art">
+                  <CoverArt
+                    trackId={t.id}
+                    hasCover={t.hasCover}
+                    refreshKey={`${t.artist}|${t.album}|${t.externalUrl ?? ''}|${t.coverUpdatedAt ?? 0}`}
+                    size={200}
+                    rounded="md"
+                  />
+                </span>
+                <strong>{t.title}</strong>
+                <span>{t.artist}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {!tracks.length && (
+        <section className="section">
+          <div className="empty-state fade-up">
+            <p className="empty-state__title">Tu biblioteca está vacía</p>
+            <p className="empty-state__hint">
+              Sube una carpeta de MP3 y completamos el perfil de cada canción online
+            </p>
+            <Link to="/upload" className="btn-primary" style={{ marginTop: 16, display: 'inline-flex' }}>
+              Ir a Subir
+            </Link>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

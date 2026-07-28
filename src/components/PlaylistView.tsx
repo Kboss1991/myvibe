@@ -4,7 +4,9 @@ import { formatTime } from '../lib/mediaSession'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
+import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { CoverArt } from './CoverArt'
+import { CoverCropSheet } from './CoverCropSheet'
 import { UserAvatar } from './UserAvatar'
 import {
   IconPlay,
@@ -101,6 +103,7 @@ export function PlaylistView({
   const [editName, setEditName] = useState(title)
   const [editDesc, setEditDesc] = useState(description)
   const [addQuery, setAddQuery] = useState('')
+  const [cropSource, setCropSource] = useState<{ blob: Blob; name: string } | null>(null)
   const coverInputRef = useRef<HTMLInputElement>(null)
 
   const totalDuration = tracks.reduce((s, t) => s + (t.duration || 0), 0)
@@ -108,6 +111,8 @@ export function PlaylistView({
   const mins = Math.floor((totalDuration % 3600) / 60)
   const durationLabel =
     hours > 0 ? `${hours} h ${mins} min` : `${mins} min`
+
+  const { progress, collapsed } = useMainScrollCollapse(100)
 
   const displayTracks = useMemo(() => {
     let list = [...tracks]
@@ -181,7 +186,11 @@ export function PlaylistView({
   }
 
   return (
-    <div className={`sp-playlist ${likedStyle ? 'sp-playlist--liked' : ''}`}>
+    <div
+      className={`sp-playlist ${likedStyle ? 'sp-playlist--liked' : ''} ${collapsed ? 'is-scrolled' : ''}`}
+      style={{ ['--sticky-p' as string]: String(progress) }}
+    >
+      <div className="sp-hero-fade">
       <header className="sp-hero">
         <button
           type="button"
@@ -217,7 +226,7 @@ export function PlaylistView({
             hidden
             onChange={(e) => {
               const file = e.target.files?.[0]
-              if (file) void onPickCover(file)
+              if (file) setCropSource({ blob: file, name: file.name })
               e.target.value = ''
             }}
           />
@@ -247,6 +256,50 @@ export function PlaylistView({
           </p>
         </div>
       </header>
+      </div>
+
+      <div className="sp-sticky">
+        <div className="sp-sticky__bar">
+          <span className="sp-sticky__cover">
+            {likedStyle && !heroCoverId ? (
+              <span className="sp-sticky__liked">
+                <IconHeart size={18} filled />
+              </span>
+            ) : (
+              <CoverArt
+                trackId={heroCoverId}
+                hasCover={heroHasCover !== false}
+                size={48}
+                rounded="sm"
+              />
+            )}
+          </span>
+          <div className="sp-sticky__meta">
+            <strong>{title}</strong>
+            <span>
+              {tracks.length} cancion{tracks.length === 1 ? '' : 'es'} · {durationLabel}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="sp-sticky__play"
+            disabled={!tracks.length}
+            aria-label="Reproducir"
+            onClick={() => void playTracks(ids, undefined, { shuffle: false })}
+          >
+            <IconPlay size={22} />
+          </button>
+        </div>
+        <div className="sp-table-head sp-table-head--sticky">
+          <span className="col-num">#</span>
+          <span className="col-title">Título</span>
+          <span className="col-album">Álbum</span>
+          <span className="col-date">Fecha</span>
+          <span className="col-time">
+            <IconClock size={16} />
+          </span>
+        </div>
+      </div>
 
       <div className="sp-controls">
         <div className="sp-controls__left">
@@ -447,16 +500,6 @@ export function PlaylistView({
       </div>
 
       <div className="sp-table-wrap">
-        <div className="sp-table-head">
-          <span className="col-num">#</span>
-          <span className="col-title">Título</span>
-          <span className="col-album">Álbum</span>
-          <span className="col-date">Fecha</span>
-          <span className="col-time">
-            <IconClock size={16} />
-          </span>
-        </div>
-
         {displayTracks.length === 0 ? (
           <div className="sp-empty">
             {query
@@ -500,7 +543,7 @@ export function PlaylistView({
                     <CoverArt
                       trackId={track.id}
                       hasCover={track.hasCover}
-                      refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}`}
+                      refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}|${track.coverUpdatedAt ?? 0}`}
                       size={40}
                     />
                     <span>
@@ -614,6 +657,18 @@ export function PlaylistView({
           onClick={() => {
             setMoreOpen(false)
             setSortOpen(false)
+          }}
+        />
+      )}
+
+      {cropSource && onPickCover && (
+        <CoverCropSheet
+          file={cropSource.blob}
+          fileName={cropSource.name}
+          onCancel={() => setCropSource(null)}
+          onConfirm={async (file) => {
+            await onPickCover(file)
+            setCropSource(null)
           }}
         />
       )}

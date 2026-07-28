@@ -1,45 +1,78 @@
 .app-shell {
-  height: 100%;
+  flex: 1 1 0;
+  min-height: 0;
+  width: 100%;
   display: flex;
-  background: #000;
+  background: #121212;
   gap: 8px;
   padding: 8px 8px 0;
 }
 
 .app-column {
-  flex: 1;
+  flex: 1 1 0;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: var(--bg);
+  background: #121212;
   border-radius: 8px;
   overflow: hidden;
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
 }
 
 .app-main {
-  flex: 1;
+  flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
   overflow-x: hidden;
+  overflow-y: scroll;
   -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  background: #121212;
 }
 
 .app-dock {
-  flex-shrink: 0;
-  background: var(--gradient-player);
+  flex: 0 0 auto;
+  position: relative;
+  z-index: 40;
+  background: #181818;
   border-top: 1px solid #282828;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.app-dock .player-bar,
+.app-dock .bottom-nav {
+  flex-shrink: 0;
+}
+
+body.sheet-open .app-dock {
+  pointer-events: none;
 }
 
 .boot-screen {
-  min-height: 100%;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  background: #000;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: #121212;
+  padding-top: var(--safe-top-pad);
 }
 
 .boot-logo {
   animation: pulseSoft 1.2s ease infinite;
+}
+
+.boot-brand {
+  font-size: 1.75rem;
+  opacity: 0.95;
 }
 
 @keyframes pulseSoft {
@@ -62,5 +95,10 @@
 
   .app-column {
     border-radius: 0;
+  }
+
+  /* Espacio extra al final para que la última canción no quede bajo el dock */
+  .app-main .page {
+    padding-bottom: 28px;
   }
 }

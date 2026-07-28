@@ -4,10 +4,12 @@ import {
   IconHome,
   IconLibrary,
   IconPlus,
+  IconRadio,
   IconSearch,
   IconUpload,
 } from './Icons'
 import { AppIcon } from './AppIcon'
+import { BrandWordmark } from './BrandWordmark'
 import { CoverArt } from './CoverArt'
 import { UserAvatar } from './UserAvatar'
 import { useAuthStore } from '../store/authStore'
@@ -18,6 +20,7 @@ const links = [
   { to: '/', label: 'Inicio', icon: IconHome, end: true },
   { to: '/search', label: 'Buscar', icon: IconSearch },
   { to: '/library', label: 'Tu biblioteca', icon: IconLibrary },
+  { to: '/radios', label: 'Radios', icon: IconRadio },
   { to: '/upload', label: 'Subir', icon: IconUpload },
 ]
 
@@ -32,7 +35,7 @@ export function Sidebar() {
     <aside className="sidebar">
       <div className="sidebar__brand">
         <AppIcon size={32} />
-        <span>MyVibe</span>
+        <BrandWordmark className="sidebar__brand-text" />
       </div>
 
       <nav className="sidebar__nav">

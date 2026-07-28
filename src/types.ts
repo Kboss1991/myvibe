@@ -1,4 +1,4 @@
-export type RepeatMode = 'off' | 'all' | 'one'
+export type RepeatMode = 'off' | 'all'
 
 export interface Track {
   id: string
@@ -12,11 +12,15 @@ export interface Track {
   fileName: string
   hasCover: boolean
   liked: boolean
+  /** Timestamp del último cambio de me gusta (sync LWW) */
+  likedUpdatedAt?: number
   playCount: number
   lastPlayedAt: number | null
   createdAt: number
   enriched: boolean
   externalUrl?: string
+  /** Cambia al subir/cambiar portada manualmente (cache-bust CoverArt) */
+  coverUpdatedAt?: number
   /** false = solo metadatos en la nube; falta MP3 local */
   hasLocalAudio?: boolean
   /**

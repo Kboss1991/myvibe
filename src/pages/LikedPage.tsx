@@ -7,7 +7,7 @@ export function LikedPage() {
   const liked = getLiked()
 
   return (
-    <div className="page" style={{ paddingTop: 0, paddingLeft: 0, paddingRight: 0 }}>
+    <div className="page playlist-page" style={{ paddingTop: 0, paddingLeft: 0, paddingRight: 0 }}>
       <PlaylistView
         title="Canciones que te gustan"
         tracks={liked}

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { AppIcon } from '../components/AppIcon'
+import { BrandWordmark } from '../components/BrandWordmark'
 import { isAppleMobile } from '../lib/folderImport'
 import { saveFilesVisibly, type VisibleFile } from '../lib/visibleStorage'
 import { startWifiClient } from '../lib/wifiTransfer'
@@ -121,6 +122,7 @@ export function ReceivePage() {
     <div className="receive-page">
       <div className="receive-card">
         <AppIcon size={64} className="receive-logo" />
+        <BrandWordmark className="receive-brand" />
         <h1>Recibir por Wi‑Fi</h1>
         <p className="receive-sub">
           Escanea el QR del PC. Luego puedes guardar copias visibles en{' '}

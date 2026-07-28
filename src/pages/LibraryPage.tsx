@@ -1,10 +1,12 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
+import { TrackColumnsHead } from '../components/TrackColumnsHead'
 import { CoverArt } from '../components/CoverArt'
 import { IconHeart, IconPlus, IconPlay, IconTrash, IconSearch, IconUpload } from '../components/Icons'
 import { playlistCoverId } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
+import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
 import './pages.css'
@@ -78,178 +80,211 @@ export function LibraryPage() {
     return genreTracks.filter((t) => allowed.has(t.id))
   }, [genreFilter, genreTracks, q, search])
 
+  const { progress, collapsed } = useMainScrollCollapse(64)
+
+  const metaLabel =
+    tab === 'songs'
+      ? q
+        ? `${filteredTracks.length} resultado${filteredTracks.length === 1 ? '' : 's'}`
+        : `${tracks.length} canciones`
+      : tab === 'playlists'
+        ? `${filteredPlaylists.length} playlist${filteredPlaylists.length === 1 ? '' : 's'}`
+        : tab === 'artists'
+          ? `${filteredArtists.length} artista${filteredArtists.length === 1 ? '' : 's'}`
+          : tab === 'albums'
+            ? `${filteredAlbums.length} álbum${filteredAlbums.length === 1 ? '' : 'es'}`
+            : genreFilter
+              ? genreFilter
+              : `${filteredGenres.length} género${filteredGenres.length === 1 ? '' : 's'}`
+
+  const playableForTab =
+    tab === 'songs'
+      ? filteredTracks
+      : tab === 'genres' && genreFilter
+        ? filteredGenreTracks
+        : []
+
   return (
-    <div className="page">
-      <header className="page-header row-between">
-        <h1>Tu biblioteca</h1>
-        <button
-          type="button"
-          className="icon-btn"
-          aria-label="Nueva playlist"
-          onClick={() => setCreating(true)}
-        >
-          <IconPlus size={24} />
-        </button>
-      </header>
-
-      <label className="search-box library-search">
-        <IconSearch size={18} />
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Buscar en tu biblioteca"
-          autoCapitalize="off"
-          autoCorrect="off"
-          enterKeyHint="search"
-        />
-        {query ? (
+    <div
+      className={`page library-page ${collapsed ? 'is-scrolled' : ''}`}
+      style={{ ['--sticky-p' as string]: String(progress) }}
+    >
+      <div className="sticky-chrome">
+        <div className="sticky-chrome__title">
+          <h1>Tu biblioteca</h1>
           <button
             type="button"
-            className="library-search__clear"
-            aria-label="Limpiar búsqueda"
-            onClick={() => setQuery('')}
+            className="icon-btn"
+            aria-label="Nueva playlist"
+            onClick={() => setCreating(true)}
           >
-            ×
+            <IconPlus size={24} />
           </button>
-        ) : null}
-      </label>
+        </div>
 
-      <div className="tabs">
-        {(
-          [
-            ['songs', 'Canciones'],
-            ['playlists', 'Playlists'],
-            ['artists', 'Artistas'],
-            ['albums', 'Álbumes'],
-            ['genres', 'Géneros'],
-          ] as const
-        ).map(([id, label]) => (
-          <button
-            key={id}
-            type="button"
-            className={`tab ${tab === id ? 'is-active' : ''}`}
-            onClick={() => {
-              setTab(id)
-              if (id !== 'genres') setGenreFilter(null)
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
-      {tab === 'songs' && (
-        <>
+        <label className="search-box library-search sticky-chrome__search">
+          <IconSearch size={18} />
           <input
-            ref={restoreInputRef}
-            type="file"
-            accept="audio/mpeg,audio/mp3,.mp3,audio/*"
-            multiple
-            hidden
-            onChange={(e) => {
-              const files = e.target.files ? [...e.target.files] : []
-              e.target.value = ''
-              if (!files.length || !missingAudio.length) return
-              setRestoreBusy(true)
-              void replaceMissingAudio(
-                files,
-                missingAudio.map((t) => t.id),
-              )
-                .then((r) => {
-                  const extra = r.unmatched.length
-                    ? `\nSin emparejar: ${r.unmatched.slice(0, 3).join(', ')}${r.unmatched.length > 3 ? '…' : ''}`
-                    : ''
-                  alert(
-                    r.replaced > 0
-                      ? `Restauradas ${r.replaced} canción${r.replaced === 1 ? '' : 'es'}.${extra}`
-                      : `No se emparejó ningún MP3.${extra}`,
-                  )
-                })
-                .catch((err) => {
-                  alert(err instanceof Error ? err.message : 'No se pudieron subir los MP3')
-                })
-                .finally(() => setRestoreBusy(false))
-            }}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar en tu biblioteca"
+            autoCapitalize="off"
+            autoCorrect="off"
+            enterKeyHint="search"
           />
-          {!q && liked.length > 0 && (
+          {query ? (
             <button
               type="button"
-              className="liked-banner"
-              onClick={() => void playTracks(liked.map((t) => t.id))}
+              className="library-search__clear"
+              aria-label="Limpiar búsqueda"
+              onClick={() => setQuery('')}
             >
-              <span className="liked-banner__icon">
-                <IconHeart size={22} filled />
-              </span>
-              <div>
-                <strong>Canciones que te gustan</strong>
-                <span>{liked.length} temas</span>
-              </div>
-              <IconPlay size={20} />
+              ×
             </button>
-          )}
-          <div className="section__head tight">
-            <h2>
-              {q
-                ? `${filteredTracks.length} resultado${filteredTracks.length === 1 ? '' : 's'}`
-                : `${tracks.length} canciones`}
-            </h2>
-            <div className="section__head-actions">
-              {!q && missingAudio.length > 0 && (
-                <button
-                  type="button"
-                  className="library-quiet-action"
-                  disabled={restoreBusy}
-                  title="Elegir MP3 para canciones sin audio"
-                  onClick={() => restoreInputRef.current?.click()}
-                >
-                  <IconUpload size={14} />
-                  {restoreBusy ? 'Subiendo…' : `${missingAudio.length} sin audio`}
-                </button>
-              )}
-              {!q && missingCover.length > 0 && (
-                <button
-                  type="button"
-                  className="library-quiet-action"
-                  disabled={enrichBusy}
-                  title="Buscar portada, artista y álbum en internet"
-                  onClick={() => {
-                    setEnrichBusy(true)
-                    void enrichMissingCovers()
-                      .then((r) => {
-                        alert(
-                          `Listo: ${r.ok} actualizadas` +
-                            (r.fail ? `, ${r.fail} sin resultado` : ''),
-                        )
-                      })
-                      .finally(() => setEnrichBusy(false))
-                  }}
-                >
-                  <IconSearch size={14} />
-                  {enrichBusy
-                    ? 'Buscando…'
-                    : enrichProgress
-                      ? `${enrichProgress.done}/${enrichProgress.total}`
-                      : `${missingCover.length} sin datos`}
-                </button>
-              )}
-              {filteredTracks.length > 0 && (
-                <button
-                  type="button"
-                  className="chip-play"
-                  onClick={() => void playTracks(filteredTracks.map((t) => t.id))}
-                >
-                  <IconPlay size={16} /> Reproducir
-                </button>
-              )}
-            </div>
+          ) : null}
+        </label>
+
+        <div className="sticky-chrome__meta">
+          <h2>{metaLabel}</h2>
+          <div className="sticky-chrome__meta-actions">
+            {tab === 'songs' && !q && missingAudio.length > 0 && (
+              <button
+                type="button"
+                className="library-quiet-action"
+                disabled={restoreBusy}
+                title="Elegir MP3 para canciones sin audio"
+                onClick={() => restoreInputRef.current?.click()}
+              >
+                <IconUpload size={14} />
+                {restoreBusy ? 'Subiendo…' : `${missingAudio.length} sin audio`}
+              </button>
+            )}
+            {tab === 'songs' && !q && missingCover.length > 0 && (
+              <button
+                type="button"
+                className="library-quiet-action"
+                disabled={enrichBusy}
+                title="Buscar portada, artista y álbum en internet"
+                onClick={() => {
+                  setEnrichBusy(true)
+                  void enrichMissingCovers()
+                    .then((r) => {
+                      alert(
+                        `Listo: ${r.ok} actualizadas` +
+                          (r.fail ? `, ${r.fail} sin resultado` : ''),
+                      )
+                    })
+                    .finally(() => setEnrichBusy(false))
+                }}
+              >
+                <IconSearch size={14} />
+                {enrichBusy
+                  ? 'Buscando…'
+                  : enrichProgress
+                    ? `${enrichProgress.done}/${enrichProgress.total}`
+                    : `${missingCover.length} sin datos`}
+              </button>
+            )}
+            {playableForTab.length > 0 && (
+              <button
+                type="button"
+                className="chip-play"
+                onClick={() => void playTracks(playableForTab.map((t) => t.id))}
+              >
+                <IconPlay size={16} /> Reproducir
+              </button>
+            )}
           </div>
-          <TrackList
-            tracks={filteredTracks}
-            showColumns
-            emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
-            emptyHint={q ? 'Prueba con otro título o artista' : 'Sube música para empezar'}
-          />
-        </>
+        </div>
+
+        {(tab === 'songs' || (tab === 'genres' && genreFilter)) && (
+          <TrackColumnsHead />
+        )}
+      </div>
+
+      <div className="library-fade">
+        <div className="tabs">
+          {(
+            [
+              ['songs', 'Canciones'],
+              ['playlists', 'Playlists'],
+              ['artists', 'Artistas'],
+              ['albums', 'Álbumes'],
+              ['genres', 'Géneros'],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`tab ${tab === id ? 'is-active' : ''}`}
+              onClick={() => {
+                setTab(id)
+                if (id !== 'genres') setGenreFilter(null)
+              }}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'songs' && !q && liked.length > 0 && (
+          <button
+            type="button"
+            className="liked-banner"
+            onClick={() => void playTracks(liked.map((t) => t.id))}
+          >
+            <span className="liked-banner__icon">
+              <IconHeart size={22} filled />
+            </span>
+            <div>
+              <strong>Canciones que te gustan</strong>
+              <span>{liked.length} temas</span>
+            </div>
+            <IconPlay size={20} />
+          </button>
+        )}
+      </div>
+
+      <input
+        ref={restoreInputRef}
+        type="file"
+        accept="audio/mpeg,audio/mp3,.mp3,audio/*"
+        multiple
+        hidden
+        onChange={(e) => {
+          const files = e.target.files ? [...e.target.files] : []
+          e.target.value = ''
+          if (!files.length || !missingAudio.length) return
+          setRestoreBusy(true)
+          void replaceMissingAudio(
+            files,
+            missingAudio.map((t) => t.id),
+          )
+            .then((r) => {
+              const extra = r.unmatched.length
+                ? `\nSin emparejar: ${r.unmatched.slice(0, 3).join(', ')}${r.unmatched.length > 3 ? '…' : ''}`
+                : ''
+              alert(
+                r.replaced > 0
+                  ? `Restauradas ${r.replaced} canción${r.replaced === 1 ? '' : 'es'}.${extra}`
+                  : `No se emparejó ningún MP3.${extra}`,
+              )
+            })
+            .catch((err) => {
+              alert(err instanceof Error ? err.message : 'No se pudieron subir los MP3')
+            })
+            .finally(() => setRestoreBusy(false))
+        }}
+      />
+
+      {tab === 'songs' && (
+        <TrackList
+          tracks={filteredTracks}
+          showColumns
+          hideColumnHead
+          emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
+          emptyHint={q ? 'Prueba con otro título o artista' : 'Sube música para empezar'}
+        />
       )}
 
       {tab === 'playlists' && (
@@ -347,7 +382,7 @@ export function LibraryPage() {
         <>
           {genreFilter ? (
             <>
-              <div className="section__head tight">
+              <div className="section__head tight" style={{ marginTop: 4 }}>
                 <button
                   type="button"
                   className="chip-play"
@@ -355,20 +390,11 @@ export function LibraryPage() {
                 >
                   ← Géneros
                 </button>
-                <h2>{genreFilter}</h2>
-                {filteredGenreTracks.length > 0 && (
-                  <button
-                    type="button"
-                    className="chip-play"
-                    onClick={() => void playTracks(filteredGenreTracks.map((t) => t.id))}
-                  >
-                    <IconPlay size={16} /> Reproducir
-                  </button>
-                )}
               </div>
               <TrackList
                 tracks={filteredGenreTracks}
                 showColumns
+                hideColumnHead
                 emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
                 emptyHint={q ? 'Prueba con otro título' : undefined}
               />

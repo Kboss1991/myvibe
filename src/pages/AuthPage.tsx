@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { AppIcon } from '../components/AppIcon'
+import { BrandWordmark } from '../components/BrandWordmark'
 import { isCloudAuthEnabled, isInsecureLanContext } from '../lib/auth'
 import { useAuthStore } from '../store/authStore'
 import './Auth.css'
@@ -83,7 +84,7 @@ export function AuthPage() {
         <div className="auth-logo" aria-hidden>
           <AppIcon size={96} />
         </div>
-        <h1>MyVibe</h1>
+        <BrandWordmark as="h1" className="auth-brand" />
         <p className="auth-sub">
           {mode === 'login' ? 'Inicia sesión con tu correo' : 'Crea tu cuenta con correo'}
         </p>

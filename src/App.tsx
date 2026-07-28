@@ -1,8 +1,8 @@
 import { useEffect } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppIcon } from './components/AppIcon'
+import { BrandWordmark } from './components/BrandWordmark'
 import { BottomNav } from './components/BottomNav'
-import { CarMode } from './components/CarMode'
 import { NowPlaying, PlayerBar, QueueSheet } from './components/Player'
 import { Sidebar } from './components/Sidebar'
 import { isLibraryHostDevice } from './lib/folderImport'
@@ -14,6 +14,7 @@ import { LibraryPage } from './pages/LibraryPage'
 import { LikedPage } from './pages/LikedPage'
 import { PlaylistDetailPage } from './pages/PlaylistDetailPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { RadiosPage } from './pages/RadiosPage'
 import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
@@ -30,8 +31,10 @@ export default function App() {
   const syncCloudCatalog = useLibraryStore((s) => s.syncCloudCatalog)
   const hydratePlayer = usePlayerStore((s) => s.hydrate)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const currentRadioId = usePlayerStore((s) => s.currentRadioId)
   const location = useLocation()
   const isReceive = location.pathname.startsWith('/receive')
+  const hasPlayer = Boolean(currentTrackId || currentRadioId)
 
   useEffect(() => {
     void hydrateAuth()
@@ -101,6 +104,7 @@ export default function App() {
     return (
       <div className="boot-screen">
         <AppIcon size={72} className="boot-logo" />
+        <BrandWordmark className="boot-brand" />
       </div>
     )
   }
@@ -115,7 +119,7 @@ export default function App() {
   }
 
   return (
-    <div className={`app-shell ${currentTrackId ? 'has-player' : ''}`}>
+    <div className={`app-shell ${hasPlayer ? 'has-player' : ''}`}>
       <Sidebar />
       <div className="app-column">
         <main className="app-main">
@@ -123,6 +127,7 @@ export default function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/library" element={<LibraryPage />} />
+            <Route path="/radios" element={<RadiosPage />} />
             <Route path="/liked" element={<LikedPage />} />
             <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
             <Route path="/upload" element={<UploadPage />} />
@@ -140,7 +145,6 @@ export default function App() {
 
       <NowPlaying />
       <QueueSheet />
-      <CarMode />
     </div>
   )
 }

@@ -18,16 +18,15 @@
   margin-bottom: 16px;
 }
 
-.auth-card h1 {
-  font-size: 2rem;
-  font-weight: 700;
-  letter-spacing: -0.04em;
-  margin-bottom: 8px;
+.auth-brand {
+  font-size: clamp(2.35rem, 7vw, 2.85rem);
+  margin-bottom: 10px;
 }
 
 .auth-sub {
   color: var(--text-muted);
   margin-bottom: 28px;
+  font-weight: 500;
 }
 
 .auth-form {
@@ -55,7 +54,7 @@
 }
 
 .auth-form input:focus {
-  border-color: #fff;
+  border-color: var(--accent);
 }
 
 .auth-submit {
@@ -115,7 +114,8 @@
 }
 
 .auth-import:hover:not(:disabled) {
-  border-color: #fff;
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .auth-import:disabled {
@@ -123,7 +123,7 @@
 }
 
 .auth-import-ok {
-  color: #1db954;
+  color: var(--accent);
   font-size: 0.9rem;
   margin: -8px 0 14px;
 }
@@ -149,7 +149,7 @@
 .auth-remember input {
   width: 18px;
   height: 18px;
-  accent-color: #f5a623;
+  accent-color: var(--accent);
 }
 
 .auth-note {
