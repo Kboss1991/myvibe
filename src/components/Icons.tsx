@@ -69,7 +69,8 @@ export function IconPause(p: IconProps) {
 export function IconSkipBack(p: IconProps) {
   return (
     <svg {...base({ ...p, fill: 'currentColor', stroke: 'none' })}>
-      <path d="M5 5v14h2V5H5zm3.5 7 10-6.5v13L8.5 12z" />
+      <path d="M19 20 9 12l10-8v16z" />
+      <rect x="5" y="4" width="2.5" height="16" rx="0.5" />
     </svg>
   )
 }
@@ -77,32 +78,45 @@ export function IconSkipBack(p: IconProps) {
 export function IconSkipForward(p: IconProps) {
   return (
     <svg {...base({ ...p, fill: 'currentColor', stroke: 'none' })}>
-      <path d="M17 5v14h2V5h-2zM5.5 5.5 15.5 12 5.5 18.5v-13z" />
+      <path d="M5 4v16l10-8L5 4z" />
+      <rect x="16.5" y="4" width="2.5" height="16" rx="0.5" />
     </svg>
   )
 }
 
+/** Lucide shuffle — cruces con flechas en los extremos */
 export function IconShuffle(p: IconProps) {
   return (
-    <svg {...base(p)}>
-      <path d="M16 4h4v4M4 8c4 0 5 4 8 4s4 4 8 4M20 16v4h-4M4 16c4 0 5-4 8-4" />
+    <svg {...base({ ...p, strokeWidth: 2 })}>
+      <path d="m18 14 4 4-4 4" />
+      <path d="m18 2 4 4-4 4" />
+      <path d="M2 18h1.973a4 4 0 0 0 3.3-1.7l5.454-8.6a4 4 0 0 1 3.3-1.7H22" />
+      <path d="M2 6h1.972a4 4 0 0 1 3.3 1.7l5.454 8.6a4 4 0 0 0 3.3 1.7H22" />
     </svg>
   )
 }
 
+/** Lucide repeat — bucle con flechas */
 export function IconRepeat(p: IconProps) {
   return (
-    <svg {...base(p)}>
-      <path d="M17 2l3 3-3 3M4 7h15a3 3 0 0 1 0 6h-2M7 22l-3-3 3-3M20 17H5a3 3 0 0 1 0-6h2" />
+    <svg {...base({ ...p, strokeWidth: 2 })}>
+      <path d="m17 2 4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="m7 22-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
     </svg>
   )
 }
 
+/** Lucide repeat-1 */
 export function IconRepeatOne(p: IconProps) {
   return (
-    <svg {...base(p)}>
-      <path d="M17 2l3 3-3 3M4 7h15a3 3 0 0 1 0 6h-2M7 22l-3-3 3-3M20 17H5a3 3 0 0 1 0-6h2" />
-      <path d="M12 10v5" />
+    <svg {...base({ ...p, strokeWidth: 2 })}>
+      <path d="m17 2 4 4-4 4" />
+      <path d="M3 11v-1a4 4 0 0 1 4-4h14" />
+      <path d="m7 22-4-4 4-4" />
+      <path d="M21 13v1a4 4 0 0 1-4 4H3" />
+      <path d="M11 10h1v4" />
     </svg>
   )
 }
