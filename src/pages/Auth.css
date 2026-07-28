@@ -1,0 +1,154 @@
+.auth-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: #000;
+}
+
+.auth-card {
+  width: min(100%, 420px);
+  text-align: center;
+}
+
+.auth-logo {
+  display: grid;
+  place-items: center;
+  margin-bottom: 16px;
+}
+
+.auth-card h1 {
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  margin-bottom: 8px;
+}
+
+.auth-sub {
+  color: var(--text-muted);
+  margin-bottom: 28px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  text-align: left;
+}
+
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.auth-form input {
+  background: #121212;
+  border: 1px solid #727272;
+  border-radius: 4px;
+  padding: 14px;
+  color: #fff;
+  outline: none;
+}
+
+.auth-form input:focus {
+  border-color: #fff;
+}
+
+.auth-submit {
+  margin-top: 8px;
+  padding: 16px;
+  border-radius: 500px;
+  background: var(--accent);
+  color: #000;
+  font-weight: 700;
+  font-size: 1rem;
+}
+
+.auth-submit:hover:not(:disabled) {
+  background: var(--accent-hover);
+  transform: scale(1.02);
+}
+
+.auth-submit:disabled {
+  opacity: 0.7;
+}
+
+.auth-error {
+  color: #f15e6c;
+  font-size: 0.9rem;
+}
+
+.auth-lan-hint {
+  text-align: left;
+  background: rgba(245, 166, 35, 0.12);
+  border: 1px solid rgba(245, 166, 35, 0.35);
+  color: #f5d59a;
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0 0 14px;
+}
+
+.auth-lan-hint strong {
+  color: #fff;
+}
+
+.auth-import {
+  width: 100%;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border-radius: 500px;
+  border: 1px solid #727272;
+  color: #fff;
+  font-weight: 700;
+  background: transparent;
+}
+
+.auth-import:hover:not(:disabled) {
+  border-color: #fff;
+}
+
+.auth-import:disabled {
+  opacity: 0.7;
+}
+
+.auth-import-ok {
+  color: #1db954;
+  font-size: 0.9rem;
+  margin: -8px 0 14px;
+}
+
+.auth-switch {
+  margin-top: 24px;
+  color: var(--text-muted);
+  text-decoration: underline;
+  font-size: 0.95rem;
+}
+
+.auth-remember {
+  display: flex !important;
+  flex-direction: row !important;
+  align-items: center;
+  gap: 10px !important;
+  font-size: 0.9rem !important;
+  font-weight: 500 !important;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.auth-remember input {
+  width: 18px;
+  height: 18px;
+  accent-color: #f5a623;
+}
+
+.auth-note {
+  margin-top: 28px;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
