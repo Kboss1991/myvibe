@@ -65,15 +65,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   logout: () => {
-    auth.logoutUser()
+    void auth.logoutUser()
     set({ user: null })
   },
 
   updateProfile: async (patch) => {
     const user = get().user
     if (!user) return
-    await auth.updateProfile(user.id, patch)
-    set({ user: { ...user, ...patch } })
+    set({ error: null })
+    try {
+      await auth.updateProfile(user.id, patch)
+      set({ user: { ...user, ...patch } })
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : 'No se pudo guardar el perfil' })
+      throw e
+    }
   },
 
   setEmail: async (email) => {
@@ -140,6 +146,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   importAccount: async (file) => {
     set({ error: null })
     try {
+      if (auth.isCloudAuthEnabled()) {
+        throw new Error(
+          'Con cuentas en la nube no hace falta importar: inicia sesión con el mismo correo en cualquier dispositivo.',
+        )
+      }
       const { importAccountTransfer } = await import('../lib/accountTransfer')
       const user = await importAccountTransfer(file)
       set({

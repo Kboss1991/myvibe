@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { AppIcon } from '../components/AppIcon'
-import { isInsecureLanContext } from '../lib/auth'
+import { isCloudAuthEnabled, isInsecureLanContext } from '../lib/auth'
 import { useAuthStore } from '../store/authStore'
 import './Auth.css'
 
@@ -20,6 +20,7 @@ export function AuthPage() {
   const error = useAuthStore((s) => s.error)
   const clearError = useAuthStore((s) => s.clearError)
   const lanHttp = isInsecureLanContext()
+  const cloud = isCloudAuthEnabled()
   const accountInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -86,30 +87,49 @@ export function AuthPage() {
           {mode === 'login' ? 'Inicia sesión con tu correo' : 'Crea tu cuenta con correo'}
         </p>
 
-        <p className="auth-lan-hint">
-          ¿Pasar música del PC? Escanea el <strong>QR</strong> del PC (cámara) o abre{' '}
-          <Link to="/receive">Recibir por Wi‑Fi</Link>. Las canciones se guardan en MyVibe.
-        </p>
+        {cloud ? (
+          <p className="auth-lan-hint">
+            Cuentas en la <strong>nube</strong> (Supabase): el mismo correo y contraseña sirven en
+            PC y móvil. La música sigue en cada dispositivo (pásala por QR).
+          </p>
+        ) : (
+          <p className="auth-lan-hint">
+            Modo local (sin servidor de usuarios). Para cuentas en la nube configura Supabase
+            (VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY). ¿Pasar música?{' '}
+            <Link to="/receive">Recibir por Wi‑Fi</Link>.
+          </p>
+        )}
 
-        <button
-          type="button"
-          className="auth-import"
-          disabled={busy}
-          onClick={() => accountInputRef.current?.click()}
-        >
-          Importar cuenta desde PC / otro dispositivo
-        </button>
-        <input
-          ref={accountInputRef}
-          type="file"
-          accept=".zip,.myvibe-account,application/zip,application/json"
-          hidden
-          onChange={(e) => {
-            void handleImportAccount(e.target.files?.[0])
-            e.target.value = ''
-          }}
-        />
-        {importMsg && <p className="auth-import-ok">{importMsg}</p>}
+        {!cloud && (
+          <>
+            <button
+              type="button"
+              className="auth-import"
+              disabled={busy}
+              onClick={() => accountInputRef.current?.click()}
+            >
+              Importar cuenta desde PC / otro dispositivo
+            </button>
+            <input
+              ref={accountInputRef}
+              type="file"
+              accept=".zip,.myvibe-account,application/zip,application/json"
+              hidden
+              onChange={(e) => {
+                void handleImportAccount(e.target.files?.[0])
+                e.target.value = ''
+              }}
+            />
+            {importMsg && <p className="auth-import-ok">{importMsg}</p>}
+          </>
+        )}
+
+        {cloud && (
+          <p className="auth-lan-hint" style={{ marginTop: 0 }}>
+            ¿Pasar música del PC? Escanea el <strong>QR</strong> o abre{' '}
+            <Link to="/receive">Recibir por Wi‑Fi</Link>.
+          </p>
+        )}
 
         <form onSubmit={(e) => void submit(e)} className="auth-form">
           {mode === 'register' && (
@@ -143,10 +163,10 @@ export function AuthPage() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              placeholder={cloud ? 'Mínimo 6 caracteres' : '••••••••'}
               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
               required
-              minLength={4}
+              minLength={cloud ? 6 : 4}
               enterKeyHint="done"
             />
           </label>

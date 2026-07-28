@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.110.9",
     "dexie": "^4.4.4",
     "music-metadata": "^11.14.0",
     "peerjs": "^1.5.5",

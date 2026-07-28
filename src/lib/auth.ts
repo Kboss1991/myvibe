@@ -5,9 +5,23 @@ import {
   hexToBytes as pbkdf2HexToBytes,
   pbkdf2Sha256,
 } from './pbkdf2'
+import { getSupabase, isCloudAuthEnabled } from './supabase'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const PBKDF2_ITERATIONS = 120_000
+
+export { isCloudAuthEnabled }
+
+type ProfileRow = {
+  id: string
+  email: string | null
+  display_name: string
+  bio: string
+  avatar_hue: number
+  has_avatar: boolean
+  avatar_updated_at: number | null
+  created_at: string
+}
 
 function bytesToHex(bytes: ArrayBuffer | Uint8Array): string {
   const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
@@ -52,7 +66,6 @@ async function deriveKey(password: string, saltHex: string): Promise<string> {
     }
   }
 
-  // Yield para no congelar el UI en móvil (120k iteraciones)
   await new Promise((r) => setTimeout(r, 0))
   const derived = await pbkdf2Sha256(passwordBytes, salt, PBKDF2_ITERATIONS, 256)
   return bytesToHex(derived)
@@ -70,7 +83,6 @@ function createId(): string {
 }
 
 export function isAuthCryptoReady(): boolean {
-  // Con polyfill siempre podemos hashear; solo avisamos si no hay storage
   try {
     const k = '__myvibe_probe__'
     localStorage.setItem(k, '1')
@@ -96,21 +108,114 @@ export function validateEmail(email: string): boolean {
   return EMAIL_RE.test(normalizeEmail(email))
 }
 
+function mapAuthError(message: string): string {
+  const m = message.toLowerCase()
+  if (m.includes('invalid login') || m.includes('invalid credentials')) {
+    return 'Correo o contraseña incorrectos'
+  }
+  if (m.includes('already registered') || m.includes('user already')) {
+    return 'Ya hay una cuenta con ese correo'
+  }
+  if (m.includes('password') && m.includes('6')) {
+    return 'La contraseña debe tener al menos 6 caracteres'
+  }
+  if (m.includes('email')) {
+    return 'Revisa el correo electrónico'
+  }
+  return message || 'Error de autenticación'
+}
+
+function profileToUser(profile: ProfileRow, emailFallback?: string): User {
+  const email = (profile.email || emailFallback || '').toLowerCase()
+  const localPart = email.includes('@') ? email.split('@')[0]! : email || 'user'
+  return {
+    id: profile.id,
+    email,
+    username: localPart,
+    displayName: profile.display_name || localPart,
+    passwordHash: '',
+    salt: '',
+    avatarHue: profile.avatar_hue ?? 0,
+    hasAvatar: Boolean(profile.has_avatar),
+    avatarUpdatedAt: profile.avatar_updated_at ?? undefined,
+    createdAt: profile.created_at ? Date.parse(profile.created_at) : Date.now(),
+    bio: profile.bio || '',
+  }
+}
+
+async function fetchProfile(userId: string, emailFallback?: string): Promise<User> {
+  const supabase = getSupabase()
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('*')
+    .eq('id', userId)
+    .maybeSingle()
+
+  if (error) throw new Error(mapAuthError(error.message))
+
+  if (!data) {
+    const email = emailFallback || ''
+    const localPart = email.split('@')[0] || 'user'
+    const row = {
+      id: userId,
+      email,
+      display_name: localPart,
+      bio: '',
+      avatar_hue: Math.floor(Math.random() * 360),
+      has_avatar: false,
+      avatar_updated_at: null,
+    }
+    const { error: insertError } = await supabase.from('profiles').upsert(row)
+    if (insertError) throw new Error(mapAuthError(insertError.message))
+    return profileToUser({ ...row, created_at: new Date().toISOString() }, email)
+  }
+
+  const user = profileToUser(data as ProfileRow, emailFallback)
+  if (user.hasAvatar) {
+    await cacheCloudAvatar(user.id)
+  }
+  return user
+}
+
+export function avatarCoverId(userId: string): string {
+  return `avatar:${userId}`
+}
+
+function avatarStoragePath(userId: string): string {
+  return `${userId}/avatar.jpg`
+}
+
+async function cacheCloudAvatar(userId: string): Promise<void> {
+  try {
+    const supabase = getSupabase()
+    const { data, error } = await supabase.storage
+      .from('avatars')
+      .download(avatarStoragePath(userId))
+    if (error || !data) return
+    const { saveCoverBlob, revokeCachedUrls } = await import('./library')
+    const id = avatarCoverId(userId)
+    revokeCachedUrls(id)
+    await saveCoverBlob(id, data)
+  } catch {
+    // avatar opcional
+  }
+}
+
+function rememberEmail(email: string, remember: boolean) {
+  if (remember) localStorage.setItem(REMEMBER_EMAIL_KEY, email)
+  else localStorage.removeItem(REMEMBER_EMAIL_KEY)
+}
+
+function persistLocalSession(user: User, remember: boolean) {
+  localStorage.setItem(SESSION_KEY, user.id)
+  rememberEmail(user.email || user.username, remember)
+}
+
 async function findUserByLogin(login: string): Promise<User | undefined> {
   const clean = normalizeEmail(login)
   const byEmail = await db.users.where('email').equals(clean).first()
   if (byEmail) return byEmail
-  // Compat: cuentas antiguas creadas solo con "usuario"
   return db.users.where('username').equals(clean).first()
-}
-
-function persistSession(user: User, remember: boolean) {
-  localStorage.setItem(SESSION_KEY, user.id)
-  if (remember) {
-    localStorage.setItem(REMEMBER_EMAIL_KEY, user.email || user.username)
-  } else {
-    localStorage.removeItem(REMEMBER_EMAIL_KEY)
-  }
 }
 
 export async function registerUser(
@@ -121,15 +226,49 @@ export async function registerUser(
 ): Promise<User> {
   const clean = normalizeEmail(email)
   if (!validateEmail(clean)) throw new Error('Introduce un correo válido')
-  if (password.length < 4) throw new Error('La contraseña debe tener al menos 4 caracteres')
 
+  if (isCloudAuthEnabled()) {
+    if (password.length < 6) {
+      throw new Error('La contraseña debe tener al menos 6 caracteres')
+    }
+    const supabase = getSupabase()
+    const localPart = clean.split('@')[0]!
+    const name = displayName.trim() || localPart
+    const { data, error } = await supabase.auth.signUp({
+      email: clean,
+      password,
+      options: { data: { display_name: name } },
+    })
+    if (error) throw new Error(mapAuthError(error.message))
+    if (!data.user) throw new Error('No se pudo crear la cuenta')
+
+    // Si el proyecto exige confirmar email, puede no haber session aún
+    if (!data.session) {
+      throw new Error(
+        'Cuenta creada. Si tu proyecto pide confirmar el correo, revisa la bandeja (o desactiva “Confirm email” en Supabase).',
+      )
+    }
+
+    const { error: upsertError } = await supabase.from('profiles').upsert({
+      id: data.user.id,
+      email: clean,
+      display_name: name,
+      avatar_hue: Math.floor(Math.random() * 360),
+    })
+    if (upsertError) throw new Error(mapAuthError(upsertError.message))
+
+    rememberEmail(clean, remember)
+    return fetchProfile(data.user.id, clean)
+  }
+
+  if (password.length < 4) throw new Error('La contraseña debe tener al menos 4 caracteres')
   const existing = await findUserByLogin(clean)
   if (existing) throw new Error('Ya hay una cuenta con ese correo')
 
   const saltBytes = crypto.getRandomValues(new Uint8Array(16))
   const salt = bytesToHex(saltBytes)
   const passwordHash = await deriveKey(password, salt)
-  const localPart = clean.split('@')[0]
+  const localPart = clean.split('@')[0]!
 
   const user: User = {
     id: createId(),
@@ -144,7 +283,7 @@ export async function registerUser(
     bio: '',
   }
   await db.users.put(user)
-  persistSession(user, remember)
+  persistLocalSession(user, remember)
   return user
 }
 
@@ -154,26 +293,44 @@ export async function loginUser(
   remember = true,
 ): Promise<User> {
   const clean = normalizeEmail(email)
+
+  if (isCloudAuthEnabled()) {
+    const supabase = getSupabase()
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: clean,
+      password,
+    })
+    if (error) throw new Error(mapAuthError(error.message))
+    if (!data.user) throw new Error('Correo o contraseña incorrectos')
+    rememberEmail(clean, remember)
+    return fetchProfile(data.user.id, data.user.email || clean)
+  }
+
   const user = await findUserByLogin(clean)
   if (!user) throw new Error('Correo o contraseña incorrectos')
 
   const hash = await deriveKey(password, user.salt)
   if (hash !== user.passwordHash) throw new Error('Correo o contraseña incorrectos')
 
-  // Asegura campo email en cuentas antiguas
   if (!user.email) {
     const emailValue = clean.includes('@') ? clean : `${user.username}@local.myvibe`
     await db.users.update(user.id, { email: emailValue })
     user.email = emailValue
   }
 
-  persistSession(user, remember)
+  persistLocalSession(user, remember)
   return user
 }
 
-export function logoutUser(): void {
+export async function logoutUser(): Promise<void> {
+  if (isCloudAuthEnabled()) {
+    try {
+      await getSupabase().auth.signOut()
+    } catch {
+      // ignore
+    }
+  }
   localStorage.removeItem(SESSION_KEY)
-  // Mantiene el correo recordado para rellenar el formulario
 }
 
 export function getRememberedEmail(): string {
@@ -181,6 +338,18 @@ export function getRememberedEmail(): string {
 }
 
 export async function getSessionUser(): Promise<User | null> {
+  if (isCloudAuthEnabled()) {
+    const supabase = getSupabase()
+    const { data } = await supabase.auth.getSession()
+    const session = data.session
+    if (!session?.user) return null
+    try {
+      return await fetchProfile(session.user.id, session.user.email || undefined)
+    } catch {
+      return null
+    }
+  }
+
   const id = localStorage.getItem(SESSION_KEY)
   if (!id) return null
   const user = await db.users.get(id)
@@ -195,11 +364,18 @@ export async function updateProfile(
   userId: string,
   patch: Partial<Pick<User, 'displayName' | 'bio' | 'avatarHue' | 'email'>>,
 ): Promise<void> {
+  if (isCloudAuthEnabled()) {
+    const supabase = getSupabase()
+    const row: Record<string, unknown> = {}
+    if (patch.displayName !== undefined) row.display_name = patch.displayName
+    if (patch.bio !== undefined) row.bio = patch.bio
+    if (patch.avatarHue !== undefined) row.avatar_hue = patch.avatarHue
+    if (patch.email !== undefined) row.email = patch.email
+    const { error } = await supabase.from('profiles').update(row).eq('id', userId)
+    if (error) throw new Error(mapAuthError(error.message))
+    return
+  }
   await db.users.update(userId, patch)
-}
-
-export function avatarCoverId(userId: string): string {
-  return `avatar:${userId}`
 }
 
 async function normalizeAvatarBlob(file: File): Promise<Blob> {
@@ -233,14 +409,33 @@ async function normalizeAvatarBlob(file: File): Promise<Blob> {
 
 export async function setUserAvatar(userId: string, file: File): Promise<User> {
   const { saveCoverBlob, revokeCachedUrls } = await import('./library')
+  const blob = await normalizeAvatarBlob(file)
+  const id = avatarCoverId(userId)
+  const avatarUpdatedAt = Date.now()
+
+  if (isCloudAuthEnabled()) {
+    const supabase = getSupabase()
+    const path = avatarStoragePath(userId)
+    const { error: upError } = await supabase.storage
+      .from('avatars')
+      .upload(path, blob, { upsert: true, contentType: 'image/jpeg' })
+    if (upError) throw new Error(upError.message || 'No se pudo subir el avatar')
+
+    const { error } = await supabase
+      .from('profiles')
+      .update({ has_avatar: true, avatar_updated_at: avatarUpdatedAt })
+      .eq('id', userId)
+    if (error) throw new Error(mapAuthError(error.message))
+
+    revokeCachedUrls(id)
+    await saveCoverBlob(id, blob)
+    return fetchProfile(userId)
+  }
+
   const user = await db.users.get(userId)
   if (!user) throw new Error('Sesión no válida')
-
-  const id = avatarCoverId(userId)
-  const blob = await normalizeAvatarBlob(file)
   revokeCachedUrls(id)
   await saveCoverBlob(id, blob)
-  const avatarUpdatedAt = Date.now()
   await db.users.update(userId, { hasAvatar: true, avatarUpdatedAt })
   const updated = await db.users.get(userId)
   if (!updated) throw new Error('No se pudo guardar el avatar')
@@ -250,14 +445,28 @@ export async function setUserAvatar(userId: string, file: File): Promise<User> {
 export async function clearUserAvatar(userId: string): Promise<User> {
   const { revokeCachedUrls } = await import('./library')
   const { deleteBinary } = await import('./opfs')
+  const id = avatarCoverId(userId)
+  const avatarUpdatedAt = Date.now()
+
+  if (isCloudAuthEnabled()) {
+    const supabase = getSupabase()
+    await supabase.storage.from('avatars').remove([avatarStoragePath(userId)])
+    const { error } = await supabase
+      .from('profiles')
+      .update({ has_avatar: false, avatar_updated_at: avatarUpdatedAt })
+      .eq('id', userId)
+    if (error) throw new Error(mapAuthError(error.message))
+    revokeCachedUrls(id)
+    await deleteBinary('covers', id)
+    await db.covers.delete(id)
+    return fetchProfile(userId)
+  }
+
   const user = await db.users.get(userId)
   if (!user) throw new Error('Sesión no válida')
-
-  const id = avatarCoverId(userId)
   revokeCachedUrls(id)
   await deleteBinary('covers', id)
   await db.covers.delete(id)
-  const avatarUpdatedAt = Date.now()
   await db.users.update(userId, { hasAvatar: false, avatarUpdatedAt })
   const updated = await db.users.get(userId)
   if (!updated) throw new Error('No se pudo quitar el avatar')
@@ -276,6 +485,16 @@ export async function setUserEmail(userId: string, email: string): Promise<User>
   const clean = normalizeEmail(email)
   if (!validateEmail(clean)) throw new Error('Introduce un correo válido')
 
+  if (isCloudAuthEnabled()) {
+    const supabase = getSupabase()
+    const { error } = await supabase.auth.updateUser({ email: clean })
+    if (error) throw new Error(mapAuthError(error.message))
+    await updateProfile(userId, { email: clean })
+    const remembered = localStorage.getItem(REMEMBER_EMAIL_KEY)
+    if (remembered) localStorage.setItem(REMEMBER_EMAIL_KEY, clean)
+    return fetchProfile(userId, clean)
+  }
+
   const user = await db.users.get(userId)
   if (!user) throw new Error('Sesión no válida')
 
@@ -291,9 +510,7 @@ export async function setUserEmail(userId: string, email: string): Promise<User>
   })
 
   const remembered = localStorage.getItem(REMEMBER_EMAIL_KEY)
-  if (remembered) {
-    localStorage.setItem(REMEMBER_EMAIL_KEY, clean)
-  }
+  if (remembered) localStorage.setItem(REMEMBER_EMAIL_KEY, clean)
 
   const updated = await db.users.get(userId)
   if (!updated) throw new Error('No se pudo guardar el correo')
@@ -301,6 +518,15 @@ export async function setUserEmail(userId: string, email: string): Promise<User>
 }
 
 export async function changePassword(userId: string, newPassword: string): Promise<void> {
+  if (isCloudAuthEnabled()) {
+    if (newPassword.length < 6) {
+      throw new Error('La nueva contraseña debe tener al menos 6 caracteres')
+    }
+    const { error } = await getSupabase().auth.updateUser({ password: newPassword })
+    if (error) throw new Error(mapAuthError(error.message))
+    return
+  }
+
   if (newPassword.length < 4) {
     throw new Error('La nueva contraseña debe tener al menos 4 caracteres')
   }
@@ -315,5 +541,6 @@ export async function changePassword(userId: string, newPassword: string): Promi
 }
 
 export async function countUsers(): Promise<number> {
+  if (isCloudAuthEnabled()) return 0
   return db.users.count()
 }
