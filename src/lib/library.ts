@@ -12,7 +12,7 @@ import { enrichFromInternet, fetchCoverBlob, isDoubtfulMetadata, isDisneyOrAnime
 import type { OnlineTrackInfo } from './enrich'
 import { isAppleMobile } from './folderImport'
 import { deleteBinary, readBinary, writeBinary, clearOpfsFolder, listOpfsIds } from './opfs'
-import { groupDuplicateTracks, pickCanonicalTrack, tracksLookSame } from './trackDedupe'
+import { groupDuplicateTracks, pickCanonicalTrack, tracksLookSame, findBestTrackMatch } from './trackDedupe'
 import type { Playlist, Track } from '../types'
 
 function pickBestBlob(...blobs: Array<Blob | null | undefined>): Blob | null {
@@ -614,6 +614,110 @@ export async function updateTrackMeta(
   patch: Partial<Pick<Track, 'title' | 'artist' | 'album' | 'genre' | 'year' | 'liked'>>,
 ): Promise<void> {
   await db.tracks.update(id, patch)
+}
+
+/**
+ * Sustituye el audio de una canción existente (stubs mudos / transferencia rota).
+ * Conserva id, likes, playlists y metadatos; actualiza duración y MIME.
+ */
+export async function replaceTrackAudio(id: string, file: File): Promise<Track> {
+  const existing = await db.tracks.get(id)
+  if (!existing) throw new Error('Canción no encontrada')
+
+  const audio = await materializeAudioFile(file)
+  if (!isAudioFile(audio)) {
+    throw new Error(`“${file.name}” no es un archivo de audio válido`)
+  }
+  if (audio.size < 1024) {
+    throw new Error(`“${file.name}” está vacío o incompleto`)
+  }
+
+  const duration = await getAudioDuration(audio)
+  await saveAudioBlob(id, audio)
+
+  let hasCover = Boolean(existing.hasCover)
+  try {
+    const tags = await readTags(audio)
+    if (tags.coverBlob && !hasCover) {
+      await saveCoverBlob(id, tags.coverBlob)
+      hasCover = true
+    }
+  } catch {
+    // tags opcionales
+  }
+
+  const patch: Partial<Track> = {
+    duration: duration > 0 ? duration : existing.duration,
+    mimeType: audio.type || guessAudioMime(audio.name) || existing.mimeType || 'audio/mpeg',
+    fileName: audio.name || existing.fileName,
+    hasLocalAudio: true,
+    hasCover,
+  }
+  await db.tracks.update(id, patch)
+  const updated = await db.tracks.get(id)
+  if (!updated) throw new Error('No se pudo actualizar la canción')
+  return updated
+}
+
+/**
+ * Empareja archivos MP3 con canciones sin audio local y las rellena.
+ * Si `trackIds` está vacío, usa todas las que tengan hasLocalAudio === false.
+ */
+export async function replaceMissingAudioFromFiles(
+  files: File[],
+  trackIds?: string[],
+  onProgress?: (done: number, total: number, name: string) => void,
+): Promise<{ replaced: number; unmatched: string[] }> {
+  const all = await db.tracks.toArray()
+  const targets = (
+    trackIds?.length ? all.filter((t) => trackIds.includes(t.id)) : all
+  ).filter((t) => t.hasLocalAudio === false)
+
+  if (!targets.length) {
+    return { replaced: 0, unmatched: files.map((f) => f.name) }
+  }
+
+  const audioFiles = files.filter(isAudioFile)
+  const unmatched: string[] = []
+  let replaced = 0
+  const remaining = [...targets]
+
+  for (let i = 0; i < audioFiles.length; i++) {
+    const original = audioFiles[i]!
+    onProgress?.(i, audioFiles.length, original.name)
+    try {
+      const file = await materializeAudioFile(original)
+      const tags = await readTags(file)
+      const duration = await getAudioDuration(file)
+      const probe = {
+        title: tags.title || file.name,
+        artist: tags.artist || '',
+        duration,
+        fileName: file.name,
+      }
+      const match =
+        remaining.find((t) => tracksLookSame(t, probe)) ||
+        findBestTrackMatch(
+          remaining.map((t) => ({ ...t, hasLocalAudio: true })),
+          probe,
+        )
+
+      if (!match) {
+        unmatched.push(original.name)
+        continue
+      }
+
+      await replaceTrackAudio(match.id, file)
+      const idx = remaining.findIndex((t) => t.id === match.id)
+      if (idx >= 0) remaining.splice(idx, 1)
+      replaced += 1
+    } catch {
+      unmatched.push(original.name)
+    }
+  }
+
+  onProgress?.(audioFiles.length, audioFiles.length, '')
+  return { replaced, unmatched }
 }
 
 export async function setTrackCover(id: string, file: File): Promise<void> {

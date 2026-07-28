@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { Track } from '../types'
 import { isAppleMobile, isLibraryHostDevice } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
@@ -21,6 +21,7 @@ import {
   IconClose,
   IconShare,
   IconDownload,
+  IconUpload,
 } from './Icons'
 import './TrackList.css'
 
@@ -78,6 +79,8 @@ export function TrackList({
   const downloadFromPc = useLibraryStore((s) => s.downloadFromPc)
   const downloadProgress = useLibraryStore((s) => s.downloadProgress)
   const pcOnline = useLibraryStore((s) => s.pcOnline)
+  const replaceTrackAudio = useLibraryStore((s) => s.replaceTrackAudio)
+  const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
 
   const [menuTrack, setMenuTrack] = useState<Track | null>(null)
   const [storageInfo, setStorageInfo] = useState<TrackStorageInfo | null>(null)
@@ -92,6 +95,10 @@ export function TrackList({
   const [selectMode, setSelectMode] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  const [replacingId, setReplacingId] = useState<string | null>(null)
+  const replaceOneInputRef = useRef<HTMLInputElement>(null)
+  const replaceBulkInputRef = useRef<HTMLInputElement>(null)
+  const replaceTargetIdRef = useRef<string | null>(null)
 
   const selectedTracks = useMemo(
     () => tracks.filter((t) => selected.has(t.id)),
@@ -155,6 +162,60 @@ export function TrackList({
     }
   }
 
+  function openReplaceOne(trackId: string) {
+    replaceTargetIdRef.current = trackId
+    replaceOneInputRef.current?.click()
+  }
+
+  async function onReplaceOneFile(fileList: FileList | null) {
+    const trackId = replaceTargetIdRef.current
+    const file = fileList?.[0]
+    replaceTargetIdRef.current = null
+    if (replaceOneInputRef.current) replaceOneInputRef.current.value = ''
+    if (!trackId || !file) return
+    setReplacingId(trackId)
+    setBulkBusy(true)
+    try {
+      await replaceTrackAudio(trackId, file)
+      alert(`Audio restaurado: ${file.name}`)
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'No se pudo subir el MP3')
+    } finally {
+      setReplacingId(null)
+      setBulkBusy(false)
+    }
+  }
+
+  async function onReplaceBulkFiles(fileList: FileList | null) {
+    const files = fileList ? [...fileList] : []
+    if (replaceBulkInputRef.current) replaceBulkInputRef.current.value = ''
+    if (!files.length) return
+    const ids =
+      selectedRemote.length > 0
+        ? selectedRemote.map((t) => t.id)
+        : tracks.filter((t) => t.hasLocalAudio === false).map((t) => t.id)
+    if (!ids.length) {
+      alert('No hay canciones sin audio para restaurar.')
+      return
+    }
+    setBulkBusy(true)
+    try {
+      const result = await replaceMissingAudio(files, ids)
+      const extra = result.unmatched.length
+        ? `\nSin emparejar: ${result.unmatched.slice(0, 3).join(', ')}${result.unmatched.length > 3 ? '…' : ''}`
+        : ''
+      alert(
+        result.replaced > 0
+          ? `Restauradas ${result.replaced} canción${result.replaced === 1 ? '' : 'es'}.${extra}`
+          : `No se emparejó ningún MP3 con las canciones sin audio.${extra}`,
+      )
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'No se pudieron subir los MP3')
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
   function exitSelectMode() {
     setSelectMode(false)
     setSelected(new Set())
@@ -198,6 +259,21 @@ export function TrackList({
 
   return (
     <>
+      <input
+        ref={replaceOneInputRef}
+        type="file"
+        accept="audio/mpeg,audio/mp3,.mp3,audio/*"
+        hidden
+        onChange={(e) => void onReplaceOneFile(e.target.files)}
+      />
+      <input
+        ref={replaceBulkInputRef}
+        type="file"
+        accept="audio/mpeg,audio/mp3,.mp3,audio/*"
+        multiple
+        hidden
+        onChange={(e) => void onReplaceBulkFiles(e.target.files)}
+      />
       {selectable && (
         <div className="select-toolbar">
           {!selectMode ? (
@@ -292,7 +368,7 @@ export function TrackList({
                   <span className="track-row__title">
                     {active && isPlaying ? <IconPlay size={12} /> : null}
                     {track.title}
-                    {remote ? <em className="track-remote-tag"> · en el PC</em> : null}
+                    {remote ? <em className="track-remote-tag"> · sin audio</em> : null}
                   </span>
                   <span className="track-row__sub">{track.artist}</span>
                 </div>
@@ -311,23 +387,50 @@ export function TrackList({
               {!selectMode && (
                 <div className="track-row__actions track-col--actions">
                   {remote && (
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-label="Descargar desde el PC"
-                      title={pcOnline === false ? 'PC no detectado' : 'Descargar'}
-                      disabled={bulkBusy || Boolean(downloadProgress)}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        void downloadIds([track.id])
-                      }}
-                    >
-                      <IconDownload size={20} />
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="Subir MP3 de nuevo"
+                        title="Subir MP3 de nuevo"
+                        disabled={bulkBusy || replacingId === track.id}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          openReplaceOne(track.id)
+                        }}
+                      >
+                        <IconUpload size={20} />
+                      </button>
+                      <button
+                        type="button"
+                        className="icon-btn"
+                        aria-label="Descargar desde el PC"
+                        title={pcOnline === false ? 'PC no detectado' : 'Descargar'}
+                        disabled={bulkBusy || Boolean(downloadProgress)}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void downloadIds([track.id])
+                        }}
+                      >
+                        <IconDownload size={20} />
+                      </button>
+                    </>
                   )}
                   <button
                     type="button"
-                    className="icon-btn"
+                    className={`icon-btn like-btn track-row__like ${track.liked ? 'is-liked' : ''}`}
+                    aria-label={track.liked ? 'Quitar de Me gusta' : 'Me gusta'}
+                    title={track.liked ? 'Quitar de Me gusta' : 'Me gusta'}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      void toggleLike(track.id)
+                    }}
+                  >
+                    <IconHeart size={18} filled={track.liked} />
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn track-row__more"
                     aria-label="Más opciones"
                     onClick={(e) => {
                       e.stopPropagation()
@@ -354,17 +457,26 @@ export function TrackList({
         <div className="bulk-bar">
           <div className="bulk-bar__inner">
             {selectedRemote.length > 0 && (
-              <button
-                type="button"
-                disabled={bulkBusy || Boolean(downloadProgress)}
-                onClick={() =>
-                  void runBulk(async () => {
-                    await downloadIds(selectedRemote.map((t) => t.id))
-                  })
-                }
-              >
-                <IconDownload size={18} /> Descargar ({selectedRemote.length})
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={bulkBusy || Boolean(downloadProgress)}
+                  onClick={() => replaceBulkInputRef.current?.click()}
+                >
+                  <IconUpload size={18} /> Subir MP3 ({selectedRemote.length})
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy || Boolean(downloadProgress)}
+                  onClick={() =>
+                    void runBulk(async () => {
+                      await downloadIds(selectedRemote.map((t) => t.id))
+                    })
+                  }
+                >
+                  <IconDownload size={18} /> Descargar ({selectedRemote.length})
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -500,6 +612,35 @@ export function TrackList({
                 </button>
               </div>
             </div>
+
+            {menuTrack.hasLocalAudio === false && (
+              <>
+                <button
+                  type="button"
+                  className="sheet__item"
+                  disabled={bulkBusy || replacingId === menuTrack.id}
+                  onClick={() => {
+                    const id = menuTrack.id
+                    setMenuTrack(null)
+                    openReplaceOne(id)
+                  }}
+                >
+                  <IconUpload size={18} /> Subir MP3 de nuevo
+                </button>
+                <button
+                  type="button"
+                  className="sheet__item"
+                  disabled={bulkBusy || Boolean(downloadProgress)}
+                  onClick={() => {
+                    const id = menuTrack.id
+                    setMenuTrack(null)
+                    void downloadIds([id])
+                  }}
+                >
+                  <IconDownload size={18} /> Descargar desde el PC
+                </button>
+              </>
+            )}
 
             <button
               type="button"

@@ -151,7 +151,7 @@
     minmax(120px, 1.4fr)
     minmax(100px, 1fr)
     72px
-    40px;
+    88px;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -198,8 +198,13 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 0;
+  gap: 4px;
   flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.track-row__like {
+  margin-right: 4px;
 }
 
 .track-row--cols .track-col--actions,
@@ -207,6 +212,7 @@
 .track-row--head .track-col--actions {
   width: 100%;
   min-width: 0;
+  margin-left: 0;
 }
 
 .track-row--head .track-col--actions {
@@ -223,7 +229,7 @@
       minmax(100px, 1.2fr)
       minmax(90px, 1fr)
       64px
-      40px;
+      88px;
   }
 
   .track-list.is-selecting .track-row--cols,
@@ -240,7 +246,7 @@
 @media (max-width: 720px) {
   .track-row--cols,
   .track-row--head {
-    grid-template-columns: minmax(0, 1fr) 56px 40px;
+    grid-template-columns: minmax(0, 1fr) 56px 88px;
   }
 
   .track-list.is-selecting .track-row--cols,

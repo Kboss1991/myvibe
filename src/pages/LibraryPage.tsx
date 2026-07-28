@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
 import { CoverArt } from '../components/CoverArt'
-import { IconHeart, IconPlus, IconPlay, IconTrash, IconSearch } from '../components/Icons'
+import { IconHeart, IconPlus, IconPlay, IconTrash, IconSearch, IconUpload } from '../components/Icons'
 import { playlistCoverId } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { useLibraryStore } from '../store/libraryStore'
@@ -32,13 +32,17 @@ export function LibraryPage() {
   const deletePlaylist = useLibraryStore((s) => s.deletePlaylist)
   const enrichMissingCovers = useLibraryStore((s) => s.enrichMissingCovers)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
+  const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
   const artists = useLibraryStore((s) => s.artists)
   const albums = useLibraryStore((s) => s.albums)
   const genres = useLibraryStore((s) => s.genres)
   const playTracks = usePlayerStore((s) => s.playTracks)
   const liked = getLiked()
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
+  const missingAudio = tracks.filter((t) => t.hasLocalAudio === false)
   const [enrichBusy, setEnrichBusy] = useState(false)
+  const [restoreBusy, setRestoreBusy] = useState(false)
+  const restoreInputRef = useRef<HTMLInputElement>(null)
   const q = query.trim()
   const qn = norm(q)
 
@@ -136,6 +140,37 @@ export function LibraryPage() {
 
       {tab === 'songs' && (
         <>
+          <input
+            ref={restoreInputRef}
+            type="file"
+            accept="audio/mpeg,audio/mp3,.mp3,audio/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = e.target.files ? [...e.target.files] : []
+              e.target.value = ''
+              if (!files.length || !missingAudio.length) return
+              setRestoreBusy(true)
+              void replaceMissingAudio(
+                files,
+                missingAudio.map((t) => t.id),
+              )
+                .then((r) => {
+                  const extra = r.unmatched.length
+                    ? `\nSin emparejar: ${r.unmatched.slice(0, 3).join(', ')}${r.unmatched.length > 3 ? '…' : ''}`
+                    : ''
+                  alert(
+                    r.replaced > 0
+                      ? `Restauradas ${r.replaced} canción${r.replaced === 1 ? '' : 'es'}.${extra}`
+                      : `No se emparejó ningún MP3.${extra}`,
+                  )
+                })
+                .catch((err) => {
+                  alert(err instanceof Error ? err.message : 'No se pudieron subir los MP3')
+                })
+                .finally(() => setRestoreBusy(false))
+            }}
+          />
           {!q && liked.length > 0 && (
             <button
               type="button"
@@ -159,6 +194,18 @@ export function LibraryPage() {
                 : `${tracks.length} canciones`}
             </h2>
             <div className="section__head-actions">
+              {!q && missingAudio.length > 0 && (
+                <button
+                  type="button"
+                  className="library-quiet-action"
+                  disabled={restoreBusy}
+                  title="Elegir MP3 para canciones sin audio"
+                  onClick={() => restoreInputRef.current?.click()}
+                >
+                  <IconUpload size={14} />
+                  {restoreBusy ? 'Subiendo…' : `${missingAudio.length} sin audio`}
+                </button>
+              )}
               {!q && missingCover.length > 0 && (
                 <button
                   type="button"

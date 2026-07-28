@@ -57,6 +57,11 @@ interface LibraryState {
     patch: Partial<Pick<Track, 'title' | 'artist' | 'album' | 'genre'>>,
   ) => Promise<void>
   setCover: (id: string, file: File) => Promise<void>
+  replaceTrackAudio: (id: string, file: File) => Promise<void>
+  replaceMissingAudio: (
+    files: File[],
+    trackIds?: string[],
+  ) => Promise<{ replaced: number; unmatched: string[] }>
   toggleLike: (id: string) => Promise<void>
   createPlaylist: (name: string) => Promise<Playlist>
   renamePlaylist: (id: string, name: string) => Promise<void>
@@ -467,6 +472,19 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   updateTrack: (id, patch) => library.updateTrackMeta(id, patch),
   setCover: (id, file) => library.setTrackCover(id, file),
+  replaceTrackAudio: async (id, file) => {
+    await library.replaceTrackAudio(id, file)
+  },
+  replaceMissingAudio: async (files, trackIds) => {
+    set({ importProgress: { done: 0, total: files.length, name: 'Restaurando audio…' } })
+    try {
+      return await library.replaceMissingAudioFromFiles(files, trackIds, (done, total, name) => {
+        set({ importProgress: { done, total, name: name || 'Restaurando audio…' } })
+      })
+    } finally {
+      set({ importProgress: null })
+    }
+  },
   toggleLike: async (id) => {
     await library.toggleLike(id)
   },

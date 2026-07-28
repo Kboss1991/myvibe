@@ -1,0 +1,30 @@
+---
+description: Auto commit + push to main so Vercel deploys every change
+alwaysApply: true
+---
+
+# Deploy automático a Vercel
+
+MyVibe se publica en Vercel desde `origin/main` (`https://github.com/Kboss1991/myvibe.git`).
+
+## Obligatorio al terminar trabajo
+
+Tras completar un cambio usable (feature, fix, UI, config), **sin pedir confirmación**:
+
+1. `git status` / `git diff` / `git log -5` (estilo de mensajes)
+2. `git add` de los archivos del cambio (nunca `.env`, `.env.local` ni secretos)
+3. `git commit` con mensaje claro (1–2 frases, enfocadas en el porqué)
+4. `git push -u origin HEAD` a `main`
+5. Confirmar al usuario que ya está en GitHub/Vercel (Vercel redeploya solo al recibir el push)
+
+## Excepciones (no publicar)
+
+- El usuario diga explícitamente que **no** suba / no despliegue
+- Solo exploración, preguntas o diagnósticos sin editar código
+- El commit fallaría por secretos o el working tree está limpio
+
+## Notas
+
+- Este flujo **sustituye** la norma general de “no hacer commit sin pedirlo” **en este repo**
+- No uses `--force` en `main`
+- Si el push falla, reporta el error y no inventes un deploy exitoso
