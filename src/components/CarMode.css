@@ -7,15 +7,15 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 24px 24px calc(32px + var(--safe-bottom));
+  padding: calc(24px + var(--safe-top-pad)) 24px calc(32px + var(--safe-bottom));
   text-align: center;
   animation: fadeUp 0.3s ease;
 }
 
 .car-mode__close {
   position: absolute;
-  top: calc(12px + env(safe-area-inset-top, 0px));
-  right: 16px;
+  top: calc(12px + var(--safe-top-pad));
+  right: max(16px, var(--safe-right));
   width: 52px;
   height: 52px;
   border-radius: 50%;

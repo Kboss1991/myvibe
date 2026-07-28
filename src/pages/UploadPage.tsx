@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { IconUpload } from '../components/Icons'
 import {
   filterAudioFiles,
@@ -19,13 +19,10 @@ import './pages.css'
 
 export function UploadPage() {
   const inputRef = useRef<HTMLInputElement>(null)
-  const iosFilesRef = useRef<HTMLInputElement>(null)
-  const shareRef = useRef<HTMLInputElement>(null)
-  const zipRef = useRef<HTMLInputElement>(null)
-  const folderRef = useRef<HTMLInputElement>(null)
   const importFiles = useLibraryStore((s) => s.importFiles)
   const importShare = useLibraryStore((s) => s.importShare)
   const importProgress = useLibraryStore((s) => s.importProgress)
+  const enrichProgress = useLibraryStore((s) => s.enrichProgress)
   const playTracks = usePlayerStore((s) => s.playTracks)
   const navigate = useNavigate()
   const [dragOver, setDragOver] = useState(false)
@@ -98,8 +95,8 @@ export function UploadPage() {
         return
       }
 
-      setStatus(`Importando ${audioFiles.length} canciones…`)
-      const imported = await importFiles(audioFiles, { mp3Only: false, enrich: false })
+      setStatus(`Guardando ${audioFiles.length} canciones; luego carátulas y datos…`)
+      const imported = await importFiles(audioFiles, { mp3Only: false, enrich: true })
       if (!imported.length) {
         setError(
           accountImported
@@ -128,16 +125,10 @@ export function UploadPage() {
     if (!list || !list.length) return
     const files = [...list]
 
-    // Separar ZIP claros del resto (no escanear magic en todos: en iPhone falla con iCloud)
     const zips = files.filter((f) => isZipFile(f))
     const rest = files.filter((f) => !isZipFile(f))
 
-    if (zips.length === 1 && rest.length === 0) {
-      await handleZipFile(zips[0]!)
-      return
-    }
     if (zips.length && rest.length === 0) {
-      // Varios ZIP: importa el primero con mensaje
       await handleZipFile(zips[0]!)
       return
     }
@@ -162,14 +153,14 @@ export function UploadPage() {
         .join(', ')
       setError(
         onIphone
-          ? `No se detectaron canciones en la selección${sample ? ` (${sample})` : ''}. Elige archivos .mp3 / .m4a dentro de la carpeta.`
+          ? `No se detectaron canciones en la selección${sample ? ` (${sample})` : ''}. Elige archivos .mp3 / .m4a.`
           : 'No se encontraron archivos de audio en la selección.',
       )
       return
     }
-    setStatus(`Importando ${audio.length} canciones…`)
+    setStatus(`Guardando ${audio.length} canciones; luego carátulas y datos…`)
     try {
-      const imported = await importFiles(audio, { mp3Only: false, enrich: false })
+      const imported = await importFiles(audio, { mp3Only: false, enrich: true })
       if (!imported.length) {
         setError('No se pudieron importar las canciones.')
         return
@@ -202,13 +193,12 @@ export function UploadPage() {
       if (canPickFolder && !onIphone) {
         const files = await pickMp3Folder()
         if (!files.length) {
-          setError('La carpeta no contiene archivos de audio.')
+          setError('La carpeta no contiene archivos .mp3.')
           return
         }
         await handleAudioFiles(files)
       } else {
-        // iPhone / Safari: no hay carpetas → multi-archivo desde Archivos
-        iosFilesRef.current?.click()
+        inputRef.current?.click()
       }
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') return
@@ -216,151 +206,60 @@ export function UploadPage() {
     }
   }
 
+  function openFilePicker() {
+    inputRef.current?.click()
+  }
+
   return (
     <div className="page">
       <header className="page-header">
         <h1>Subir música</h1>
-        <p className="page-header__sub">
-          {onIphone
-            ? 'Lo más fácil: recibir por Wi‑Fi desde el PC (sin ZIP ni Archivos).'
-            : 'Importa carpeta de MP3, ZIP pequeños o un archivo .myvibe.'}
-        </p>
+        <p className="page-header__sub">Solo carpeta o archivos. Sin QR ni otras opciones.</p>
       </header>
 
-      <Link to="/receive" className="folder-cta folder-cta--primary">
+      <button type="button" className="folder-cta folder-cta--primary" onClick={() => void importFolder()}>
         <div className="folder-cta__icon">
           <IconUpload size={32} />
         </div>
         <div className="folder-cta__text">
-          <strong>Recibir por Wi‑Fi / QR</strong>
-          <span>
-            Escanea el QR del PC (cámara) o introduce el código. Se guarda en tu biblioteca.
-          </span>
-        </div>
-      </Link>
-
-      {onIphone && (
-        <div className="ios-upload-hint">
-          <strong>Si Wi‑Fi no funciona: MP3 desde Archivos</strong>
-          <ol>
-            <li>Pulsa <em>Examinar Archivos</em> (abajo).</li>
-            <li>En el selector, elige la pestaña <em>Explorar</em> (no Recientes).</li>
-            <li>
-              Menú superior/lateral: <em>En mi iPhone</em> o <em>iCloud Drive</em> →{' '}
-              <em>Descargas</em> → entra en tu carpeta.
-            </li>
-            <li>
-              Arriba a la derecha: <em>Seleccionar</em> → marca los MP3 → <em>Abrir</em>.
-            </li>
-          </ol>
-          <p className="ios-upload-hint__note">
-            Safari no puede abrir una carpeta entera; hay que marcar los archivos.
-          </p>
-        </div>
-      )}
-
-      <button
-        type="button"
-        className="folder-cta"
-        onClick={() => (onIphone ? iosFilesRef.current?.click() : void importFolder())}
-      >
-        <div className="folder-cta__icon">
-          <IconUpload size={32} />
-        </div>
-        <div className="folder-cta__text">
-          <strong>{onIphone ? 'Examinar Archivos' : 'Elegir carpeta (MP3)'}</strong>
+          <strong>{onIphone ? 'Elegir archivos' : 'Elegir carpeta'}</strong>
           <span>
             {onIphone
-              ? 'Explorar → En mi iPhone / iCloud → Descargas → tu carpeta'
+              ? 'Desde Archivos · MP3 / M4A'
               : canPickFolder
-                ? 'Chrome / Edge en PC · recorre subcarpetas'
+                ? 'Recorre subcarpetas y carga los MP3'
                 : 'Selecciona archivos de audio'}
           </span>
         </div>
       </button>
 
-      {!onIphone && (
-        <button type="button" className="folder-cta" onClick={() => void importFolder()}>
-          <div className="folder-cta__icon">
-            <IconUpload size={32} />
-          </div>
-          <div className="folder-cta__text">
-            <strong>Elegir carpeta (solo audio)</strong>
-            <span>
-              {canPickFolder
-                ? 'Ideal tras “Pasar al móvil → Exportar a carpeta”'
-                : 'Si no hay carpetas, elige varios archivos'}
-            </span>
-          </div>
-        </button>
-      )}
-
-      <button type="button" className="folder-cta" onClick={() => zipRef.current?.click()}>
-        <div className="folder-cta__icon">
-          <IconUpload size={32} />
-        </div>
-        <div className="folder-cta__text">
-          <strong>Importar ZIP</strong>
-          <span>Solo si son ZIP pequeños. En iPhone suele ir mejor con MP3 sueltos.</span>
-        </div>
-      </button>
-
-      <button
-        type="button"
-        className="folder-cta"
-        style={{ marginTop: 12 }}
-        onClick={() => shareRef.current?.click()}
-      >
-        <div className="folder-cta__icon">
-          <IconUpload size={32} />
-        </div>
-        <div className="folder-cta__text">
-          <strong>Importar .myvibe compartido</strong>
-          <span>Canción o playlist enviada con MyVibe</span>
-        </div>
-      </button>
-
-      {!onIphone && (
-        <div
-          className={`dropzone ${dragOver ? 'is-over' : ''}`}
-          onDragOver={(e) => {
-            e.preventDefault()
-            setDragOver(true)
-          }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={(e) => {
-            e.preventDefault()
-            setDragOver(false)
-            void handleIncomingFiles(e.dataTransfer.files)
-          }}
-          onClick={() => inputRef.current?.click()}
-          role="button"
-          tabIndex={0}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') inputRef.current?.click()
-          }}
-        >
-          <strong>O elige archivos MP3 / ZIP / .myvibe</strong>
-          <span>arrástralos aquí</span>
-        </div>
-      )}
-
-      {/* iPhone: accept all files so Files browser shows folders (audio-only hides them) */}
-      <input
-        ref={iosFilesRef}
-        type="file"
-        accept="*/*"
-        multiple
-        hidden
-        onChange={(e) => {
-          void handleIncomingFiles(e.target.files)
-          e.target.value = ''
+      <div
+        className={`dropzone ${dragOver ? 'is-over' : ''}`}
+        onDragOver={(e) => {
+          e.preventDefault()
+          setDragOver(true)
         }}
-      />
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault()
+          setDragOver(false)
+          void handleIncomingFiles(e.dataTransfer.files)
+        }}
+        onClick={openFilePicker}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') openFilePicker()
+        }}
+      >
+        <strong>Archivos: clic o arrastrar</strong>
+        <span>MP3, M4A…</span>
+      </div>
+
       <input
         ref={inputRef}
         type="file"
-        accept="audio/*,.mp3,.m4a,.zip,.myvibe,application/zip"
+        accept={onIphone ? '*/*' : 'audio/*,.mp3,.m4a,.zip,.myvibe,application/zip'}
         multiple
         hidden
         onChange={(e) => {
@@ -368,79 +267,35 @@ export function UploadPage() {
           e.target.value = ''
         }}
       />
-      <input
-        ref={zipRef}
-        type="file"
-        accept=".zip,application/zip,application/x-zip-compressed,*/*"
-        hidden
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) void handleZipFile(file)
-          e.target.value = ''
-        }}
-      />
-      <input
-        ref={shareRef}
-        type="file"
-        accept=".myvibe,application/json,*/*"
-        hidden
-        onChange={(e) => {
-          const file = e.target.files?.[0]
-          if (file) void handleShareFile(file)
-          e.target.value = ''
-        }}
-      />
-      {!onIphone && (
-        <input
-          ref={folderRef}
-          type="file"
-          multiple
-          hidden
-          {...{ webkitdirectory: '', directory: '' }}
-          onChange={(e) => void handleAudioFiles(e.target.files)}
-        />
-      )}
 
-      {importProgress && (
+      {(importProgress || enrichProgress) && (
         <div className="import-progress">
           <div className="import-progress__bar">
             <div
               style={{
                 width: `${
-                  importProgress.total
-                    ? (importProgress.done / importProgress.total) * 100
+                  (enrichProgress ?? importProgress)!.total
+                    ? ((enrichProgress ?? importProgress)!.done /
+                        (enrichProgress ?? importProgress)!.total) *
+                      100
                     : 0
                 }%`,
               }}
             />
           </div>
           <p>
-            {importProgress.done}/{importProgress.total}
-            {importProgress.name ? ` · ${importProgress.name}` : ''}
+            {enrichProgress
+              ? `${enrichProgress.done}/${enrichProgress.total}`
+              : `${importProgress!.done}/${importProgress!.total}`}
+            {(enrichProgress ?? importProgress)!.name
+              ? ` · ${(enrichProgress ?? importProgress)!.name}`
+              : ''}
           </p>
         </div>
       )}
 
       {status && <p className="form-status">{status}</p>}
       {error && <p className="form-error">{error}</p>}
-
-      <section className="tips">
-        <h2>{onIphone ? 'En iPhone' : 'Pasar música del PC al móvil'}</h2>
-        {onIphone ? (
-          <ol>
-            <li>Pulsa Examinar Archivos.</li>
-            <li>Pestaña Explorar (no Recientes).</li>
-            <li>En mi iPhone o iCloud Drive → Descargas → entra en la carpeta.</li>
-            <li>Seleccionar → marca los MP3 → Abrir.</li>
-          </ol>
-        ) : (
-          <ol>
-            <li>En el PC: Perfil → Pasar al móvil → Exportar a carpeta.</li>
-            <li>Copia la carpeta al móvil (USB o Drive).</li>
-            <li>En iPhone: Subir → Elegir canciones desde Archivos.</li>
-          </ol>
-        )}
-      </section>
     </div>
   )
 }

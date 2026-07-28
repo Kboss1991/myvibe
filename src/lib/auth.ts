@@ -322,6 +322,18 @@ export async function loginUser(
   return user
 }
 
+export async function requestPasswordReset(email: string): Promise<void> {
+  if (!isCloudAuthEnabled()) {
+    throw new Error('La recuperación de contraseña solo está disponible con cuentas en la nube')
+  }
+  const clean = normalizeEmail(email)
+  if (!validateEmail(clean)) throw new Error('Introduce un correo válido')
+  const supabase = getSupabase()
+  const redirectTo = `${window.location.origin}/`
+  const { error } = await supabase.auth.resetPasswordForEmail(clean, { redirectTo })
+  if (error) throw new Error(mapAuthError(error.message))
+}
+
 export async function logoutUser(): Promise<void> {
   if (isCloudAuthEnabled()) {
     try {

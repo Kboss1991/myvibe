@@ -1,21 +1,18 @@
 .player-bar {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
   margin: 0;
-  padding: 10px 12px;
+  padding: 8px 12px 6px;
   background: #181818;
-  overflow: hidden;
 }
 
-.player-bar__progress {
-  position: absolute;
-  left: 0;
-  top: 0;
-  height: 2px;
-  background: #f5a623;
-  transition: width 0.2s linear;
+.player-bar__row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 48px;
 }
 
 .player-bar__main {
@@ -25,6 +22,11 @@
   align-items: center;
   gap: 12px;
   text-align: left;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
 }
 
 .player-bar__meta {
@@ -49,6 +51,17 @@
   text-overflow: ellipsis;
 }
 
+.player-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.player-bar__skip {
+  color: #fff;
+}
+
 .player-bar__play {
   width: 32px;
   height: 32px;
@@ -57,6 +70,38 @@
   place-items: center;
   background: #fff;
   color: #000;
+  border: 0;
+  cursor: pointer;
+  margin: 0 2px;
+  flex-shrink: 0;
+}
+
+.player-bar__seek {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 2px;
+}
+
+.player-bar__seek input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  height: 18px;
+  margin: 0;
+  accent-color: #f5a623;
+  cursor: pointer;
+}
+
+.player-bar__time {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.4em;
+  flex-shrink: 0;
+}
+
+.player-bar__time:last-child {
+  text-align: right;
 }
 
 .now-playing {
@@ -66,7 +111,7 @@
   background: linear-gradient(180deg, #535353 0%, #121212 40%);
   display: flex;
   flex-direction: column;
-  padding: 12px 20px calc(24px + var(--safe-bottom));
+  padding: calc(12px + var(--safe-top-pad)) 20px calc(24px + var(--safe-bottom));
   animation: slideUpSheet 0.32s ease;
 }
 
@@ -231,7 +276,11 @@
 
 @media (min-width: 900px) {
   .player-bar {
-    padding: 12px 16px;
-    min-height: 72px;
+    padding: 10px 16px 12px;
+  }
+
+  .player-bar__play {
+    width: 40px;
+    height: 40px;
   }
 }

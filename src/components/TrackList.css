@@ -294,6 +294,21 @@
   color: #f5a623;
 }
 
+.track-row.is-remote {
+  opacity: 0.55;
+}
+
+.track-row.is-remote .track-row__title {
+  color: #b3b3b3;
+}
+
+.track-remote-tag {
+  font-style: normal;
+  font-weight: 500;
+  font-size: 0.75rem;
+  color: #888;
+}
+
 .track-row__sub {
   font-size: 0.8rem;
   color: var(--text-muted);
@@ -334,7 +349,35 @@
 }
 
 .track-actions-sheet {
-  z-index: 100;
+  z-index: 120;
+}
+
+.track-actions-panel {
+  display: flex;
+  flex-direction: column;
+  max-height: min(88dvh, 720px);
+  padding-bottom: calc(12px + var(--safe-bottom));
+  overflow: hidden;
+}
+
+.track-actions-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.track-actions-footer {
+  flex-shrink: 0;
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid #3e3e3e;
+  background: #282828;
+}
+
+.track-actions-footer .sheet__item {
+  border-bottom: none;
+  font-weight: 600;
 }
 
 .track-actions-head {
@@ -354,6 +397,41 @@
 .track-actions-head span {
   font-size: 0.8rem;
   color: var(--text-muted);
+}
+
+.track-actions-location {
+  display: block;
+  margin-top: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 0.72rem;
+  color: var(--accent, #f5a524);
+  opacity: 0.95;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.track-actions-location:active {
+  opacity: 0.7;
+}
+
+.track-storage-info {
+  margin: 0 0 12px;
+  padding: 12px;
+  max-height: 45vh;
+  overflow: auto;
+  border-radius: 10px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  color: #c8c8c8;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .sheet {

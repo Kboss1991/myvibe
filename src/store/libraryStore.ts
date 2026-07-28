@@ -3,6 +3,18 @@ import { liveQuery } from 'dexie'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import type { Playlist, Track } from '../types'
 import * as library from '../lib/library'
+import { isCloudAuthEnabled } from '../lib/auth'
+import {
+  getCloudCatalogCount,
+  getDevicePeer,
+  pruneCloudDuplicateTracks,
+  pullLibraryCatalog,
+  pushLibraryMetadata,
+  removeCloudTracks,
+} from '../lib/cloudLibrary'
+import { isLibraryHostDevice } from '../lib/folderImport'
+import { downloadTracksFromPc } from '../lib/libraryHost'
+import { useAuthStore } from './authStore'
 
 interface LibraryState {
   tracks: Track[]
@@ -10,6 +22,9 @@ interface LibraryState {
   ready: boolean
   importProgress: { done: number; total: number; name: string } | null
   enrichProgress: { done: number; total: number; name: string } | null
+  pcOnline: boolean | null
+  downloadProgress: { done: number; total: number; name: string } | null
+  lastSyncMessage: string | null
   init: () => () => void
   importFiles: (files: File[], options?: { mp3Only?: boolean; enrich?: boolean }) => Promise<Track[]>
   enrichTrack: (id: string, options?: { force?: boolean }) => Promise<{ found: boolean; coverUpdated: boolean }>
@@ -21,6 +36,9 @@ interface LibraryState {
   shareLibrary: () => Promise<'shared' | 'downloaded'>
   exportLibraryFolder: () => Promise<{ count: number; folderHint: string }>
   exportLibraryPacks: () => Promise<{ packs: number; tracks: number }>
+  exportToDownloads: () => Promise<{ saved: number; message: string }>
+  syncCloudCatalog: () => Promise<{ pushed: number; pulled: number }>
+  downloadFromPc: (ids: string[]) => Promise<{ imported: number; visibleFiles: import('../lib/visibleStorage').VisibleFile[] }>
   importShare: (file: File) => Promise<{
     trackIds: string[]
     playlistId: string | null
@@ -29,6 +47,11 @@ interface LibraryState {
   setLiked: (ids: string[], liked: boolean) => Promise<void>
   deleteTracks: (ids: string[]) => Promise<void>
   deleteTrack: (id: string) => Promise<void>
+  clearLocalMusic: () => Promise<{ tracks: number }>
+  purgeOrphanStorage: () => Promise<{ audio: number; covers: number; bytesApprox: number }>
+  countOrphanStorage: () => Promise<{ audio: number; covers: number }>
+  previewClearLocalMusic: () => Promise<{ summary: string; tracks: number }>
+  previewOrphanPurge: () => Promise<{ summary: string; audio: number; covers: number }>
   updateTrack: (
     id: string,
     patch: Partial<Pick<Track, 'title' | 'artist' | 'album' | 'genre'>>,
@@ -59,9 +82,13 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   ready: false,
   importProgress: null,
   enrichProgress: null,
+  pcOnline: null,
+  downloadProgress: null,
+  lastSyncMessage: null,
 
   init: () => {
     void ensurePlaybackSnapshot()
+    void library.repairMissingLocalAudio().catch(() => {})
     const subTracks = liveQuery(() => db.tracks.orderBy('createdAt').reverse().toArray()).subscribe({
       next: (tracks) => set({ tracks, ready: true }),
       error: () => set({ ready: true }),
@@ -78,15 +105,74 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   importFiles: async (files, options) => {
-    set({ importProgress: { done: 0, total: files.length, name: '' } })
+    set({ importProgress: { done: 0, total: files.length, name: '' }, enrichProgress: null })
+    const enrich = options?.enrich !== false
+    let phase: 'import' | 'enrich' = 'import'
     const imported = await library.importAudioFiles(
       files,
       (done, total, name) => {
-        set({ importProgress: { done, total, name } })
+        if (name.includes('carátula y datos')) phase = 'enrich'
+        if (phase === 'enrich') {
+          set({
+            importProgress: null,
+            enrichProgress: { done, total, name },
+          })
+        } else {
+          set({
+            importProgress: {
+              done,
+              total,
+              name: name || 'Guardando…',
+            },
+          })
+        }
       },
-      options,
+      { ...options, enrich },
     )
-    set({ importProgress: null })
+    set({ importProgress: null, enrichProgress: null })
+
+    // Copia visible siempre que se pueda (PC: carpeta MyVibe; iPhone: Archivos)
+    if (imported.length) {
+      try {
+        const { myVibeDownloadName, saveFilesVisibly } = await import('../lib/visibleStorage')
+        const visible: { fileName: string; blob: Blob }[] = []
+        for (const t of imported) {
+          const blob = await library.getAudioBlob(t.id)
+          if (!blob) continue
+          visible.push({
+            fileName: myVibeDownloadName(t.artist, t.title, t.fileName),
+            blob: blob.slice(0, blob.size, blob.type || 'audio/mpeg'),
+          })
+        }
+        if (visible.length) {
+          set({
+            importProgress: {
+              done: 0,
+              total: visible.length,
+              name: isLibraryHostDevice()
+                ? 'Copiando a Descargas/MyVibe…'
+                : 'Guardando en Archivos…',
+            },
+          })
+          await saveFilesVisibly(visible, {
+            interactive: true,
+            onProgress: (done, total, name) => {
+              set({ importProgress: { done, total, name } })
+            },
+          })
+        }
+      } catch (e) {
+        if (!(e instanceof DOMException && e.name === 'AbortError')) {
+          console.warn('Copia visible', e)
+        }
+      } finally {
+        set({ importProgress: null })
+      }
+    }
+
+    void get()
+      .syncCloudCatalog()
+      .catch(() => {})
     return imported
   },
 
@@ -165,7 +251,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   shareLibrary: async () => {
     const { downloadLibraryZip } = await import('../lib/share')
-    const { useAuthStore } = await import('./authStore')
     const userId = useAuthStore.getState().user?.id
     const total = get().tracks.length
     set({ importProgress: { done: 0, total: Math.max(total, 1), name: 'Preparando…' } })
@@ -180,7 +265,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   exportLibraryFolder: async () => {
     const { exportLibraryToFolder } = await import('../lib/transfer')
-    const { useAuthStore } = await import('./authStore')
     const userId = useAuthStore.getState().user?.id
     const total = get().tracks.length
     set({ importProgress: { done: 0, total: Math.max(total, 1), name: 'Preparando…' } })
@@ -195,7 +279,6 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   exportLibraryPacks: async () => {
     const { downloadLibraryPacks } = await import('../lib/transfer')
-    const { useAuthStore } = await import('./authStore')
     const userId = useAuthStore.getState().user?.id
     const total = get().tracks.length
     set({ importProgress: { done: 0, total: Math.max(total, 1), name: 'Preparando…' } })
@@ -205,6 +288,105 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       })
     } finally {
       set({ importProgress: null })
+    }
+  },
+
+  exportToDownloads: async () => {
+    const { getAudioBlob } = await import('../lib/library')
+    const { myVibeDownloadName, saveFilesVisibly } = await import('../lib/visibleStorage')
+    const tracks = get().tracks.filter((t) => t.hasLocalAudio !== false)
+    if (!tracks.length) throw new Error('No hay canciones locales')
+    set({ importProgress: { done: 0, total: tracks.length, name: 'Preparando…' } })
+    try {
+      const files = []
+      for (let i = 0; i < tracks.length; i++) {
+        const t = tracks[i]!
+        set({ importProgress: { done: i, total: tracks.length, name: t.title } })
+        const blob = await getAudioBlob(t.id)
+        if (!blob) continue
+        files.push({
+          fileName: myVibeDownloadName(t.artist, t.title, t.fileName),
+          blob,
+        })
+      }
+      const result = await saveFilesVisibly(files, {
+        interactive: true,
+        onProgress: (done, total, name) => {
+          set({ importProgress: { done, total, name } })
+        },
+      })
+      return { saved: result.saved, message: result.message }
+    } finally {
+      set({ importProgress: null })
+    }
+  },
+
+  syncCloudCatalog: async () => {
+    if (!isCloudAuthEnabled()) {
+      set({ lastSyncMessage: 'Supabase no configurado' })
+      return { pushed: 0, pulled: 0 }
+    }
+    const userId = useAuthStore.getState().user?.id
+    if (!userId) {
+      set({ lastSyncMessage: 'Sin sesión' })
+      return { pushed: 0, pulled: 0 }
+    }
+
+    let pushed = 0
+    let pulled = 0
+    let deduped = 0
+    let pruned = 0
+    try {
+      // Quita duplicados locales antes de subir, limpia la nube, baja catálogo y vuelve a fusionar
+      deduped += await library.dedupeLibraryTracks()
+      pushed = await pushLibraryMetadata(userId)
+      pruned = await pruneCloudDuplicateTracks(userId)
+      pulled = await pullLibraryCatalog(userId)
+      deduped += await library.dedupeLibraryTracks()
+      const cloudCount = await getCloudCatalogCount(userId)
+      const peer = await getDevicePeer(userId)
+      const age = peer ? Date.now() - Date.parse(peer.updatedAt) : Infinity
+      const localCount = get().tracks.filter((t) => t.hasLocalAudio !== false).length
+      set({
+        pcOnline: Boolean(peer && age < 3 * 60 * 1000),
+        lastSyncMessage:
+          `Local: ${localCount} · Nube: ${cloudCount}` +
+          (pushed ? ` · Subidas ahora: ${pushed}` : '') +
+          (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
+          (deduped ? ` · Duplicados quitados: ${deduped}` : '') +
+          (pruned ? ` · Nube limpia: −${pruned}` : '') +
+          (localCount === 0 && cloudCount === 0
+            ? ' · Biblioteca vacía (PC y nube)'
+            : localCount === 0 && cloudCount > 0
+              ? ' · En el PC pulsa Actualizar para vaciar la nube, o importa música'
+              : ''),
+      })
+      return { pushed, pulled }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Error de sincronización'
+      set({ lastSyncMessage: msg, pcOnline: false })
+      throw e
+    }
+  },
+
+  downloadFromPc: async (ids) => {
+    const userId = useAuthStore.getState().user?.id
+    if (!userId) throw new Error('Inicia sesión')
+    set({ downloadProgress: { done: 0, total: ids.length, name: '' } })
+    try {
+      return await downloadTracksFromPc(userId, ids, {
+        onStatus: (msg) =>
+          set({
+            downloadProgress: {
+              ...(get().downloadProgress || { done: 0, total: ids.length, name: '' }),
+              name: msg,
+            },
+          }),
+        onProgress: (done, total, name) => set({ downloadProgress: { done, total, name } }),
+        onError: () => {},
+      })
+    } finally {
+      set({ downloadProgress: null })
     }
   },
 
@@ -226,9 +408,63 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   setLiked: (ids, liked) => library.setTracksLiked(ids, liked),
-  deleteTracks: (ids) => library.deleteTracks(ids),
+  deleteTracks: async (ids) => {
+    await library.deleteTracks(ids)
+    const userId = useAuthStore.getState().user?.id
+    if (!userId || !isCloudAuthEnabled()) return
+    if (isLibraryHostDevice()) {
+      try {
+        await removeCloudTracks(userId, ids)
+      } catch (e) {
+        console.warn('Borrar en nube', e)
+      }
+    }
+    void get()
+      .syncCloudCatalog()
+      .catch(() => {})
+  },
 
-  deleteTrack: (id) => library.deleteTrack(id),
+  deleteTrack: async (id) => {
+    await library.deleteTrack(id)
+    const userId = useAuthStore.getState().user?.id
+    if (!userId || !isCloudAuthEnabled()) return
+    if (isLibraryHostDevice()) {
+      try {
+        await removeCloudTracks(userId, [id])
+      } catch (e) {
+        console.warn('Borrar en nube', e)
+      }
+    }
+    void get()
+      .syncCloudCatalog()
+      .catch(() => {})
+  },
+
+  clearLocalMusic: async () => {
+    const { usePlayerStore } = await import('./playerStore')
+    usePlayerStore.getState().clearQueue()
+    const result = await library.clearLocalMusicLibrary()
+    // En el PC, sincronizar catálogo vacío vaciaría la nube: solo avisamos vía UI.
+    // En el móvil, el próximo sync trae stubs grises otra vez.
+    if (!isLibraryHostDevice() && isCloudAuthEnabled()) {
+      void get()
+        .syncCloudCatalog()
+        .catch(() => {})
+    }
+    return { tracks: result.tracks }
+  },
+
+  purgeOrphanStorage: () => library.purgeOrphanLocalStorage(),
+  countOrphanStorage: () => library.countOrphanLocalStorage(),
+  previewClearLocalMusic: async () => {
+    const p = await library.previewClearLocalMusic()
+    return { summary: p.summary, tracks: p.tracks }
+  },
+  previewOrphanPurge: async () => {
+    const p = await library.previewOrphanPurge()
+    return { summary: p.summary, audio: p.audio, covers: p.covers }
+  },
+
   updateTrack: (id, patch) => library.updateTrackMeta(id, patch),
   setCover: (id, file) => library.setTrackCover(id, file),
   toggleLike: async (id) => {

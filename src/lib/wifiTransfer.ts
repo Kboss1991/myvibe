@@ -2,6 +2,7 @@ import Peer, { type DataConnection } from 'peerjs'
 import { db } from '../db'
 import { createId } from './fileImport'
 import { getAudioBlob, saveAudioBlob } from './library'
+import { tracksLookSame } from './trackDedupe'
 import type { Track } from '../types'
 
 const PROTOCOL = 1
@@ -228,7 +229,10 @@ export type ClientHandlers = {
   onStatus: (msg: string) => void
   onProgress: (done: number, total: number, name: string) => void
   onError: (msg: string) => void
-  onFinished: (imported: number) => void
+  onFinished: (
+    imported: number,
+    visibleFiles: { fileName: string; blob: Blob }[],
+  ) => void
 }
 
 export type ClientSession = {
@@ -317,6 +321,7 @@ async function receiveLibrary(
 ) {
   let expected = 0
   let imported = 0
+  const visibleFiles: { fileName: string; blob: Blob }[] = []
   let current: {
     meta: Extract<JsonMsg, { t: 'track-start' }>
     parts: Uint8Array[]
@@ -397,10 +402,21 @@ async function receiveLibrary(
         current = null
 
         try {
-          const id = createId()
-          const blob = new Blob([merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)], {
-            type: meta.mimeType || 'audio/mpeg',
-          })
+          const blob = new Blob(
+            [merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)],
+            {
+              type: meta.mimeType || 'audio/mpeg',
+            },
+          )
+          const existing = (await db.tracks.toArray()).find((t) =>
+            tracksLookSame(t, {
+              title: meta.title,
+              artist: meta.artist || '',
+              duration: meta.duration || 0,
+              fileName: meta.fileName || '',
+            }),
+          )
+          const id = existing?.id ?? createId()
           await saveAudioBlob(id, blob)
           const track: Track = {
             id,
@@ -412,14 +428,22 @@ async function receiveLibrary(
             duration: meta.duration || 0,
             mimeType: meta.mimeType || 'audio/mpeg',
             fileName: meta.fileName || `${meta.title}.mp3`,
-            hasCover: false,
-            liked: false,
-            playCount: 0,
-            lastPlayedAt: null,
-            createdAt: Date.now(),
-            enriched: false,
+            hasCover: existing?.hasCover ?? false,
+            liked: existing?.liked ?? false,
+            playCount: existing?.playCount ?? 0,
+            lastPlayedAt: existing?.lastPlayedAt ?? null,
+            createdAt: existing?.createdAt ?? Date.now(),
+            enriched: existing?.enriched ?? false,
+            hasLocalAudio: true,
           }
           await db.tracks.put(track)
+          visibleFiles.push({
+            fileName:
+              meta.fileName && /\.mp3$/i.test(meta.fileName)
+                ? `MyVibe - ${meta.fileName}`
+                : `MyVibe - ${meta.artist || 'Artista'} - ${meta.title}.mp3`,
+            blob,
+          })
           imported += 1
         } catch (e) {
           console.warn('Fallo al guardar pista', e)
@@ -429,7 +453,7 @@ async function receiveLibrary(
 
       if (data.t === 'done') {
         handlers.onStatus(`Listo: ${imported} canciones importadas`)
-        handlers.onFinished(imported)
+        handlers.onFinished(imported, visibleFiles)
         return
       }
     }

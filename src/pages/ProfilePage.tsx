@@ -7,6 +7,7 @@ import { startWifiHost } from '../lib/wifiTransfer'
 import { buildReceiveUrl, isLocalhostHost, receiveQrDataUrl } from '../lib/receiveQr'
 import { IconDownload, IconEdit } from '../components/Icons'
 import { UserAvatar } from '../components/UserAvatar'
+import { isLibraryHostDevice } from '../lib/folderImport'
 import './pages.css'
 import '../components/TrackList.css'
 
@@ -50,6 +51,9 @@ export function ProfilePage() {
     total: number
     name: string
   } | null>(null)
+  const [orphanCount, setOrphanCount] = useState<{ audio: number; covers: number } | null>(
+    null,
+  )
   const wifiStopRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
@@ -57,6 +61,14 @@ export function ProfilePage() {
       wifiStopRef.current?.()
     }
   }, [])
+
+  useEffect(() => {
+    void useLibraryStore
+      .getState()
+      .countOrphanStorage()
+      .then(setOrphanCount)
+      .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
+  }, [tracks.length])
 
   if (!user) return null
 
@@ -286,6 +298,107 @@ export function ProfilePage() {
         <button className="btn-outline" onClick={() => openSheet('password')}>
           Cambiar contraseña
         </button>
+      </div>
+
+      <section className="profile-storage">
+        <h2 className="profile-storage__title">Almacenamiento de este dispositivo</h2>
+        <p className="profile-storage__hint">
+          Libera espacio de MyVibe en este {isLibraryHostDevice() ? 'PC' : 'iPhone'}. Las copias
+          en Archivos/Descargas → MyVibe se borran aparte.
+          {orphanCount && orphanCount.audio + orphanCount.covers > 0
+            ? ` Hay ${orphanCount.audio + orphanCount.covers} restos sin usar.`
+            : ''}
+        </p>
+        <div className="profile-storage__actions">
+          <button
+            type="button"
+            className="btn-outline danger-outline profile-storage__btn"
+            disabled={busy}
+            onClick={() => {
+              const onPc = isLibraryHostDevice()
+              setBusy(true)
+              setLocalError(null)
+              void useLibraryStore
+                .getState()
+                .previewClearLocalMusic()
+                .then((preview) => {
+                  const extra = onPc
+                    ? '\n\nSi este PC es la biblioteca principal, no pulses Actualizar después o puedes vaciar también la nube.'
+                    : ''
+                  const ok = window.confirm(preview.summary + extra)
+                  if (!ok) return
+                  return useLibraryStore
+                    .getState()
+                    .clearLocalMusic()
+                    .then((r) => {
+                      setOkMsg(`Borradas ${r.tracks} canciones de este dispositivo.`)
+                      void useLibraryStore
+                        .getState()
+                        .countOrphanStorage()
+                        .then(setOrphanCount)
+                        .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
+                      if (!onPc) {
+                        window.alert(
+                          'MyVibe ya está vacío en este iPhone.\n\nSi también guardaste copias en Archivos → Descargas → MyVibe, bórralas ahí para liberar ese espacio.',
+                        )
+                      }
+                    })
+                })
+                .catch((e) => {
+                  setLocalError(e instanceof Error ? e.message : 'No se pudo borrar')
+                })
+                .finally(() => setBusy(false))
+            }}
+          >
+            Borrar música de este dispositivo
+          </button>
+          <button
+            type="button"
+            className="btn-outline danger-outline profile-storage__btn"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true)
+              setLocalError(null)
+              void useLibraryStore
+                .getState()
+                .previewOrphanPurge()
+                .then((preview) => {
+                  const ok = window.confirm(preview.summary)
+                  if (!ok) return
+                  if (preview.audio + preview.covers === 0) {
+                    setOkMsg('No había datos huérfanos que limpiar.')
+                    return
+                  }
+                  return useLibraryStore
+                    .getState()
+                    .purgeOrphanStorage()
+                    .then((r) => {
+                      const mb =
+                        r.bytesApprox > 0
+                          ? ` (~${Math.max(1, Math.round(r.bytesApprox / 1024 / 1024))} MB)`
+                          : ''
+                      setOkMsg(
+                        r.audio + r.covers === 0
+                          ? 'No había datos huérfanos que limpiar.'
+                          : `Limpiados ${r.audio} audio y ${r.covers} carátulas sin usar${mb}.`,
+                      )
+                      setOrphanCount({ audio: 0, covers: 0 })
+                    })
+                })
+                .catch((e) => {
+                  setLocalError(e instanceof Error ? e.message : 'No se pudo limpiar')
+                })
+                .finally(() => setBusy(false))
+            }}
+          >
+            {orphanCount && orphanCount.audio + orphanCount.covers > 0
+              ? `Limpiar datos sin usar (${orphanCount.audio + orphanCount.covers})`
+              : 'Limpiar datos sin usar'}
+          </button>
+        </div>
+      </section>
+
+      <div className="profile-actions">
         <button
           className="btn-outline danger-outline"
           onClick={() => {

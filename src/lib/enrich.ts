@@ -6,6 +6,8 @@ export interface OnlineTrackInfo {
   year: string
   coverUrl: string | null
   externalUrl: string
+  /** Puntuación interna del emparejamiento (mayor = mejor). */
+  matchScore?: number
 }
 
 function cleanQuery(name: string): string {
@@ -74,12 +76,17 @@ const DISNEY_SONG_EN: Record<string, string> = {
   'bajo el mar': 'Under the Sea',
   'part of your world': 'Part of Your World',
   'reflejo': 'Reflection',
+  'mi reflejo': 'Reflection',
   'how far ill go': 'How Far Ill Go',
+  'he sabido esperar': 'How Far Ill Go',
+  'no me dare por vencida': 'How Far Ill Go',
   'no hablare de eso': 'We Dont Talk About Bruno',
   'un poco loco': 'Un Poco Loco',
   'recuerda me': 'Remember Me',
   'let it go': 'Let It Go',
   'libre soy': 'Let It Go',
+  'sueltato': 'Let It Go',
+  'sueltalo': 'Let It Go',
 }
 
 function disneyEnglishTitle(songName: string): string | null {
@@ -112,6 +119,180 @@ function disneyEnglishMovie(movieOrText: string): string | null {
   return null
 }
 
+/** Idioma del artista OST: inglés / español España / español latino. */
+export type OstArtistLang = 'en' | 'es' | 'es-lat'
+
+/**
+ * Cast original por idioma (Disney). Solo con contexto Disney.
+ * en = inglés, es = España, lat = Latinoamérica.
+ */
+const DISNEY_LANG_CAST: {
+  match: RegExp
+  en: string[]
+  es: string[]
+  lat: string[]
+  queries: { en: string[]; es: string[]; lat: string[] }
+}[] = [
+  {
+    match: /\breflejo\b|\breflection\b|\bmi reflejo\b/,
+    en: ['christina aguilera', 'lea salonga'],
+    es: ['malu', 'maria caneda'],
+    lat: ['lucero'],
+    queries: {
+      en: [
+        'Reflection Christina Aguilera Mulan',
+        'Reflection Lea Salonga Mulan original soundtrack',
+      ],
+      es: [
+        'Reflejo Malú Mulán Disney España',
+        'Reflejo María Caneda Mulán banda sonora',
+      ],
+      lat: ['Reflejo Lucero Mulán Disney', 'Reflejo Lucero Mulan banda sonora'],
+    },
+  },
+  {
+    match: /\blet it go\b|\blibre soy\b|\bsueltato\b|\bsueltalo\b/,
+    en: ['idina menzel'],
+    es: ['gisela'],
+    lat: ['martina stoessel', 'tini'],
+    queries: {
+      en: ['Let It Go Idina Menzel Frozen original soundtrack'],
+      es: ['Suéltalo Gisela Frozen Disney España', 'Sueltato Gisela Frozen'],
+      lat: ['Libre Soy Martina Stoessel Frozen', 'Libre Soy TINI Frozen Disney'],
+    },
+  },
+  {
+    match: /\bun mundo ideal\b|\ba whole new world\b/,
+    en: ['brad kane', 'lea salonga', 'peabo bryson', 'regina belle'],
+    es: ['miguel morant'],
+    lat: ['demian bichir', 'analy'],
+    queries: {
+      en: [
+        'A Whole New World Brad Kane Lea Salonga Aladdin',
+        'A Whole New World Peabo Bryson Regina Belle',
+      ],
+      es: ['Un Mundo Ideal Aladdín Disney España banda sonora'],
+      lat: ['Un Mundo Ideal Aladdín Disney Latino'],
+    },
+  },
+  {
+    match: /\b(el )?ciclo de la vida\b|\bcircle of life\b/,
+    en: ['carmen twillie', 'lebo m', 'lebom'],
+    es: ['miguel morant'],
+    lat: ['renato lopez'],
+    queries: {
+      en: ['Circle of Life Carmen Twillie The Lion King'],
+      es: ['El Ciclo de la Vida El Rey León Disney España'],
+      lat: ['El Ciclo de la Vida El Rey León Disney Latino'],
+    },
+  },
+  {
+    match: /\bhow far ill go\b|\bhe sabido esperar\b|\bno me dare por vencida\b/,
+    en: ['auli i cravalho', 'aulii cravalho'],
+    es: ['maria parrado'],
+    lat: ['sara paula', 'gomez arias'],
+    queries: {
+      en: ["How Far I'll Go Auli'i Cravalho Moana original soundtrack"],
+      es: ['He Sabido Esperar María Parrado Vaiana Disney'],
+      lat: ['No Me Daré por Vencida Moana Disney Latino'],
+    },
+  },
+  {
+    match: /\bno hablare de eso\b|\bwe dont talk about bruno\b/,
+    en: ['carolina gaitan', 'mauro castillo', 'adassa', 'rhenzy'],
+    es: ['gisela'],
+    lat: ['carolina gaitan', 'mauro castillo', 'adassa'],
+    queries: {
+      en: ['We Dont Talk About Bruno Encanto original soundtrack'],
+      es: ['No Hablaré de Bruno Encanto Disney España'],
+      lat: ['No Hablaré de Bruno Encanto Disney'],
+    },
+  },
+]
+
+function findDisneyLangCast(text: string) {
+  const n = norm(text)
+  return DISNEY_LANG_CAST.find((k) => k.match.test(n)) ?? null
+}
+
+/**
+ * Detecta artista en inglés, español (España) o español latino
+ * a partir del título/archivo (p. ej. Reflejo → latino, Reflection → inglés).
+ */
+export function detectOstArtistLang(text: string): OstArtistLang {
+  const n = norm(text)
+  if (
+    /\b(latino|latin america|america latina|español latino|espanol latino|version latina|doblaje latino|latam|mexico|mexicana|argentin|colombian|chilean)\b/.test(
+      n,
+    )
+  ) {
+    return 'es-lat'
+  }
+  if (
+    /\b(castellano|espana|version española|version espanola|español de espana|doblaje español|doblaje espanol|spain|european spanish)\b/.test(
+      n,
+    )
+  ) {
+    return 'es'
+  }
+  if (
+    /\b(english|ingles|original english|us version|english version|version inglesa|doblaje ingles)\b/.test(
+      n,
+    )
+  ) {
+    return 'en'
+  }
+
+  if (/\b(libre soy)\b/.test(n)) return 'es-lat'
+  if (/\b(sueltato|sueltalo)\b/.test(n)) return 'es'
+
+  const core = norm(coreSongTitle(text) || text)
+  if (DISNEY_SONG_EN[core]) {
+    return norm(DISNEY_SONG_EN[core]) === core ? 'en' : 'es-lat'
+  }
+  for (const [es, en] of Object.entries(DISNEY_SONG_EN)) {
+    if (es.length < 4) continue
+    if (core === es || (es.length >= 5 && core.includes(es))) {
+      return norm(en) === core ? 'en' : 'es-lat'
+    }
+  }
+  for (const en of Object.values(DISNEY_SONG_EN)) {
+    if (norm(en) === core) return 'en'
+  }
+  if (/\b(reflection|let it go|circle of life|whole new world|how far ill go)\b/.test(n)) {
+    return 'en'
+  }
+  if (/\b(reflejo|libre soy|ciclo de la vida|mundo ideal)\b/.test(n)) {
+    return 'es-lat'
+  }
+  return 'en'
+}
+
+function preferredArtistsForLang(
+  cast: (typeof DISNEY_LANG_CAST)[0],
+  lang: OstArtistLang,
+): string[] {
+  if (lang === 'es') return cast.es
+  if (lang === 'es-lat') return cast.lat
+  return cast.en
+}
+
+function otherLangArtists(
+  cast: (typeof DISNEY_LANG_CAST)[0],
+  lang: OstArtistLang,
+): string[] {
+  if (lang === 'en') return [...cast.es, ...cast.lat]
+  if (lang === 'es') return [...cast.en, ...cast.lat]
+  return [...cast.en, ...cast.es]
+}
+
+function itunesCountriesForLang(lang: OstArtistLang, franchise: boolean): string[] {
+  if (!franchise) return ['es', 'us', 'mx', 'ar', 'co']
+  if (lang === 'es-lat') return ['mx', 'ar', 'co', 'es', 'us', 'jp']
+  if (lang === 'es') return ['es', 'mx', 'us', 'ar', 'co', 'jp']
+  return ['us', 'gb', 'es', 'mx', 'jp', 'ar', 'co']
+}
+
 /** Canciones muy buscadas: queries fijas + artistas preferidos. */
 const KNOWN_TRACKS: {
   pattern: RegExp
@@ -119,6 +300,35 @@ const KNOWN_TRACKS: {
   artists: string[]
   albums?: string[]
 }[] = [
+  {
+    pattern: /\bsense tu\b/,
+    queries: [
+      'Teràpia de Shock Sense tu',
+      'Terapia de Shock Sense tu',
+      'Sense tu Terapia de Shock Escapa\'t amb mi',
+      'Sense tu Teràpia de Shock',
+    ],
+    artists: ['terapia de shock', 'terapia de xoc'],
+    albums: ['escapat amb mi', 'escapa t amb mi'],
+  },
+  {
+    pattern: /\breflejo\b|\breflection\b|\bmi reflejo\b/,
+    queries: [
+      'Reflection Christina Aguilera Mulan',
+      'Reflection Lea Salonga Mulan original soundtrack',
+      'Reflejo Lucero Mulán Disney',
+      'Reflejo Malú Mulán Disney España',
+      'Reflejo María Caneda Mulán',
+    ],
+    artists: [
+      'christina aguilera',
+      'lea salonga',
+      'lucero',
+      'malu',
+      'maria caneda',
+    ],
+    albums: ['mulan'],
+  },
   {
     pattern: /\bwaka waka\b/,
     queries: [
@@ -168,6 +378,55 @@ const KNOWN_TRACKS: {
     artists: ['celine dion', 'peabo bryson', 'angela lansbury', 'paige o hara'],
     albums: ['beauty and the beast', 'bella y la bestia'],
   },
+  {
+    pattern: /\blet it go\b|\blibre soy\b|\bsueltato\b|\bsueltalo\b/,
+    queries: [
+      'Let It Go Idina Menzel Frozen',
+      'Libre Soy Martina Stoessel Frozen',
+      'Suéltalo Gisela Frozen Disney',
+    ],
+    artists: ['idina menzel', 'martina stoessel', 'tini', 'gisela'],
+    albums: ['frozen'],
+  },
+  {
+    pattern: /\b(baby )?one more time\b/,
+    queries: [
+      'Britney Spears Baby One More Time',
+      'Britney Spears ...Baby One More Time',
+      '...Baby One More Time Britney Spears',
+    ],
+    artists: ['britney spears'],
+    albums: ['baby one more time', '...baby one more time'],
+  },
+  {
+    pattern: /\boops[! ]*i did it again\b/,
+    queries: [
+      'Britney Spears Oops I Did It Again',
+      'Oops!...I Did It Again Britney Spears',
+    ],
+    artists: ['britney spears'],
+    albums: ['oops i did it again'],
+  },
+  {
+    pattern: /\bbackstreet'?s?\s*back\b|\beverybody\b.*\bbackstreet/,
+    queries: [
+      "Backstreet Boys Everybody Backstreet's Back",
+      'Everybody Backstreets Back Backstreet Boys',
+      'Backstreet Boys Backstreets Back',
+    ],
+    artists: ['backstreet boys', 'back street boys'],
+    albums: ['backstreet boys', 'millennium'],
+  },
+  {
+    pattern: /\bsolo se vive una vez\b/,
+    queries: [
+      'Azúcar Moreno Solo Se Vive Una Vez',
+      'Azucar Moreno Solo Se Vive Una Vez',
+      'Sólo Se Vive Una Vez Azúcar Moreno',
+    ],
+    artists: ['azucar moreno', 'azúcar moreno'],
+    albums: ['mambo'],
+  },
 ]
 
 function findKnownTrack(songName: string) {
@@ -175,16 +434,32 @@ function findKnownTrack(songName: string) {
   return KNOWN_TRACKS.find((k) => k.pattern.test(n)) ?? null
 }
 
+/** Queries fijas para canciones famosas (reintentos de enrich). */
+export function knownTrackQueries(songName: string): string[] {
+  return findKnownTrack(songName)?.queries ?? []
+}
+
 export function isWrongKnownArtist(title: string, artist: string, album = ''): boolean {
   const known = findKnownTrack(title)
-  if (!known) return false
+  const langCast = findDisneyLangCast(`${title} ${album}`)
+  if (!known && !langCast) return false
   const blob = norm(`${artist} ${album}`)
-  if (known.artists.some((a) => blob.includes(a))) return false
-  // Álbum OST oficial de la película cuenta como válido
+  const lang = detectOstArtistLang(`${title} ${album} ${artist}`)
+
+  if (langCast) {
+    const preferred = preferredArtistsForLang(langCast, lang)
+    if (preferred.some((a) => blob.includes(a))) return false
+    // Cast de otro idioma → forzar re-búsqueda al idioma correcto
+    if (otherLangArtists(langCast, lang).some((a) => blob.includes(a))) return true
+  }
+
+  if (known?.artists.some((a) => blob.includes(a))) return false
   if (
-    known.albums?.some((al) => blob.includes(al)) &&
+    known?.albums?.some((al) => blob.includes(al)) &&
     /\b(soundtrack|banda sonora|walt disney|motion picture|original)\b/.test(blob)
   ) {
+    // Sin cantante del idioma pedido: seguir considerando desajuste si hay cast preferido
+    if (langCast && preferredArtistsForLang(langCast, lang).length) return true
     return false
   }
   return true
@@ -200,10 +475,56 @@ function norm(s: string): string {
     .trim()
 }
 
+/** Alias de títulos cortos / mal parseados → título oficial. */
+const TITLE_ALIASES: { local: RegExp; online: RegExp }[] = [
+  { local: /\b(baby )?one more time\b/, online: /\bbaby one more time\b|\bone more time\b/ },
+  {
+    local: /\bbackstreet'?s?\s*back\b|\bbackstreet back\b/,
+    online: /\beverybody\b.*\bbackstreet|\bbackstreet'?s?\s*back\b/,
+  },
+  { local: /\bsolo se vive una vez\b/, online: /\bsolo se vive una vez\b/ },
+]
+
+/** ¿El título online parece la misma canción que la local? */
+export function titlesCompatible(localTitle: string, onlineTitle: string): boolean {
+  const a = norm(coreSongTitle(localTitle) || localTitle)
+  const b = norm(coreSongTitle(onlineTitle) || onlineTitle)
+  if (!a || !b) return false
+  if (a === b) return true
+  for (const alias of TITLE_ALIASES) {
+    if (alias.local.test(a) && alias.online.test(b)) return true
+  }
+  // ES → EN (p. ej. Reflejo ↔ Reflection)
+  const aEn = disneyEnglishTitle(localTitle)
+  if (aEn && norm(aEn) === b) return true
+  if (aEn && (b.includes(norm(aEn)) || norm(aEn).includes(b))) return true
+  const bEn = disneyEnglishTitle(onlineTitle)
+  if (bEn && a === norm(bEn)) return true
+  if (a.length >= 4 && b.length >= 4 && (a.includes(b) || b.includes(a))) return true
+  const aw = a.split(' ').filter((w) => w.length > 2)
+  if (!aw.length) return false
+  const hit = aw.filter((w) => b.includes(w)).length
+  return hit / aw.length >= 0.75
+}
+
+export function artistsCompatible(localArtist: string, onlineArtist: string): boolean {
+  const a = norm(localArtist)
+  const b = norm(onlineArtist)
+  if (!a || !b) return true
+  if (/desconocido|unknown|various|varios/.test(a)) return true
+  if (a === b) return true
+  if (a.includes(b) || b.includes(a)) return true
+  // "Back Street Boys" ↔ "Backstreet Boys"
+  const ac = a.replace(/\s+/g, '')
+  const bc = b.replace(/\s+/g, '')
+  return ac === bc || ac.includes(bc) || bc.includes(ac)
+}
+
 export function isLowQualityRelease(artist: string, album: string, title = ''): boolean {
   const blob = norm(`${artist} ${album} ${title}`)
+  // No usar \bbaby\b solo: rechazaría «...Baby One More Time», «Baby» (Bieber), etc.
   if (
-    /\b(karaoke|tribute|tributo|kids|ninos|nino|infantil|nursery|baby|bebes|super banda|banda de ninos|banda infantil|sing along|toddlers|children'?s? (choir|songs?|music)|musica para ninos|para dormir|canciones infantiles|cover band|piano tribute|castillo encantado|canciones de disney|canciones de peliculas|peliculas infantiles|exitos infantiles|super exitos|disney en espanol|disney kids|kids disney|bedtime songs|party kids|various artists kids|lo mejor de disney|disney para ninos|canciones disney|disney hits for kids|disney lullaby|lullaby|nanas|cuento musical|version infantil|cover infantil|kids party|baby shark|lo mejor de|exitos de oro|recopilacion|recopilatorio|temazos|para cantar|canta conmigo|sing with me|music for kids|kids hits)\b/.test(
+    /\b(karaoke|tribute|tributo|kids|ninos|nino|infantil|nursery|bebes|babies|baby songs?|baby music|for babies|super banda|banda de ninos|banda infantil|sing along|toddlers|children'?s? (choir|songs?|music)|musica para ninos|para dormir|canciones infantiles|cover band|piano tribute|castillo encantado|canciones de disney|canciones de peliculas|peliculas infantiles|exitos infantiles|super exitos|disney en espanol|disney kids|kids disney|bedtime songs|party kids|various artists kids|lo mejor de disney|disney para ninos|canciones disney|disney hits for kids|disney lullaby|lullaby|nanas|cuento musical|version infantil|cover infantil|kids party|baby shark|lo mejor de|exitos de oro|recopilacion|recopilatorio|temazos|para cantar|canta conmigo|sing with me|music for kids|kids hits)\b/.test(
       blob,
     )
   ) {
@@ -219,6 +540,13 @@ export function isLowQualityRelease(artist: string, album: string, title = ''): 
     return true
   }
   return false
+}
+
+function isGenericWeirdArtistOrAlbum(artist: string, album: string, title = ''): boolean {
+  const blob = norm(`${artist} ${album} ${title}`)
+  return /\b(original soundtrack|motion picture|music from|various artists|varios artistas|official soundtrack|banda sonora original|soundtrack from|tv soundtrack)\b/.test(
+    blob,
+  )
 }
 
 /**
@@ -310,10 +638,154 @@ export function isDoubtfulMetadata(track: {
 
 function isOfficialDisneyOst(artist: string, album: string, title = ''): boolean {
   const blob = norm(`${artist} ${album} ${title}`)
-  if (isLowQualityRelease(artist, album, title)) return false
-  return /\b(original (motion picture )?soundtrack|walt disney records|disney|pixar|el rey leon|the lion king|frozen|encanto|moana)\b/.test(
+  if (isLowQualityRelease(artist, album, title) || isNonOriginalFranchiseCover(artist, album, title)) {
+    return false
+  }
+  return /\b(original (motion picture )?soundtrack|walt disney records|disney|pixar|el rey leon|the lion king|frozen|encanto|moana|mulan)\b/.test(
     blob,
-  ) && /\b(soundtrack|ost|motion picture|el rey leon|the lion king|walt disney)\b/.test(blob)
+  ) && /\b(soundtrack|ost|motion picture|el rey leon|the lion king|walt disney|banda sonora)\b/.test(blob)
+}
+
+/**
+ * ¿La búsqueda es claramente Disney o Anime?
+ * Solo en ese caso aplicamos el filtro de “versión original / OST”.
+ */
+export function isDisneyOrAnimeSearchContext(text: string, genre = ''): boolean {
+  const n = norm(text)
+  const g = norm(genre)
+  if (!n && !g) return false
+  if (isDisney(n, g) || isAnime(n, g)) return true
+  if (disneyEnglishTitle(text) || disneyEnglishMovie(text)) return true
+  return false
+}
+
+/**
+ * Covers, karaoke, tributos, packs infantiles, etc. (NO originales).
+ * Usar solo si el contexto es Disney/Anime.
+ */
+function isNonOriginalFranchiseCover(artist: string, album: string, title = ''): boolean {
+  const blob = norm(`${artist} ${album} ${title}`)
+  if (isLowQualityRelease(artist, album, title)) return true
+  return /\b(cover|covers|cover version|acoustic cover|metal cover|punk cover|rock cover|guitar cover|violin cover|piano cover|piano version|music box|tribute|tributo|karaoke|sing.?along|nightcore|8 ?bit|chiptune|bootleg|fan ?made|unofficial|not official|version acustica|orchestra tribute|disney go|disney junior|disney hits|disney party|disney sing|disney for kids|just dance|kidz bop|lo mejor de disney|canciones de disney|anime cover|anison cover|anime piano|glee|the voice|american idol|x factor|star academy|super stars|all star kids|sleep babies|lullaby|bedtime)\b/.test(
+    blob,
+  )
+}
+
+/** Señales de OST Disney/Pixar original (no recopilatorio). */
+function looksLikeOriginalDisneyOst(
+  artist: string,
+  album: string,
+  title = '',
+  wantContext = '',
+): boolean {
+  if (isNonOriginalFranchiseCover(artist, album, title)) return false
+  const blob = norm(`${artist} ${album} ${title}`)
+  if (
+    /\b(walt disney records|original (motion picture )?soundtrack|original broadway cast|pixar animation)\b/.test(
+      blob,
+    )
+  ) {
+    return true
+  }
+  // Película + banda sonora
+  const filmOst =
+    /\b(mulan|frozen|encanto|aladdin|moana|coco|tangled|brave|wish|zootopia|toy story|lion king|rey leon|beauty and the beast|bella y la bestia|little mermaid|sirenita|pocahontas|hercules|tarzan|nightmare before christmas)\b/.test(
+      blob,
+    ) && /\b(soundtrack|ost|motion picture|banda sonora|music from|walt disney)\b/.test(blob)
+  if (filmOst) return true
+  // Artistas / compositores del cast original
+  if (
+    /\b(alan menken|howard ashman|tim rice|lin[- ]?manuel|idina menzel|christina aguilera|lea salonga|brad kane|carmen twillie|lebo m|paige o'?hara|angela lansbury|phil collins|randy newman|celine dion|peabo bryson|regina belle|samuel e wright|jodi benson|audrey hepburn|emma watson|bill condon|nathan lane|jason rinker|joseph williams|erskine|matthew wilder|jonathan groff|kristen bell|josh gad|stephanie beatriz|carolina gaitan|mauro castillo|auli'?i cravalho|dwayne johnson|benjamin bratt|anthony gonzalez|lucero|malu|maria caneda|martina stoessel|gisela|demian bichir|renato lopez|maria parrado|sara paula)\b/.test(
+      blob,
+    )
+  ) {
+    return true
+  }
+  // Canciones conocidas: artista/álbum OST de la lista fija
+  const known = findKnownTrack(`${title} ${wantContext}`)
+  if (known?.artists.some((a) => blob.includes(a))) return true
+  if (
+    known?.albums?.some((al) => blob.includes(al)) &&
+    /\b(soundtrack|banda sonora|walt disney|motion picture|original|disney|mulan|aladdin|lion king|rey leon)\b/.test(
+      blob,
+    )
+  ) {
+    return true
+  }
+  // Misma película en el nombre del archivo y en el álbum/artista
+  const ctx = norm(wantContext)
+  const filmInCtx =
+    ctx.match(
+      /\b(mulan|frozen|encanto|aladdin|moana|coco|tangled|brave|wish|zootopia|toy story|lion king|rey leon|bella y la bestia|beauty and the beast|little mermaid|sirenita|pocahontas|hercules|tarzan)\b/g,
+    ) || []
+  if (
+    filmInCtx.some((f) => blob.includes(f)) &&
+    /\b(disney|walt|soundtrack|ost|banda sonora|pixar)\b/.test(blob)
+  ) {
+    return true
+  }
+  return false
+}
+
+/** Señales de OST / opening / ending anime original. */
+function looksLikeOriginalAnimeOst(
+  artist: string,
+  album: string,
+  title = '',
+  wantContext = '',
+): boolean {
+  if (isNonOriginalFranchiseCover(artist, album, title)) return false
+  const blob = norm(`${artist} ${album} ${title}`)
+  if (
+    /\b(original soundtrack|original animation soundtrack|o\.?\s?s\.?\s?t\.?|tv size|opening theme|ending theme|official opening|official ending)\b/.test(
+      blob,
+    )
+  ) {
+    return true
+  }
+  if (
+    /\b(aniplex|toho animation|sony music|flying dog|lantis|pony canyon|king records|sacra music|toei|bones|ufotable|mappa|studio ghibli|joe hisaishi|hiroyuki sawano|yoko kanno)\b/.test(
+      blob,
+    )
+  ) {
+    return true
+  }
+  // Artistas anison frecuentes (no covers)
+  if (
+    /\b(lisa|yoasobi|ado|yui|radwimps|hikaru utada|kenshi yonezu|aimer|milet|king gnu|official hige|linked horizon|man with a mission|asian kung|masaaki endoh|hiroshi kitadani|poke'?mon|pokémon)\b/.test(
+      blob,
+    )
+  ) {
+    return true
+  }
+  // Misma serie anime en el archivo y en el hit
+  const ctx = norm(wantContext)
+  const seriesInCtx =
+    ctx.match(
+      /\b(naruto|one piece|bleach|dragon ball|attack on titan|shingeki|demon slayer|kimetsu|jujutsu kaisen|my hero academia|boku no hero|evangelion|sailor moon|pokemon|hunter x hunter|spy x family|chainsaw man|death note|fullmetal|tokyo ghoul|sword art online|fairy tale|black clover|haikyuu|your name|spirited away|chihiro|princess mononoke|totoro|violet evergarden|oshi no ko|bocchi|re zero|konosuba|solo leveling|jojo|one punch|mob psycho|steins gate|clannad|toradora)\b/g,
+    ) || []
+  if (seriesInCtx.some((s) => blob.includes(s))) return true
+  return false
+}
+
+function acceptsFranchiseOriginal(
+  hit: OnlineTrackInfo,
+  wantContext: string,
+  disneyCtx: boolean,
+  animeCtx: boolean,
+): boolean {
+  if (isNonOriginalFranchiseCover(hit.artist, hit.album, hit.title)) return false
+  if (disneyCtx) {
+    return looksLikeOriginalDisneyOst(hit.artist, hit.album, hit.title, wantContext)
+  }
+  if (animeCtx) {
+    return looksLikeOriginalAnimeOst(hit.artist, hit.album, hit.title, wantContext)
+  }
+  // Contexto Disney/Anime por título de canción (p. ej. Reflejo) sin película en el nombre
+  return (
+    looksLikeOriginalDisneyOst(hit.artist, hit.album, hit.title, wantContext) ||
+    looksLikeOriginalAnimeOst(hit.artist, hit.album, hit.title, wantContext)
+  )
 }
 
 function scoreMatch(
@@ -347,7 +819,9 @@ function scoreMatch(
       disneyEnglishTitle(ctx)
     const ne = enWant ? norm(enWant) : ''
     if (ne && (t === ne || t.includes(ne) || ne.includes(t))) {
-      score += 120
+      // Título EN cuando el archivo está en ES: coincide, pero no tanto como el idioma pedido
+      const wantLangEarly = detectOstArtistLang(wantContext)
+      score += wantLangEarly === 'en' ? 120 : 45
     } else {
       const tw = wt.split(' ').filter((w) => w.length > 2)
       if (!tw.length) return 0
@@ -358,8 +832,16 @@ function scoreMatch(
   }
 
   const known = findKnownTrack(`${wantTitle} ${wantContext}`)
+  const langCastForKnown = findDisneyLangCast(`${wantTitle} ${wantContext}`)
+  const wantLangForKnown = detectOstArtistLang(wantContext)
   if (known) {
-    if (known.artists.some((a) => blob.includes(a))) {
+    if (langCastForKnown && isDisneyOrAnimeSearchContext(wantContext)) {
+      const preferred = preferredArtistsForLang(langCastForKnown, wantLangForKnown)
+      const others = otherLangArtists(langCastForKnown, wantLangForKnown)
+      if (preferred.some((name) => blob.includes(name))) score += 200
+      else if (others.some((name) => blob.includes(name))) score -= 220
+      else score -= 100
+    } else if (known.artists.some((name) => blob.includes(name))) {
       score += 160
     } else {
       score -= 90
@@ -376,9 +858,12 @@ function scoreMatch(
   const movieHint = fromMovie ? norm(fromMovie[1]) : ''
 
   if (wa && !/desconocido|unknown|sin album/i.test(wa) && !isLowQualityRelease(wa, '', '')) {
-    if (a === wa) score += 55
-    else if (a.includes(wa) || wa.includes(a)) score += 35
-    else score -= 25
+    if (a === wa) score += 100
+    else if (a.includes(wa) || wa.includes(a)) score += 70
+    else {
+      // Artista conocido y distinto → casi seguro canción equivocada (p. ej. Sense tu)
+      score -= 160
+    }
   }
 
   // Recopilatorios infantiles / covers basura: rechazo fuerte
@@ -386,14 +871,85 @@ function scoreMatch(
     score -= 220
   }
 
-  // Bonus OST oficial (no compilaciones “canciones de Disney”)
-  if (!junk && isOfficialDisneyOst(candidateArtist, candidateAlbum, candidateTitle)) {
-    score += 50
+  // SOLO Disney/Anime: exigir OST original; penalizar covers/cantantes no oficiales
+  const franchiseCtx = isDisneyOrAnimeSearchContext(wantContext)
+  if (franchiseCtx) {
+    if (isNonOriginalFranchiseCover(candidateArtist, candidateAlbum, candidateTitle)) {
+      return -999
+    }
+    const disneySide = isDisney(ctx, '')
+    const animeSide = isAnime(ctx, '')
+    const original = disneySide
+      ? looksLikeOriginalDisneyOst(
+          candidateArtist,
+          candidateAlbum,
+          candidateTitle,
+          wantContext,
+        )
+      : animeSide
+        ? looksLikeOriginalAnimeOst(
+            candidateArtist,
+            candidateAlbum,
+            candidateTitle,
+            wantContext,
+          )
+        : looksLikeOriginalDisneyOst(
+            candidateArtist,
+            candidateAlbum,
+            candidateTitle,
+            wantContext,
+          ) ||
+          looksLikeOriginalAnimeOst(
+            candidateArtist,
+            candidateAlbum,
+            candidateTitle,
+            wantContext,
+          )
+    if (original) score += 140
+    else score -= 200
+
+    // Idioma del artista: inglés / español España / español latino
+    const wantLang = detectOstArtistLang(wantContext)
+    const langCast = findDisneyLangCast(wantContext)
+    if (langCast) {
+      const preferred = preferredArtistsForLang(langCast, wantLang)
+      const others = otherLangArtists(langCast, wantLang)
+      if (preferred.some((a) => blob.includes(a))) score += 200
+      else if (others.some((a) => blob.includes(a))) score -= 160
+    }
+    if (wantLang === 'es-lat') {
+      if (/\b(latino|latin|mexico|doblaje latino|espanol latino)\b/.test(blob)) score += 50
+      if (/\b(castellano|spain|españa)\b/.test(blob)) score -= 40
+      // Preferir título en español si el archivo está en ES
+      if (/\b(reflejo|libre soy|mundo ideal|ciclo de la vida)\b/.test(t)) score += 40
+      if (/\b(reflection|let it go|whole new world|circle of life)\b/.test(t) && !/\b(reflejo|libre|mundo|ciclo)\b/.test(wt)) {
+        score -= 30
+      }
+    } else if (wantLang === 'es') {
+      if (/\b(castellano|spain|españa|disney españa)\b/.test(blob)) score += 50
+      if (/\b(latino|latin america)\b/.test(blob)) score -= 40
+    } else if (wantLang === 'en') {
+      if (/\b(original (motion picture )?soundtrack|english)\b/.test(blob)) score += 25
+      if (/\b(latino|castellano|español|espanol)\b/.test(blob)) score -= 50
+    }
+  }
+
+  // Bonus OST oficial (no compilaciones “canciones de Disney”) — SOLO si es Disney/Anime
+  if (franchiseCtx) {
+    if (!junk && isOfficialDisneyOst(candidateArtist, candidateAlbum, candidateTitle)) {
+      score += 50
+    } else if (
+      !junk &&
+      /\b(original (motion picture )?soundtrack|ost|walt disney records|broadway|music from)\b/.test(blob)
+    ) {
+      score += 35
+    }
   } else if (
     !junk &&
-    /\b(original (motion picture )?soundtrack|ost|walt disney records|broadway|music from)\b/.test(blob)
+    /\b(original (motion picture )?soundtrack|various artists|varios artistas)\b/.test(blob)
   ) {
-    score += 35
+    // Canciones normales: penalizar packs / OST genéricos
+    score -= 80
   }
 
   const lionKingCtx =
@@ -448,6 +1004,21 @@ function scoreMatch(
       score += 110
     }
     if (/\baladdin\b/.test(alb)) score += 40
+    if (junk) score -= 180
+  }
+
+  const mulanCtx =
+    /\b(mulan|reflejo|reflection|mi reflejo)\b/.test(ctx) || /\bmulan\b/.test(movieHint)
+  if (mulanCtx) {
+    const wantLangMulan = detectOstArtistLang(wantContext)
+    if (wantLangMulan === 'es-lat' && /\blucero\b/.test(blob)) score += 160
+    else if (wantLangMulan === 'es' && /\b(malu|maria caneda)\b/.test(blob)) score += 160
+    else if (wantLangMulan === 'en' && /\b(christina aguilera|lea salonga)\b/.test(blob)) {
+      score += 160
+    }
+    if (/\bmulan\b/.test(alb) && /\b(soundtrack|banda sonora|walt disney|motion picture)\b/.test(blob)) {
+      score += 50
+    }
     if (junk) score -= 180
   }
 
@@ -542,26 +1113,69 @@ function contextSearchHints(songName: string, hintArtist: string): string[] {
   return hints
 }
 
-function buildQueries(songName: string, hintArtist: string): string[] {
+function buildQueries(songName: string, hintArtist: string, extraContext = ''): string[] {
   const q = cleanQuery(songName)
   const core = coreSongTitle(songName)
   if (!q && !core) return []
   const queries: string[] = []
-  const known = findKnownTrack(songName)
+  const fullCtx = `${songName} ${hintArtist} ${extraContext}`
+  const known = findKnownTrack(fullCtx)
   const artistOk = Boolean(
     hintArtist &&
       !/desconocido|unknown|sin álbum/i.test(hintArtist) &&
       !isLowQualityRelease(hintArtist, '', songName) &&
-      !isWrongKnownArtist(songName, hintArtist),
+      !isWrongKnownArtist(songName, hintArtist, extraContext),
   )
   const hints = contextSearchHints(songName, artistOk ? hintArtist : '')
   const enSong = disneyEnglishTitle(songName)
-  const movie = extractQuotedMovie(songName)
-  const enMovie = movie ? disneyEnglishMovie(movie) : null
+  const movie = extractQuotedMovie(songName) || disneyEnglishMovie(extraContext)
+  const enMovie = movie ? disneyEnglishMovie(movie) || (disneyEnglishMovie(extraContext) ? disneyEnglishMovie(extraContext) : null) : disneyEnglishMovie(extraContext)
+  const wantLang = detectOstArtistLang(fullCtx)
+  const langCast = findDisneyLangCast(fullCtx)
+  const franchise = isDisneyOrAnimeSearchContext(fullCtx)
 
-  // Queries fijas de canciones conocidas (máxima prioridad)
-  if (known) {
+  // Sin artista + Disney: buscar primero con el cantante del idioma correcto
+  if (franchise && langCast && !artistOk) {
+    for (const a of preferredArtistsForLang(langCast, wantLang)) {
+      queries.push(`${a} ${core || q}`)
+      queries.push(`${core || q} ${a}`)
+      if (enMovie || extraContext) {
+        queries.push(`${a} ${core || q} ${enMovie || cleanQuery(extraContext)}`)
+      }
+    }
+  }
+
+  // Prioridad: queries del idioma detectado (cast original)
+  if (langCast) {
+    const qKey = wantLang === 'es-lat' ? 'lat' : wantLang
+    queries.push(...langCast.queries[qKey])
+  }
+
+  // Queries fijas conocidas: solo si no hay cast por idioma (evita mezclar EN/ES)
+  if (known && !langCast) {
     queries.push(...known.queries)
+  }
+
+  // Artista conocido: siempre buscar “artista + título” antes que el título solo
+  if (artistOk) {
+    queries.push(`${cleanQuery(hintArtist)} ${core || q}`)
+    queries.push(`${core || q} ${cleanQuery(hintArtist)}`)
+  }
+
+  // Sufijos de idioma para Disney (sin hardcodear Lucero en todo)
+  if (franchise) {
+    const base = core || q
+    if (wantLang === 'es-lat') {
+      queries.push(`${base} español latino Disney`, `${base} doblaje latino`)
+      if (extraContext) queries.push(`${base} ${cleanQuery(extraContext)} Disney latino`)
+    } else if (wantLang === 'es') {
+      queries.push(`${base} castellano Disney España`, `${base} doblaje español España`)
+    } else {
+      queries.push(
+        `${base} original soundtrack English`,
+        `${base} original motion picture soundtrack`,
+      )
+    }
   }
 
   for (const hint of hints) {
@@ -569,18 +1183,30 @@ function buildQueries(songName: string, hintArtist: string): string[] {
     if (q) queries.push(`${q} ${hint}`)
   }
 
-  if (enSong) {
+  if (enSong && wantLang === 'en') {
     queries.push(enSong)
     if (enMovie) queries.push(`${enSong} ${enMovie}`)
     queries.push(`${enSong} Disney`)
+  } else if (enSong && wantLang !== 'en' && langCast) {
+    // Respaldo EN solo con artista preferido del idioma (no título EN suelto)
+    for (const a of preferredArtistsForLang(langCast, wantLang)) {
+      queries.push(`${a} ${enSong}`)
+    }
+  } else if (enSong && wantLang !== 'en') {
+    queries.push(enSong)
   }
-  if (core) queries.push(core)
 
-  if (artistOk) {
-    queries.push(`${cleanQuery(hintArtist)} ${core || q}`)
+  // Título solo al final (muy suelto); en Disney/Anime evitarlo si ya hay cast
+  if (!franchise || !langCast) {
+    if (core) queries.push(core)
+    if (q) queries.push(q)
+  } else {
+    // Con película en álbum: título + película
+    if (extraContext) {
+      if (core) queries.push(`${core} ${cleanQuery(extraContext)}`)
+      if (q) queries.push(`${q} ${cleanQuery(extraContext)}`)
+    }
   }
-
-  if (q) queries.push(q)
 
   const parts = q.split(/\s+-\s+/)
   if (parts.length >= 2) {
@@ -827,8 +1453,8 @@ async function searchDeezer(
     }
   }
 
-  // Umbral más alto: evita covers infantiles con solo coincidencia parcial de título
-  if (!best || bestScore < 45) return null
+  // Umbral alto: evita covers / coincidencias flojas de título
+  if (!best || bestScore < 85) return null
 
   const cover =
     best.album?.cover_xl ||
@@ -849,6 +1475,7 @@ async function searchDeezer(
     year: meta.year,
     coverUrl: cover,
     externalUrl: best.link || '',
+    matchScore: bestScore,
   }
 }
 
@@ -921,7 +1548,7 @@ async function searchITunes(
       best = item
     }
   }
-  if (!best?.trackName || bestScore < 45) return null
+  if (!best?.trackName || bestScore < 85) return null
 
   const art = best.artworkUrl100 || best.artworkUrl60 || null
   const coverUrl = art
@@ -941,6 +1568,7 @@ async function searchITunes(
     year: best.releaseDate ? best.releaseDate.slice(0, 4) : '',
     coverUrl,
     externalUrl: best.trackViewUrl || best.collectionViewUrl || '',
+    matchScore: bestScore,
   }
 }
 
@@ -951,27 +1579,69 @@ function isJunkCoverArtist(info: OnlineTrackInfo): boolean {
 export async function enrichFromInternet(
   songName: string,
   hintArtist = '',
+  extraContext = '',
 ): Promise<OnlineTrackInfo | null> {
   const wantTitle = coreSongTitle(songName) || cleanQuery(songName)
   if (!wantTitle) return null
   const wantArtist = cleanQuery(hintArtist)
-  const wantContext = `${songName} ${hintArtist}`
-  const queries = buildQueries(songName, hintArtist)
+  const wantContext = `${songName} ${hintArtist} ${extraContext}`
+  const queries = buildQueries(songName, hintArtist, extraContext)
+  const franchiseCtx = isDisneyOrAnimeSearchContext(wantContext)
+  const ctxNorm = norm(wantContext)
   const disneyCtx =
-    Boolean(extractQuotedMovie(songName)) ||
-    Boolean(disneyEnglishTitle(songName)) ||
-    /\b(disney|rey leon|bella y la bestia|frozen|encanto|moana|hakuna|ciclo de la vida)\b/i.test(
-      songName,
-    )
+    franchiseCtx &&
+    (isDisney(ctxNorm, '') ||
+      Boolean(disneyEnglishTitle(songName) || disneyEnglishMovie(wantContext)))
+  const animeCtx = franchiseCtx && isAnime(ctxNorm, '') && !disneyCtx
+  const wantLang = detectOstArtistLang(wantContext)
+  const langCast = findDisneyLangCast(wantContext)
+  const preferred =
+    disneyCtx && langCast ? preferredArtistsForLang(langCast, wantLang) : []
+  const otherLang =
+    disneyCtx && langCast ? otherLangArtists(langCast, wantLang) : []
+  const strictNonFranchise = !franchiseCtx
 
   let best: OnlineTrackInfo | null = null
   let bestScore = -1
 
-  const consider = (hit: OnlineTrackInfo | null) => {
+  const consider = (hit: OnlineTrackInfo | null, strictLang: boolean) => {
     if (!hit || isJunkCoverArtist(hit)) return
+    if (wantArtist && !artistsCompatible(wantArtist, hit.artist)) return
+
+    if (strictNonFranchise) {
+      if (isGenericWeirdArtistOrAlbum(hit.artist, hit.album, hit.title)) return
+      if (
+        !wantArtist &&
+        /\b(various artists|varios artistas|original soundtrack|motion picture|walt disney|anime|ost)\b/.test(
+          norm(`${hit.artist} ${hit.album}`),
+        )
+      ) {
+        return
+      }
+    }
+
+    // Solo Disney/Anime: filtrar covers y quedarse con OST / cast original
+    if (franchiseCtx && !acceptsFranchiseOriginal(hit, wantContext, disneyCtx, animeCtx)) {
+      return
+    }
+
+    // Sin artista local + Disney conocido: exigir cantante del idioma (1ª pasada)
+    if (disneyCtx && langCast && preferred.length) {
+      const blob = norm(`${hit.artist} ${hit.album} ${hit.title}`)
+      if (otherLang.some((a) => blob.includes(a)) && !preferred.some((a) => blob.includes(a))) {
+        return
+      }
+      if (strictLang && !preferred.some((a) => blob.includes(a))) {
+        return
+      }
+    }
+
     if (isDoubtfulMetadata({ ...hit, hasCover: true })) {
-      // Permitir OST oficiales aunque el heurístico de “canciones de” no aplique
-      if (!/\b(soundtrack|banda sonora|walt disney|motion picture)\b/i.test(`${hit.album} ${hit.artist}`)) {
+      if (
+        !/\b(soundtrack|banda sonora|walt disney|motion picture|animation soundtrack)\b/i.test(
+          `${hit.album} ${hit.artist}`,
+        )
+      ) {
         return
       }
     }
@@ -983,66 +1653,96 @@ export async function enrichFromInternet(
       wantArtist,
       wantContext,
     )
+    if (score < 0) return
+    if (strictNonFranchise && !wantArtist && score < 100) return
+    // Disney sin artista: umbral más alto si no es el cast preferido
+    if (disneyCtx && !wantArtist && preferred.length) {
+      const blob = norm(`${hit.artist} ${hit.album} ${hit.title}`)
+      if (!preferred.some((a) => blob.includes(a)) && score < 160) return
+    }
     if (score > bestScore) {
       bestScore = score
       best = hit
     }
   }
 
-  // Disney: iTunes US primero (mejor catálogo OST)
-  const itunesCountries = disneyCtx
-    ? ['us', 'es', 'mx', 'ar', 'co']
-    : ['es', 'us', 'mx', 'ar', 'co']
+  const itunesCountries = itunesCountriesForLang(wantLang, franchiseCtx)
 
-  if (disneyCtx) {
-    for (const country of itunesCountries) {
-      for (const term of queries.slice(0, 8)) {
-        try {
-          consider(
-            await searchITunes(term, wantTitle, wantArtist, country, wantContext),
-          )
-        } catch {
-          // siguiente
+  const runSearch = async (strictLang: boolean) => {
+    if (franchiseCtx) {
+      for (const country of itunesCountries) {
+        for (const term of queries.slice(0, 12)) {
+          try {
+            consider(
+              await searchITunes(term, wantTitle, wantArtist, country, wantContext),
+              strictLang,
+            )
+          } catch {
+            // siguiente
+          }
         }
+        // Con cast preferido exigir más puntuación antes de parar
+        if (bestScore >= (preferred.length && strictLang ? 220 : 180)) break
       }
-      if (bestScore >= 120) break
+    } else {
+      for (const country of itunesCountries.slice(0, wantArtist ? 3 : 2)) {
+        for (const term of queries.slice(0, wantArtist ? 8 : 6)) {
+          try {
+            consider(
+              await searchITunes(term, wantTitle, wantArtist, country, wantContext),
+              strictLang,
+            )
+          } catch {
+            // siguiente
+          }
+        }
+        if (bestScore >= (wantArtist ? 150 : 130)) break
+      }
+    }
+
+    for (const term of queries) {
+      try {
+        consider(await searchDeezer(term, wantTitle, wantArtist, wantContext), strictLang)
+      } catch {
+        // siguiente
+      }
+    }
+
+    if (!best || !(best as OnlineTrackInfo).year || !(best as OnlineTrackInfo).genre || bestScore < 120) {
+      for (const country of itunesCountries) {
+        for (const term of queries) {
+          try {
+            const itunes = await searchITunes(
+              term,
+              wantTitle,
+              wantArtist,
+              country,
+              wantContext,
+            )
+            if (!itunes) continue
+            consider(itunes, strictLang)
+            const b = best as OnlineTrackInfo | null
+            if (b && b.year && b.genre && bestScore >= 180) break
+          } catch {
+            // siguiente
+          }
+        }
+        const b = best as OnlineTrackInfo | null
+        if (b && b.year && b.genre && bestScore >= 180) break
+      }
     }
   }
 
-  for (const term of queries) {
-    try {
-      consider(await searchDeezer(term, wantTitle, wantArtist, wantContext))
-    } catch {
-      // siguiente
-    }
-  }
-
-  if (!best || !(best as OnlineTrackInfo).year || !(best as OnlineTrackInfo).genre || bestScore < 100) {
-    for (const country of itunesCountries) {
-      for (const term of queries) {
-        try {
-          const itunes = await searchITunes(
-            term,
-            wantTitle,
-            wantArtist,
-            country,
-            wantContext,
-          )
-          if (!itunes) continue
-          consider(itunes)
-          const b = best as OnlineTrackInfo | null
-          if (b && b.year && b.genre && bestScore >= 120) break
-        } catch {
-          // siguiente
-        }
-      }
-      const b = best as OnlineTrackInfo | null
-      if (b && b.year && b.genre && bestScore >= 120) break
-    }
+  // 1ª pasada: solo cantante del idioma (cuando no hay artista en el archivo)
+  await runSearch(Boolean(disneyCtx && !wantArtist && preferred.length))
+  // 2ª: OST original mismo idioma-película, pero NUNCA cast de otro idioma
+  if (!best && disneyCtx && preferred.length) {
+    await runSearch(false)
   }
 
   if (best) {
     const b = best as OnlineTrackInfo
+    b.matchScore = bestScore
     b.genre = refineGenre({
       title: b.title,
       artist: b.artist,
@@ -1052,7 +1752,31 @@ export async function enrichFromInternet(
     })
   }
 
-  return best && bestScore >= 45 ? best : null
+  if (best && !titlesCompatible(wantTitle, (best as OnlineTrackInfo).title)) {
+    return null
+  }
+  if (wantArtist && best && !artistsCompatible(wantArtist, (best as OnlineTrackInfo).artist)) {
+    return null
+  }
+  // Disney conocido sin artista: no aceptar si sigue siendo otro idioma
+  if (best && disneyCtx && langCast && preferred.length && !wantArtist) {
+    const blob = norm(
+      `${(best as OnlineTrackInfo).artist} ${(best as OnlineTrackInfo).album}`,
+    )
+    if (otherLang.some((a) => blob.includes(a)) && !preferred.some((a) => blob.includes(a))) {
+      return null
+    }
+  }
+
+  const minScore =
+    disneyCtx && preferred.length && !wantArtist
+      ? 120
+      : knownTrackQueries(`${wantTitle} ${wantArtist} ${wantContext}`).length && wantArtist
+        ? 70
+        : strictNonFranchise && !wantArtist
+          ? 100
+          : 85
+  return best && bestScore >= minScore ? best : null
 }
 
 export async function fetchCoverBlob(coverUrl: string): Promise<Blob | null> {

@@ -1,3 +1,4 @@
+import { getCoverBlob } from './library'
 import type { Track } from '../types'
 
 export function formatTime(seconds: number): string {
@@ -24,9 +25,98 @@ export function shuffleArray<T>(items: T[], stayIndex?: number): T[] {
   return arr
 }
 
+/** Cache de carátulas ya convertidas para la pantalla de bloqueo. */
+const artworkCache = new Map<string, MediaImage[]>()
+
+export function clearMediaArtworkCache(trackId?: string) {
+  if (trackId) artworkCache.delete(trackId)
+  else artworkCache.clear()
+}
+
+async function resizeCoverToJpeg(blob: Blob, size: number, quality: number): Promise<string> {
+  let bitmap: ImageBitmap | null = null
+  try {
+    bitmap = await createImageBitmap(blob)
+  } catch {
+    // Fallback Image()
+    const url = URL.createObjectURL(blob)
+    try {
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const el = new Image()
+        el.onload = () => resolve(el)
+        el.onerror = () => reject(new Error('cover'))
+        el.src = url
+      })
+      const canvas = document.createElement('canvas')
+      canvas.width = size
+      canvas.height = size
+      const ctx = canvas.getContext('2d')
+      if (!ctx) throw new Error('canvas')
+      const scale = Math.max(size / img.naturalWidth, size / img.naturalHeight)
+      const w = img.naturalWidth * scale
+      const h = img.naturalHeight * scale
+      ctx.fillStyle = '#111'
+      ctx.fillRect(0, 0, size, size)
+      ctx.drawImage(img, (size - w) / 2, (size - h) / 2, w, h)
+      return canvas.toDataURL('image/jpeg', quality)
+    } finally {
+      URL.revokeObjectURL(url)
+    }
+  }
+
+  try {
+    const canvas = document.createElement('canvas')
+    canvas.width = size
+    canvas.height = size
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('canvas')
+    const scale = Math.max(size / bitmap.width, size / bitmap.height)
+    const w = bitmap.width * scale
+    const h = bitmap.height * scale
+    ctx.fillStyle = '#111'
+    ctx.fillRect(0, 0, size, size)
+    ctx.drawImage(bitmap, (size - w) / 2, (size - h) / 2, w, h)
+    return canvas.toDataURL('image/jpeg', quality)
+  } finally {
+    bitmap.close()
+  }
+}
+
+/**
+ * Genera artwork grande para iOS (lock screen / Now Playing).
+ * Sin esto, iPhone muestra el icono de MyVibe en pequeño.
+ */
+export async function buildLockScreenArtwork(trackId: string): Promise<MediaImage[]> {
+  const cached = artworkCache.get(trackId)
+  if (cached?.length) return cached
+
+  const blob = await getCoverBlob(trackId)
+  if (!blob || blob.size < 32) return []
+
+  try {
+    // iOS elige el tamaño más grande disponible para la carátula a pantalla completa
+    const [xl, lg, md] = await Promise.all([
+      resizeCoverToJpeg(blob, 1200, 0.88),
+      resizeCoverToJpeg(blob, 600, 0.86),
+      resizeCoverToJpeg(blob, 300, 0.84),
+    ])
+    const images: MediaImage[] = [
+      { src: xl, sizes: '1200x1200', type: 'image/jpeg' },
+      { src: lg, sizes: '600x600', type: 'image/jpeg' },
+      { src: md, sizes: '300x300', type: 'image/jpeg' },
+      { src: lg, sizes: '512x512', type: 'image/jpeg' },
+      { src: md, sizes: '256x256', type: 'image/jpeg' },
+    ]
+    artworkCache.set(trackId, images)
+    return images
+  } catch {
+    return []
+  }
+}
+
 export async function updateMediaSession(
   track: Track | null,
-  coverUrl: string | null,
+  _coverUrl: string | null,
   handlers: {
     play: () => void
     pause: () => void
@@ -43,13 +133,15 @@ export async function updateMediaSession(
     return
   }
 
-  const artwork: MediaImage[] = coverUrl
-    ? [
-        { src: coverUrl, sizes: '512x512', type: 'image/jpeg' },
-        { src: coverUrl, sizes: '256x256', type: 'image/jpeg' },
-      ]
-    : []
+  // Primero metadatos; luego artwork asíncrono (para no retrasar controles)
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    artwork: [],
+  })
 
+  const artwork = await buildLockScreenArtwork(track.id)
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
     artist: track.artist,
@@ -57,10 +149,18 @@ export async function updateMediaSession(
     artwork,
   })
 
-  navigator.mediaSession.setActionHandler('play', handlers.play)
-  navigator.mediaSession.setActionHandler('pause', handlers.pause)
-  navigator.mediaSession.setActionHandler('previoustrack', handlers.previoustrack)
-  navigator.mediaSession.setActionHandler('nexttrack', handlers.nexttrack)
+  navigator.mediaSession.setActionHandler('play', () => {
+    handlers.play()
+  })
+  navigator.mediaSession.setActionHandler('pause', () => {
+    handlers.pause()
+  })
+  navigator.mediaSession.setActionHandler('previoustrack', () => {
+    handlers.previoustrack()
+  })
+  navigator.mediaSession.setActionHandler('nexttrack', () => {
+    handlers.nexttrack()
+  })
 
   try {
     navigator.mediaSession.setActionHandler('seekbackward', (details) => {
@@ -84,4 +184,21 @@ export async function updateMediaSession(
 export function setMediaPlaybackState(playing: boolean) {
   if (!('mediaSession' in navigator)) return
   navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+}
+
+/** Progreso en pantalla de bloqueo / Centro de control. */
+export function setMediaPositionState(position: number, duration: number, playing: boolean) {
+  if (!('mediaSession' in navigator)) return
+  if (!Number.isFinite(duration) || duration <= 0) return
+  const pos = Math.max(0, Math.min(position, duration))
+  try {
+    navigator.mediaSession.setPositionState({
+      duration,
+      playbackRate: 1,
+      position: pos,
+    })
+  } catch {
+    // Safari a veces falla si position > duration momentáneamente
+  }
+  setMediaPlaybackState(playing)
 }

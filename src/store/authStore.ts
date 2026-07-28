@@ -15,6 +15,7 @@ interface AuthState {
     displayName: string,
     remember?: boolean,
   ) => Promise<void>
+  requestPasswordReset: (email: string) => Promise<void>
   logout: () => void
   updateProfile: (patch: Partial<Pick<User, 'displayName' | 'bio' | 'avatarHue'>>) => Promise<void>
   setEmail: (email: string) => Promise<void>
@@ -60,6 +61,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({ user, rememberedEmail: remember ? user.email : '' })
     } catch (e) {
       set({ error: e instanceof Error ? e.message : 'Error al registrarse' })
+      throw e
+    }
+  },
+
+  requestPasswordReset: async (email) => {
+    set({ error: null })
+    try {
+      await auth.requestPasswordReset(email)
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : 'No se pudo enviar el correo' })
       throw e
     }
   },

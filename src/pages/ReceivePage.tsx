@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { AppIcon } from '../components/AppIcon'
+import { isAppleMobile } from '../lib/folderImport'
+import { saveFilesVisibly, type VisibleFile } from '../lib/visibleStorage'
 import { startWifiClient } from '../lib/wifiTransfer'
 import { useAuthStore } from '../store/authStore'
 import './pages.css'
@@ -19,8 +21,12 @@ export function ReceivePage() {
     name: string
   } | null>(null)
   const [doneCount, setDoneCount] = useState<number | null>(null)
+  const [visibleFiles, setVisibleFiles] = useState<VisibleFile[]>([])
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportMsg, setExportMsg] = useState<string | null>(null)
   const stopRef = useRef<(() => void) | null>(null)
   const autoStarted = useRef(false)
+  const onIphone = isAppleMobile()
 
   useEffect(() => {
     return () => {
@@ -37,6 +43,8 @@ export function ReceivePage() {
     setCode(useCode)
     setError(null)
     setDoneCount(null)
+    setVisibleFiles([])
+    setExportMsg(null)
     setProgress(null)
     setBusy(true)
     setStatus('Iniciando…')
@@ -50,11 +58,12 @@ export function ReceivePage() {
           setBusy(false)
           setStatus(null)
         },
-        onFinished: (imported) => {
+        onFinished: (imported, files) => {
           setDoneCount(imported)
+          setVisibleFiles(files)
           setBusy(false)
           setProgress(null)
-          setStatus(`Listo: ${imported} canciones en tu biblioteca`)
+          setStatus(`Listo: ${imported} canciones en MyVibe`)
         },
       })
       stopRef.current = session.stop
@@ -74,7 +83,6 @@ export function ReceivePage() {
         void startReceive(fromQr)
       }
     }
-    // Solo al montar / cambiar query
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
 
@@ -86,14 +94,37 @@ export function ReceivePage() {
     setProgress(null)
   }
 
+  async function saveToDownloads() {
+    if (!visibleFiles.length) return
+    setExportBusy(true)
+    setExportMsg(null)
+    setError(null)
+    try {
+      const result = await saveFilesVisibly(visibleFiles, {
+        interactive: true,
+        onProgress: (done, total, name) =>
+          setExportMsg(`Guardando ${done}/${total}${name ? ` · ${name}` : ''}`),
+      })
+      setExportMsg(result.message)
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setExportMsg('Cancelado')
+      } else {
+        setError(e instanceof Error ? e.message : 'No se pudo guardar en Descargas')
+      }
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
   return (
     <div className="receive-page">
       <div className="receive-card">
         <AppIcon size={64} className="receive-logo" />
         <h1>Recibir por Wi‑Fi</h1>
         <p className="receive-sub">
-          Escanea el QR del PC o escribe el código. Las canciones se guardan en la biblioteca de
-          MyVibe en este móvil.
+          Escanea el QR del PC. Luego puedes guardar copias visibles en{' '}
+          <strong>Descargas → MyVibe</strong> (Archivos del iPhone).
         </p>
 
         <label className="receive-label">
@@ -149,11 +180,35 @@ export function ReceivePage() {
         {doneCount != null && (
           <>
             <p className="form-status">
-              {doneCount} canciones guardadas en MyVibe. Ya las puedes reproducir.
+              {doneCount} canciones en MyVibe (reproductor).
             </p>
+            {visibleFiles.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  className="btn-primary"
+                  style={{ width: '100%' }}
+                  disabled={exportBusy}
+                  onClick={() => void saveToDownloads()}
+                >
+                  {exportBusy
+                    ? 'Guardando…'
+                    : onIphone
+                      ? 'Guardar en Archivos / Descargas'
+                      : 'Guardar en carpeta Descargas/MyVibe'}
+                </button>
+                {onIphone && (
+                  <p className="receive-sub" style={{ marginTop: 0 }}>
+                    En el menú: <em>Guardar en Archivos</em> → Descargas → crea/elige la carpeta{' '}
+                    <strong>MyVibe</strong>.
+                  </p>
+                )}
+              </>
+            )}
+            {exportMsg && <p className="form-status">{exportMsg}</p>}
             <button
               type="button"
-              className="btn-primary"
+              className="btn-outline"
               style={{ width: '100%' }}
               onClick={() => navigate(user ? '/library' : '/')}
             >

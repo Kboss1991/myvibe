@@ -29,6 +29,8 @@ export default defineConfig({
         display: 'standalone',
         orientation: 'portrait',
         start_url: '/',
+        // Ayuda a iOS/Android a tratar la PWA como app de música
+        categories: ['music', 'entertainment'],
         icons: [
           {
             src: 'icons/icon-192.png',
@@ -49,8 +51,20 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
+        cacheId: 'myvibe-baby-cover-fix-20260728',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        skipWaiting: true,
         navigateFallback: '/index.html',
+        // Never treat JS/CSS/assets as SPA navigations (avoids HTML MIME errors).
+        navigateFallbackDenylist: [
+          /^\/api/,
+          /^\/assets\//,
+          /\/assets\//,
+          /\.[a-zA-Z0-9]+$/,
+        ],
       },
     }),
   ],

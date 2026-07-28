@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { audioEngine } from '../lib/audioEngine'
 import { formatTime } from '../lib/mediaSession'
 import { useLibraryStore } from '../store/libraryStore'
 import { bindMediaSession, usePlayerStore } from '../store/playerStore'
@@ -29,53 +30,115 @@ export function PlayerBar() {
   const position = usePlayerStore((s) => s.position)
   const duration = usePlayerStore((s) => s.duration)
   const toggle = usePlayerStore((s) => s.toggle)
+  const seek = usePlayerStore((s) => s.seek)
+  const next = usePlayerStore((s) => s.next)
+  const previous = usePlayerStore((s) => s.previous)
   const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
   const track = tracks.find((t) => t.id === currentTrackId)
+  const coverUrl = usePlayerStore((s) => s.coverUrl)
   const [btOpen, setBtOpen] = useState(false)
 
+  // Metadatos + carátula grande en pantalla de bloqueo (no en cada play/pause)
   useEffect(() => {
     void bindMediaSession(tracks)
-  }, [tracks, currentTrackId, isPlaying])
+  }, [tracks, currentTrackId, coverUrl])
+
+  // Mantener sesión de audio al bloquear / cambiar de app
+  useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        audioEngine.applyPlaybackSession()
+        void bindMediaSession(tracks)
+      } else {
+        // Al bloquear, reafirma artwork por si iOS lo había sustituido por el icono
+        void bindMediaSession(tracks)
+      }
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [tracks, currentTrackId, coverUrl])
 
   if (!track) return null
 
-  const progress = duration > 0 ? (position / duration) * 100 : 0
-
   return (
-    <div className="player-bar">
-      <div className="player-bar__progress" style={{ width: `${progress}%` }} />
-      <button className="player-bar__main" onClick={() => setNowPlayingOpen(true)}>
-        <CoverArt
-          trackId={track.id}
-          hasCover={track.hasCover}
-          refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}`}
-          size={48}
-          rounded="sm"
-        />
-        <div className="player-bar__meta">
-          <span className="player-bar__title">{track.title}</span>
-          <span className="player-bar__artist">{track.artist}</span>
+    <div className="player-bar" role="region" aria-label="Reproductor">
+      <div className="player-bar__row">
+        <button
+          type="button"
+          className="player-bar__main"
+          onClick={() => setNowPlayingOpen(true)}
+          aria-label="Abrir ahora suena"
+        >
+          <CoverArt
+            trackId={track.id}
+            hasCover={track.hasCover}
+            refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}`}
+            size={48}
+            rounded="sm"
+          />
+          <div className="player-bar__meta">
+            <span className="player-bar__title">{track.title}</span>
+            <span className="player-bar__artist">{track.artist}</span>
+          </div>
+        </button>
+        <div className="player-bar__actions">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Altavoz Bluetooth"
+            title="Conectar altavoz"
+            onClick={() => setBtOpen(true)}
+          >
+            <IconBluetooth size={20} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Cola"
+            onClick={() => setQueueOpen(true)}
+          >
+            <IconQueue size={20} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn player-bar__skip"
+            aria-label="Anterior"
+            onClick={() => void previous()}
+          >
+            <IconSkipBack size={22} />
+          </button>
+          <button
+            type="button"
+            className="player-bar__play"
+            aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+            onClick={() => void toggle()}
+          >
+            {isPlaying ? <IconPause size={20} /> : <IconPlay size={20} />}
+          </button>
+          <button
+            type="button"
+            className="icon-btn player-bar__skip"
+            aria-label="Siguiente"
+            onClick={() => void next()}
+          >
+            <IconSkipForward size={22} />
+          </button>
         </div>
-      </button>
-      <button
-        className="icon-btn"
-        aria-label="Altavoz Bluetooth"
-        title="Conectar altavoz"
-        onClick={() => setBtOpen(true)}
-      >
-        <IconBluetooth size={22} />
-      </button>
-      <button className="icon-btn" aria-label="Cola" onClick={() => setQueueOpen(true)}>
-        <IconQueue size={22} />
-      </button>
-      <button
-        className="player-bar__play"
-        aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
-        onClick={() => void toggle()}
-      >
-        {isPlaying ? <IconPause size={22} /> : <IconPlay size={22} />}
-      </button>
+      </div>
+      <div className="player-bar__seek">
+        <span className="player-bar__time">{formatTime(position)}</span>
+        <input
+          type="range"
+          min={0}
+          max={duration || 0}
+          step={0.1}
+          value={Math.min(position, duration || 0)}
+          onChange={(e) => seek(Number(e.target.value))}
+          aria-label="Progreso"
+        />
+        <span className="player-bar__time">{formatTime(duration)}</span>
+      </div>
       <BluetoothSheet open={btOpen} onClose={() => setBtOpen(false)} />
     </div>
   )

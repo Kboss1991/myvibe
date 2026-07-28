@@ -1,5 +1,13 @@
 import { parseBlob } from 'music-metadata'
-import { enrichFromInternet, fetchCoverBlob, isLowQualityRelease, refineGenre } from './enrich'
+import {
+  enrichFromInternet,
+  fetchCoverBlob,
+  isLowQualityRelease,
+  isWrongKnownArtist,
+  refineGenre,
+  titlesCompatible,
+  artistsCompatible,
+} from './enrich'
 
 export interface ParsedTags {
   title: string
@@ -8,6 +16,28 @@ export interface ParsedTags {
   genre: string
   year: string
   coverBlob: Blob | null
+}
+
+/** "Mulán - Reflejo" / "Artista - Título" → separa partes. */
+export function splitDashName(raw: string): { left: string; right: string } | null {
+  const base = raw.replace(/\.[^.]+$/, '').replace(/_/g, ' ').trim()
+  const parts = base.split(/\s*[-–—]\s*/).map((p) => p.trim()).filter(Boolean)
+  if (parts.length !== 2) return null
+  const [left, right] = parts
+  if (!left || !right) return null
+  if (left.length > 60 || right.length > 80) return null
+  return { left, right }
+}
+
+function isUnknownArtist(artist: string): boolean {
+  return (
+    !artist.trim() ||
+    /^(artista desconocido|unknown artist|unknown|desconocido)$/i.test(artist.trim())
+  )
+}
+
+function isUnknownAlbum(album: string): boolean {
+  return !album.trim() || /^(sin álbum|sin album|unknown album|unknown|n\/a)$/i.test(album.trim())
 }
 
 export async function readTags(file: File): Promise<ParsedTags> {
@@ -31,19 +61,33 @@ export async function readTags(file: File): Promise<ParsedTags> {
       (common.date ? String(common.date).slice(0, 4) : '') ||
       ''
 
+    let title = common.title || fallbackTitle
+    let artist = common.artist || common.albumartist || 'Artista desconocido'
+    let album = common.album || 'Sin álbum'
+
+    // Sin artista: "Mulán - Reflejo" → título Reflejo, álbum Mulán
+    if (isUnknownArtist(artist)) {
+      const split = splitDashName(title) || splitDashName(file.name)
+      if (split) {
+        title = split.right
+        if (isUnknownAlbum(album)) album = split.left
+      }
+    }
+
     return {
-      title: common.title || fallbackTitle,
-      artist: common.artist || common.albumartist || 'Artista desconocido',
-      album: common.album || 'Sin álbum',
+      title,
+      artist,
+      album,
       genre: common.genre?.[0] || '',
       year,
       coverBlob,
     }
   } catch {
+    const split = splitDashName(file.name)
     return {
-      title: fallbackTitle,
+      title: split?.right || fallbackTitle,
       artist: 'Artista desconocido',
-      album: 'Sin álbum',
+      album: split?.left || 'Sin álbum',
       genre: '',
       year: '',
       coverBlob: null,
@@ -51,20 +95,51 @@ export async function readTags(file: File): Promise<ParsedTags> {
   }
 }
 
-/** Lee tags locales y completa siempre con internet (portada, año, artista, álbum…). */
+/**
+ * Al subir: lee tags del archivo y completa automáticamente
+ * carátula + artista/álbum/año/género desde internet (sin pasos extra).
+ */
 export async function readTagsEnriched(
   file: File,
 ): Promise<ParsedTags & { enriched: boolean; externalUrl?: string }> {
   const local = await readTags(file)
+  const searchName = local.title || file.name.replace(/\.[^.]+$/, '')
+  const localJunk = isLowQualityRelease(local.artist, local.album, local.title)
+  const artistUnknown =
+    !local.artist || /desconocido|unknown/i.test(local.artist) || localJunk
+  const albumUnknown =
+    !local.album || /sin álbum|sin album|unknown/i.test(local.album) || localJunk
+  const needsCover = !local.coverBlob || localJunk
 
-  const online =
-    (await enrichFromInternet(local.title || file.name, local.artist)) ||
-    (file.name.replace(/\.[^.]+$/, '') !== local.title
-      ? await enrichFromInternet(file.name, local.artist)
+  let online =
+    // Primero artista+título si el archivo ya trae artista (evita otro “Sense tu” distinto)
+    (!artistUnknown
+      ? await enrichFromInternet(
+          `${local.artist} ${searchName}`,
+          local.artist,
+          local.album,
+        )
       : null) ||
-    (/desconocido/i.test(local.artist)
-      ? null
-      : await enrichFromInternet(`${local.artist} ${local.title}`, ''))
+    (await enrichFromInternet(
+      searchName,
+      artistUnknown ? '' : local.artist,
+      local.album,
+    )) ||
+    (file.name.replace(/\.[^.]+$/, '') !== local.title
+      ? await enrichFromInternet(
+          file.name.replace(/\.[^.]+$/, ''),
+          artistUnknown ? '' : local.artist,
+          local.album,
+        )
+      : null)
+
+  // Cast de otro idioma / cover conocido → descartar
+  if (
+    online &&
+    isWrongKnownArtist(searchName, online.artist, online.album || local.album)
+  ) {
+    online = null
+  }
 
   if (!online) {
     return {
@@ -80,40 +155,54 @@ export async function readTagsEnriched(
     }
   }
 
+  const score = online.matchScore ?? 0
+  const titleOk = titlesCompatible(searchName, online.title)
+  const artistOk = artistUnknown || artistsCompatible(local.artist, online.artist)
+  // Sin artista compatible no tocamos nada online (evita Rebels Punk en “Sense tu”)
+  if (!titleOk || !artistOk) {
+    return {
+      ...local,
+      genre: refineGenre({
+        title: local.title,
+        artist: local.artist,
+        album: local.album,
+        genre: local.genre,
+        fileName: file.name,
+      }),
+      enriched: false,
+    }
+  }
+
+  const goodEnough = score >= 80
+  const strongMatch = score >= 95
+
   let coverBlob = local.coverBlob
-  const localJunk = isLowQualityRelease(local.artist, local.album, local.title)
-  if ((!coverBlob || localJunk) && online.coverUrl) {
+  if (needsCover && online.coverUrl && goodEnough) {
     const remote = await fetchCoverBlob(online.coverUrl)
     if (remote) coverBlob = remote
   }
 
-  const artistUnknown =
-    !local.artist || /desconocido/i.test(local.artist) || localJunk
-  const albumUnknown =
-    !local.album || /sin álbum/i.test(local.album) || localJunk
-  const titleLooksWeak =
-    !local.title ||
-    local.title === file.name.replace(/\.[^.]+$/, '') ||
-    /_|^\d+\s*-/.test(local.title)
-
-  const title = titleLooksWeak && online.title ? online.title : local.title || online.title
-  const artist = artistUnknown ? online.artist : local.artist
-  const album = albumUnknown ? online.album : local.album
+  // Conservar título local. Completar huecos solo con artista compatible.
+  const title = local.title
+  const artist = artistUnknown && goodEnough ? online.artist : local.artist
+  const album = albumUnknown && (strongMatch || goodEnough) ? online.album : local.album
+  const genre = refineGenre({
+    title,
+    artist,
+    album,
+    genre: local.genre || (goodEnough ? online.genre : ''),
+    fileName: file.name,
+  })
+  const year = local.year || (goodEnough ? online.year : '')
 
   return {
     title,
     artist,
     album,
-    genre: refineGenre({
-      title,
-      artist,
-      album,
-      genre: localJunk ? online.genre || local.genre : local.genre || online.genre,
-      fileName: file.name,
-    }),
-    year: local.year || online.year,
+    genre,
+    year,
     coverBlob,
-    enriched: true,
+    enriched: Boolean(coverBlob !== local.coverBlob) || artist !== local.artist || album !== local.album,
     externalUrl: online.externalUrl,
   }
 }
@@ -143,64 +232,46 @@ export function getAudioDuration(file: Blob): Promise<number> {
   })
 }
 
-export const AUDIO_EXTENSIONS = [
-  'mp3',
-  'wav',
-  'm4a',
-  'aac',
-  'ogg',
-  'flac',
-  'webm',
-  'opus',
-  'mpeg',
-  'mp4',
-]
-
 export function isAudioFile(file: File): boolean {
   const name = (file.name || '').toLowerCase()
   const type = (file.type || '').toLowerCase()
   if (type.startsWith('audio/')) return true
   if (type === 'video/mp4' && /\.(m4a|mp4|aac)$/i.test(name)) return true
-  if (
-    (type === '' || type === 'application/octet-stream') &&
-    /\.(mp3|m4a|aac|wav|flac|ogg|mpeg)$/i.test(name)
-  ) {
-    return true
-  }
-  const ext = name.split('.').pop() ?? ''
-  return AUDIO_EXTENSIONS.includes(ext)
+  return /\.(mp3|m4a|aac|wav|ogg|flac|mpeg|mp4)$/i.test(name)
 }
 
 export function isMp3File(file: File): boolean {
-  const name = file.name.toLowerCase()
-  return name.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3'
+  const name = (file.name || '').toLowerCase()
+  const type = (file.type || '').toLowerCase()
+  return type === 'audio/mpeg' || type === 'audio/mp3' || name.endsWith('.mp3')
 }
 
 export function guessAudioMime(fileName: string): string {
   const n = fileName.toLowerCase()
-  if (n.endsWith('.m4a') || n.endsWith('.mp4') || n.endsWith('.aac')) return 'audio/mp4'
+  if (n.endsWith('.mp3')) return 'audio/mpeg'
+  if (n.endsWith('.m4a') || n.endsWith('.aac')) return 'audio/mp4'
   if (n.endsWith('.wav')) return 'audio/wav'
-  if (n.endsWith('.ogg')) return 'audio/ogg'
   if (n.endsWith('.flac')) return 'audio/flac'
+  if (n.endsWith('.ogg')) return 'audio/ogg'
   return 'audio/mpeg'
 }
 
-/** Fuerza descarga desde iCloud/Archivos y fija un MIME usable. */
 export async function materializeAudioFile(file: File): Promise<File> {
-  const buf = await file.arrayBuffer()
-  const type =
-    file.type && file.type !== 'application/octet-stream'
-      ? file.type
-      : guessAudioMime(file.name)
-  return new File([buf], file.name || `cancion-${Date.now()}.mp3`, {
-    type,
-    lastModified: file.lastModified || Date.now(),
-  })
+  // iCloud: forzar lectura completa antes de parsear
+  try {
+    const buf = await file.arrayBuffer()
+    return new File([buf], file.name, {
+      type: file.type || guessAudioMime(file.name),
+      lastModified: file.lastModified,
+    })
+  } catch {
+    return file
+  }
 }
 
 export function createId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID()
   }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  return `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 }

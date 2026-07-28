@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
 import { AppIcon } from '../components/AppIcon'
 import { isCloudAuthEnabled, isInsecureLanContext } from '../lib/auth'
 import { useAuthStore } from '../store/authStore'
@@ -16,12 +15,14 @@ export function AuthPage() {
   const [importMsg, setImportMsg] = useState<string | null>(null)
   const login = useAuthStore((s) => s.login)
   const register = useAuthStore((s) => s.register)
+  const requestPasswordReset = useAuthStore((s) => s.requestPasswordReset)
   const importAccount = useAuthStore((s) => s.importAccount)
   const error = useAuthStore((s) => s.error)
   const clearError = useAuthStore((s) => s.clearError)
   const lanHttp = isInsecureLanContext()
   const cloud = isCloudAuthEnabled()
   const accountInputRef = useRef<HTMLInputElement>(null)
+  const [resetMsg, setResetMsg] = useState<string | null>(null)
 
   useEffect(() => {
     if (rememberedEmail) setEmail(rememberedEmail)
@@ -87,19 +88,6 @@ export function AuthPage() {
           {mode === 'login' ? 'Inicia sesión con tu correo' : 'Crea tu cuenta con correo'}
         </p>
 
-        {cloud ? (
-          <p className="auth-lan-hint">
-            Cuentas en la <strong>nube</strong> (Supabase): el mismo correo y contraseña sirven en
-            PC y móvil. La música sigue en cada dispositivo (pásala por QR).
-          </p>
-        ) : (
-          <p className="auth-lan-hint">
-            Modo local (sin servidor de usuarios). Para cuentas en la nube configura Supabase
-            (VITE_SUPABASE_URL y VITE_SUPABASE_ANON_KEY). ¿Pasar música?{' '}
-            <Link to="/receive">Recibir por Wi‑Fi</Link>.
-          </p>
-        )}
-
         {!cloud && (
           <>
             <button
@@ -122,13 +110,6 @@ export function AuthPage() {
             />
             {importMsg && <p className="auth-import-ok">{importMsg}</p>}
           </>
-        )}
-
-        {cloud && (
-          <p className="auth-lan-hint" style={{ marginTop: 0 }}>
-            ¿Pasar música del PC? Escanea el <strong>QR</strong> o abre{' '}
-            <Link to="/receive">Recibir por Wi‑Fi</Link>.
-          </p>
         )}
 
         <form onSubmit={(e) => void submit(e)} className="auth-form">
@@ -181,6 +162,7 @@ export function AuthPage() {
           </label>
 
           {error && <p className="auth-error">{error}</p>}
+          {resetMsg && <p className="auth-import-ok">{resetMsg}</p>}
 
           <button type="submit" className="auth-submit" disabled={busy}>
             {busy
@@ -193,11 +175,33 @@ export function AuthPage() {
           </button>
         </form>
 
+        {cloud && mode === 'login' && (
+          <button
+            type="button"
+            className="auth-switch"
+            disabled={busy || !email.trim()}
+            onClick={() => {
+              setBusy(true)
+              clearError()
+              setResetMsg(null)
+              void requestPasswordReset(email)
+                .then(() =>
+                  setResetMsg('Te hemos enviado un correo para restablecer la contraseña.'),
+                )
+                .catch(() => {})
+                .finally(() => setBusy(false))
+            }}
+          >
+            ¿Olvidaste la contraseña?
+          </button>
+        )}
+
         <button
           type="button"
           className="auth-switch"
           onClick={() => {
             clearError()
+            setResetMsg(null)
             setMode(mode === 'login' ? 'register' : 'login')
           }}
         >
@@ -205,11 +209,6 @@ export function AuthPage() {
             ? '¿No tienes cuenta? Regístrate'
             : '¿Ya tienes cuenta? Inicia sesión'}
         </button>
-
-        <p className="auth-note">
-          En el móvil abre la URL de red del PC (ej. http://192.168.x.x:5174), no localhost. Tras
-          importar la cuenta, si el ZIP también trae canciones: Subir → Importar ZIP.
-        </p>
       </div>
     </div>
   )

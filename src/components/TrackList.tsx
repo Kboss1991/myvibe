@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react'
 import type { Track } from '../types'
+import { isAppleMobile, isLibraryHostDevice } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
+import { saveFilesVisibly, myVibeDownloadName, deleteVisibleCopies } from '../lib/visibleStorage'
+import { getTrackLocalStorageInfo, type TrackStorageInfo } from '../lib/trackStorageInfo'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
@@ -17,8 +20,24 @@ import {
   IconCheck,
   IconClose,
   IconShare,
+  IconDownload,
 } from './Icons'
 import './TrackList.css'
+
+function trackLocationLabel(track: Track): string {
+  const remote = track.hasLocalAudio === false
+  const onPc = isLibraryHostDevice()
+  const onIphone = isAppleMobile()
+
+  if (remote) {
+    return onPc
+      ? 'Almacenamiento: sin audio local · toca para ver'
+      : 'Almacenamiento: en el PC · toca para ver'
+  }
+  if (onPc) return 'Almacenamiento local (este PC) · toca para ver'
+  if (onIphone) return 'Almacenamiento local (este iPhone) · toca para ver'
+  return 'Almacenamiento local · toca para ver'
+}
 
 interface Props {
   tracks: Track[]
@@ -56,9 +75,18 @@ export function TrackList({
   const setLiked = useLibraryStore((s) => s.setLiked)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
   const shareTrack = useLibraryStore((s) => s.shareTrack)
+  const downloadFromPc = useLibraryStore((s) => s.downloadFromPc)
+  const downloadProgress = useLibraryStore((s) => s.downloadProgress)
+  const pcOnline = useLibraryStore((s) => s.pcOnline)
 
   const [menuTrack, setMenuTrack] = useState<Track | null>(null)
+  const [storageInfo, setStorageInfo] = useState<TrackStorageInfo | null>(null)
   const [enrichingId, setEnrichingId] = useState<string | null>(null)
+  const [deleteNotice, setDeleteNotice] = useState<{
+    count: number
+    fileNames: string[]
+  } | null>(null)
+  const [deletingVisible, setDeletingVisible] = useState(false)
   const [editTrack, setEditTrack] = useState<Track | null>(null)
   const [playlistPickIds, setPlaylistPickIds] = useState<string[] | null>(null)
   const [selectMode, setSelectMode] = useState(false)
@@ -69,7 +97,63 @@ export function TrackList({
     () => tracks.filter((t) => selected.has(t.id)),
     [tracks, selected],
   )
+  const selectedRemote = useMemo(
+    () => selectedTracks.filter((t) => t.hasLocalAudio === false),
+    [selectedTracks],
+  )
   const allSelected = tracks.length > 0 && selected.size === tracks.length
+
+  async function downloadIds(ids: string[]) {
+    if (!ids.length) return
+    setBulkBusy(true)
+    try {
+      const result = await downloadFromPc(ids)
+      const n = result.imported
+      if (n <= 0) {
+        alert('No se descargó ninguna. ¿PC abierto con la misma cuenta?')
+        return
+      }
+
+      // Copia visible obligatoria: PC → Descargas/MyVibe; iPhone → Archivos
+      if (result.visibleFiles.length) {
+        try {
+          const out = await saveFilesVisibly(result.visibleFiles, { interactive: true })
+          alert(`Descargadas ${n} en MyVibe.\n${out.message}`)
+        } catch (e) {
+          if (e instanceof DOMException && e.name === 'AbortError') {
+            alert(
+              `Descargadas ${n} en MyVibe (reproductor).\n` +
+                (isAppleMobile()
+                  ? 'No se guardó en Archivos (cancelado). Puedes exportar desde Perfil si lo necesitas.'
+                  : 'No se eligió carpeta. Puedes exportar desde Perfil si lo necesitas.'),
+            )
+          } else {
+            alert(`Descargadas ${n} en MyVibe.`)
+          }
+        }
+      } else {
+        alert(`Descargadas ${n} en MyVibe.`)
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'No se pudo descargar'
+      const isModule =
+        /import|módulo|modulo|module script|MIME type/i.test(msg)
+      alert(
+        isModule
+          ? 'Hay una versión nueva de la app. Cierra MyVibe del todo, vuelve a abrir y prueba otra vez.'
+          : msg,
+      )
+      if (isModule) {
+        const key = 'mv-chunk-reload'
+        if (!sessionStorage.getItem(key)) {
+          sessionStorage.setItem(key, '1')
+          window.location.reload()
+        }
+      }
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   function exitSelectMode() {
     setSelectMode(false)
@@ -161,10 +245,11 @@ export function TrackList({
         {tracks.map((track, i) => {
           const active = track.id === currentTrackId
           const isSelected = selected.has(track.id)
+          const remote = track.hasLocalAudio === false
           return (
             <li
               key={track.id}
-              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''}`}
+              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''}`}
               style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}
             >
               {selectMode && (
@@ -183,8 +268,18 @@ export function TrackList({
                 type="button"
                 className="track-row__main track-col--title"
                 onClick={() => {
-                  if (selectMode) toggleSelect(track.id)
-                  else void playTracks(tracks.map((t) => t.id), track.id)
+                  if (selectMode) {
+                    toggleSelect(track.id)
+                    return
+                  }
+                  if (remote) {
+                    void downloadIds([track.id])
+                    return
+                  }
+                  void playTracks(
+                    tracks.filter((t) => t.hasLocalAudio !== false).map((t) => t.id),
+                    track.id,
+                  )
                 }}
               >
                 <CoverArt
@@ -197,6 +292,7 @@ export function TrackList({
                   <span className="track-row__title">
                     {active && isPlaying ? <IconPlay size={12} /> : null}
                     {track.title}
+                    {remote ? <em className="track-remote-tag"> · en el PC</em> : null}
                   </span>
                   <span className="track-row__sub">{track.artist}</span>
                 </div>
@@ -214,6 +310,21 @@ export function TrackList({
               )}
               {!selectMode && (
                 <div className="track-row__actions track-col--actions">
+                  {remote && (
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-label="Descargar desde el PC"
+                      title={pcOnline === false ? 'PC no detectado' : 'Descargar'}
+                      disabled={bulkBusy || Boolean(downloadProgress)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void downloadIds([track.id])
+                      }}
+                    >
+                      <IconDownload size={20} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="icon-btn"
@@ -232,15 +343,40 @@ export function TrackList({
         })}
       </ul>
 
+      {downloadProgress && (
+        <p className="enrich-progress-text">
+          Descargando {downloadProgress.done}/{downloadProgress.total}
+          {downloadProgress.name ? ` · ${downloadProgress.name}` : ''}
+        </p>
+      )}
+
       {selectMode && selected.size > 0 && (
         <div className="bulk-bar">
           <div className="bulk-bar__inner">
+            {selectedRemote.length > 0 && (
+              <button
+                type="button"
+                disabled={bulkBusy || Boolean(downloadProgress)}
+                onClick={() =>
+                  void runBulk(async () => {
+                    await downloadIds(selectedRemote.map((t) => t.id))
+                  })
+                }
+              >
+                <IconDownload size={18} /> Descargar ({selectedRemote.length})
+              </button>
+            )}
             <button
               type="button"
               disabled={bulkBusy}
               onClick={() =>
                 void runBulk(async () => {
-                  void playTracks(selectedTracks.map((t) => t.id))
+                  const playable = selectedTracks.filter((t) => t.hasLocalAudio !== false)
+                  if (!playable.length) {
+                    alert('Esas canciones aún no están en el móvil. Descárgalas antes.')
+                    return
+                  }
+                  void playTracks(playable.map((t) => t.id))
                 })
               }
             >
@@ -313,8 +449,15 @@ export function TrackList({
               disabled={bulkBusy}
               onClick={() => {
                 if (!confirm(`¿Eliminar ${selected.size} canciones?`)) return
+                const toDelete = selectedTracks
+                const fileNames = toDelete.map((t) =>
+                  myVibeDownloadName(t.artist, t.title, t.fileName),
+                )
                 void runBulk(async () => {
-                  await deleteTracks([...selected])
+                  await deleteTracks(toDelete.map((t) => t.id))
+                  setDeleteNotice({ count: toDelete.length, fileNames })
+                  setSelectMode(false)
+                  setSelected(new Set())
                 })
               }}
             >
@@ -332,7 +475,8 @@ export function TrackList({
             aria-label="Cerrar"
             onClick={() => setMenuTrack(null)}
           />
-          <div className="sheet__panel" role="menu">
+          <div className="sheet__panel track-actions-panel" role="menu">
+            <div className="track-actions-scroll">
             <div className="track-actions-head">
               <CoverArt
                 trackId={menuTrack.id}
@@ -343,6 +487,17 @@ export function TrackList({
               <div>
                 <strong>{menuTrack.title}</strong>
                 <span>{menuTrack.artist}</span>
+                <button
+                  type="button"
+                  className="track-actions-location"
+                  onClick={() => {
+                    const track = menuTrack
+                    setMenuTrack(null)
+                    void getTrackLocalStorageInfo(track).then(setStorageInfo)
+                  }}
+                >
+                  {trackLocationLabel(menuTrack)}
+                </button>
               </div>
             </div>
 
@@ -483,18 +638,35 @@ export function TrackList({
                 <IconTrash size={18} /> Quitar de playlist
               </button>
             )}
-            <button
-              type="button"
-              className="sheet__item danger"
-              onClick={() => {
-                if (confirm(`¿Eliminar “${menuTrack.title}”?`)) {
-                  void deleteTrack(menuTrack.id)
-                }
-                setMenuTrack(null)
-              }}
-            >
-              <IconTrash size={18} /> Eliminar
-            </button>
+            </div>
+            <div className="track-actions-footer">
+              <button
+                type="button"
+                className="sheet__item danger"
+                onClick={() => {
+                  const track = menuTrack
+                  const isRemote = track.hasLocalAudio === false
+                  if (
+                    !confirm(
+                      isRemote
+                        ? `¿Quitar “${track.title}” de este móvil?`
+                        : `¿Borrar “${track.title}” de este dispositivo?`,
+                    )
+                  ) {
+                    setMenuTrack(null)
+                    return
+                  }
+                  const fileName = myVibeDownloadName(track.artist, track.title, track.fileName)
+                  setMenuTrack(null)
+                  void deleteTrack(track.id).then(() => {
+                    setDeleteNotice({ count: 1, fileNames: [fileName] })
+                  })
+                }}
+              >
+                <IconTrash size={18} />{' '}
+                {menuTrack.hasLocalAudio === false ? 'Quitar de este móvil' : 'Borrar'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -530,6 +702,94 @@ export function TrackList({
                 </button>
               ))
             )}
+          </div>
+        </div>
+      )}
+
+      {deleteNotice && (
+        <div className="sheet track-actions-sheet">
+          <button
+            type="button"
+            className="sheet-backdrop"
+            aria-label="Cerrar"
+            onClick={() => setDeleteNotice(null)}
+          />
+          <div className="sheet__panel" role="dialog" aria-label="Después de eliminar">
+            <div className="track-actions-head">
+              <div>
+                <strong>
+                  Eliminada{deleteNotice.count === 1 ? '' : 's'} de MyVibe
+                </strong>
+                <span>
+                  {deleteNotice.count} canción{deleteNotice.count === 1 ? '' : 'es'} borrada
+                  {deleteNotice.count === 1 ? '' : 's'} del reproductor.
+                  {isAppleMobile()
+                    ? ' Si también las guardaste en Archivos, aún ocupan espacio.'
+                    : ' Si también están en Descargas → MyVibe, aún ocupan espacio.'}
+                </span>
+              </div>
+            </div>
+            <button
+              type="button"
+              className="sheet__item danger"
+              disabled={deletingVisible}
+              onClick={() => {
+                setDeletingVisible(true)
+                void deleteVisibleCopies(deleteNotice.fileNames, { interactive: true })
+                  .then((r) => {
+                    alert(r.message)
+                    if (r.mode === 'folder' && r.removed > 0) setDeleteNotice(null)
+                  })
+                  .catch((e) => {
+                    if (e instanceof DOMException && e.name === 'AbortError') return
+                    alert(e instanceof Error ? e.message : 'No se pudieron borrar las copias')
+                  })
+                  .finally(() => setDeletingVisible(false))
+              }}
+            >
+              <IconTrash size={18} />{' '}
+              {deletingVisible
+                ? 'Borrando…'
+                : isAppleMobile()
+                  ? 'Cómo borrar copias en Archivos'
+                  : 'Borrar también en Descargas/MyVibe'}
+            </button>
+            <button type="button" className="sheet__item" onClick={() => setDeleteNotice(null)}>
+              Listo, solo MyVibe
+            </button>
+          </div>
+        </div>
+      )}
+
+      {storageInfo && (
+        <div className="sheet track-actions-sheet">
+          <button
+            type="button"
+            className="sheet-backdrop"
+            aria-label="Cerrar"
+            onClick={() => setStorageInfo(null)}
+          />
+          <div className="sheet__panel" role="dialog" aria-label="Almacenamiento local">
+            <div className="track-actions-head">
+              <div>
+                <strong>Almacenamiento local</strong>
+                <span>{storageInfo.summary}</span>
+              </div>
+            </div>
+            <pre className="track-storage-info">{storageInfo.lines.join('\n')}</pre>
+            <button
+              type="button"
+              className="sheet__item"
+              onClick={() => {
+                void navigator.clipboard?.writeText(storageInfo.trackId)
+                alert('ID copiado')
+              }}
+            >
+              Copiar ID de la canción
+            </button>
+            <button type="button" className="sheet__item" onClick={() => setStorageInfo(null)}>
+              Cerrar
+            </button>
           </div>
         </div>
       )}

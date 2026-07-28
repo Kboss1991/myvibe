@@ -36,7 +36,10 @@ export async function writeBinary(
     const dir = await ensureDir(root, folder)
     const handle = await dir.getFileHandle(id, { create: true })
     const writable = await handle.createWritable()
-    await writable.write(data)
+    // iOS: escribir ArrayBuffer es más fiable que Blob directo
+    const payload =
+      data instanceof Blob ? new Uint8Array(await data.arrayBuffer()) : new Uint8Array(data)
+    await writable.write(payload)
     await writable.close()
     return 'opfs'
   } catch {
@@ -74,6 +77,55 @@ export async function deleteBinary(
   } catch {
     // ignore missing
   }
+}
+
+/** Borra todo el contenido de audio/ o covers/ en OPFS. */
+export async function clearOpfsFolder(folder: 'audio' | 'covers'): Promise<number> {
+  const root = await getRoot()
+  if (!root) return 0
+  let removed = 0
+  try {
+    const dir = await root.getDirectoryHandle(folder)
+    const dirAny = dir as FileSystemDirectoryHandle & {
+      entries?: () => AsyncIterable<[string, FileSystemHandle]>
+      values?: () => AsyncIterable<FileSystemHandle>
+    }
+    if (dirAny.entries) {
+      for await (const [name] of dirAny.entries()) {
+        try {
+          await dir.removeEntry(name)
+          removed += 1
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // carpeta inexistente
+  }
+  return removed
+}
+
+/** Lista ids (nombres de archivo) en OPFS audio/ o covers/. */
+export async function listOpfsIds(folder: 'audio' | 'covers'): Promise<string[]> {
+  const root = await getRoot()
+  if (!root) return []
+  const ids: string[] = []
+  try {
+    const dir = await root.getDirectoryHandle(folder)
+    const dirAny = dir as FileSystemDirectoryHandle & {
+      keys?: () => AsyncIterable<string>
+      entries?: () => AsyncIterable<[string, FileSystemHandle]>
+    }
+    if (dirAny.keys) {
+      for await (const name of dirAny.keys()) ids.push(name)
+    } else if (dirAny.entries) {
+      for await (const [name] of dirAny.entries()) ids.push(name)
+    }
+  } catch {
+    // carpeta inexistente
+  }
+  return ids
 }
 
 export function supportsOpfs(): boolean {

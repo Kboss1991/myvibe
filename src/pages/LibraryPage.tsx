@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
 import { CoverArt } from '../components/CoverArt'
@@ -11,13 +11,22 @@ import './pages.css'
 
 type Tab = 'songs' | 'playlists' | 'artists' | 'albums' | 'genres'
 
+function norm(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+}
+
 export function LibraryPage() {
   const [tab, setTab] = useState<Tab>('songs')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const [query, setQuery] = useState('')
   const [genreFilter, setGenreFilter] = useState<string | null>(null)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
+  const search = useLibraryStore((s) => s.search)
   const getLiked = useLibraryStore((s) => s.getLiked)
   const createPlaylist = useLibraryStore((s) => s.createPlaylist)
   const deletePlaylist = useLibraryStore((s) => s.deletePlaylist)
@@ -30,10 +39,40 @@ export function LibraryPage() {
   const liked = getLiked()
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
   const [enrichBusy, setEnrichBusy] = useState(false)
+  const q = query.trim()
+  const qn = norm(q)
+
+  const filteredTracks = useMemo(() => (q ? search(q) : tracks), [q, search, tracks])
+  const filteredPlaylists = useMemo(() => {
+    if (!qn) return playlists
+    return playlists.filter((p) => norm(p.name).includes(qn))
+  }, [playlists, qn])
+  const filteredArtists = useMemo(() => {
+    const list = artists()
+    if (!qn) return list
+    return list.filter((a) => norm(a.name).includes(qn))
+  }, [artists, tracks, qn])
+  const filteredAlbums = useMemo(() => {
+    const list = albums()
+    if (!qn) return list
+    return list.filter(
+      (a) => norm(a.name).includes(qn) || norm(a.artist).includes(qn),
+    )
+  }, [albums, tracks, qn])
   const genreGroups = genres()
+  const filteredGenres = useMemo(() => {
+    if (!qn) return genreGroups
+    return genreGroups.filter((g) => norm(g.name).includes(qn))
+  }, [genreGroups, qn])
   const genreTracks = genreFilter
     ? genreGroups.find((g) => g.name === genreFilter)?.tracks ?? []
     : []
+  const filteredGenreTracks = useMemo(() => {
+    if (!genreFilter) return []
+    if (!q) return genreTracks
+    const allowed = new Set(search(q).map((t) => t.id))
+    return genreTracks.filter((t) => allowed.has(t.id))
+  }, [genreFilter, genreTracks, q, search])
 
   return (
     <div className="page">
@@ -48,6 +87,28 @@ export function LibraryPage() {
           <IconPlus size={24} />
         </button>
       </header>
+
+      <label className="search-box library-search">
+        <IconSearch size={18} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Buscar en tu biblioteca"
+          autoCapitalize="off"
+          autoCorrect="off"
+          enterKeyHint="search"
+        />
+        {query ? (
+          <button
+            type="button"
+            className="library-search__clear"
+            aria-label="Limpiar búsqueda"
+            onClick={() => setQuery('')}
+          >
+            ×
+          </button>
+        ) : null}
+      </label>
 
       <div className="tabs">
         {(
@@ -75,40 +136,7 @@ export function LibraryPage() {
 
       {tab === 'songs' && (
         <>
-          {missingCover.length > 0 && (
-            <div className="enrich-banner">
-              <div>
-                <strong>Sin portada o datos dudosos: {missingCover.length}</strong>
-                <span>Busca en internet portada oficial, artista y álbum</span>
-              </div>
-              <button
-                type="button"
-                className="btn-primary enrich-banner__btn"
-                disabled={enrichBusy}
-                onClick={() => {
-                  setEnrichBusy(true)
-                  void enrichMissingCovers()
-                    .then((r) => {
-                      alert(
-                        `Listo: ${r.ok} actualizadas` +
-                          (r.fail ? `, ${r.fail} sin resultado` : ''),
-                      )
-                    })
-                    .finally(() => setEnrichBusy(false))
-                }}
-              >
-                <IconSearch size={16} />{' '}
-                {enrichBusy ? 'Buscando…' : 'Buscar info online'}
-              </button>
-            </div>
-          )}
-          {enrichProgress && (
-            <p className="enrich-progress-text">
-              {enrichProgress.done}/{enrichProgress.total}
-              {enrichProgress.name ? ` · ${enrichProgress.name}` : ''}
-            </p>
-          )}
-          {liked.length > 0 && (
+          {!q && liked.length > 0 && (
             <button
               type="button"
               className="liked-banner"
@@ -125,24 +153,61 @@ export function LibraryPage() {
             </button>
           )}
           <div className="section__head tight">
-            <h2>{tracks.length} canciones</h2>
-            {tracks.length > 0 && (
-              <button
-                type="button"
-                className="chip-play"
-                onClick={() => void playTracks(tracks.map((t) => t.id))}
-              >
-                <IconPlay size={16} /> Reproducir
-              </button>
-            )}
+            <h2>
+              {q
+                ? `${filteredTracks.length} resultado${filteredTracks.length === 1 ? '' : 's'}`
+                : `${tracks.length} canciones`}
+            </h2>
+            <div className="section__head-actions">
+              {!q && missingCover.length > 0 && (
+                <button
+                  type="button"
+                  className="library-quiet-action"
+                  disabled={enrichBusy}
+                  title="Buscar portada, artista y álbum en internet"
+                  onClick={() => {
+                    setEnrichBusy(true)
+                    void enrichMissingCovers()
+                      .then((r) => {
+                        alert(
+                          `Listo: ${r.ok} actualizadas` +
+                            (r.fail ? `, ${r.fail} sin resultado` : ''),
+                        )
+                      })
+                      .finally(() => setEnrichBusy(false))
+                  }}
+                >
+                  <IconSearch size={14} />
+                  {enrichBusy
+                    ? 'Buscando…'
+                    : enrichProgress
+                      ? `${enrichProgress.done}/${enrichProgress.total}`
+                      : `${missingCover.length} sin datos`}
+                </button>
+              )}
+              {filteredTracks.length > 0 && (
+                <button
+                  type="button"
+                  className="chip-play"
+                  onClick={() => void playTracks(filteredTracks.map((t) => t.id))}
+                >
+                  <IconPlay size={16} /> Reproducir
+                </button>
+              )}
+            </div>
           </div>
-          <TrackList tracks={tracks} showColumns />
+          <TrackList
+            tracks={filteredTracks}
+            showColumns
+            emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
+            emptyHint={q ? 'Prueba con otro título o artista' : 'Sube música para empezar'}
+          />
         </>
       )}
 
       {tab === 'playlists' && (
         <ul className="playlist-list">
-          {playlists.map((p) => (
+          {filteredPlaylists.map((p) => (
             <li key={p.id}>
               <Link to={`/playlist/${p.id}`} className="playlist-list__link">
                 <CoverArt
@@ -167,10 +232,12 @@ export function LibraryPage() {
               </button>
             </li>
           ))}
-          {playlists.length === 0 && (
+          {filteredPlaylists.length === 0 && (
             <div className="empty-state">
-              <p className="empty-state__title">Sin playlists</p>
-              <p className="empty-state__hint">Pulsa + para crear una</p>
+              <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin playlists'}</p>
+              <p className="empty-state__hint">
+                {q ? 'Prueba con otro nombre' : 'Pulsa + para crear una'}
+              </p>
             </div>
           )}
         </ul>
@@ -178,7 +245,7 @@ export function LibraryPage() {
 
       {tab === 'artists' && (
         <ul className="simple-list">
-          {artists().map((a) => (
+          {filteredArtists.map((a) => (
             <li key={a.name}>
               <button type="button" onClick={() => void playTracks(a.tracks.map((t) => t.id))}>
                 <CoverArt
@@ -195,12 +262,17 @@ export function LibraryPage() {
               </button>
             </li>
           ))}
+          {filteredArtists.length === 0 && (
+            <div className="empty-state">
+              <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin artistas'}</p>
+            </div>
+          )}
         </ul>
       )}
 
       {tab === 'albums' && (
         <ul className="simple-list">
-          {albums().map((a) => (
+          {filteredAlbums.map((a) => (
             <li key={`${a.name}-${a.artist}`}>
               <button type="button" onClick={() => void playTracks(a.tracks.map((t) => t.id))}>
                 <CoverArt
@@ -216,6 +288,11 @@ export function LibraryPage() {
               </button>
             </li>
           ))}
+          {filteredAlbums.length === 0 && (
+            <div className="empty-state">
+              <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin álbumes'}</p>
+            </div>
+          )}
         </ul>
       )}
 
@@ -232,21 +309,26 @@ export function LibraryPage() {
                   ← Géneros
                 </button>
                 <h2>{genreFilter}</h2>
-                {genreTracks.length > 0 && (
+                {filteredGenreTracks.length > 0 && (
                   <button
                     type="button"
                     className="chip-play"
-                    onClick={() => void playTracks(genreTracks.map((t) => t.id))}
+                    onClick={() => void playTracks(filteredGenreTracks.map((t) => t.id))}
                   >
                     <IconPlay size={16} /> Reproducir
                   </button>
                 )}
               </div>
-              <TrackList tracks={genreTracks} showColumns />
+              <TrackList
+                tracks={filteredGenreTracks}
+                showColumns
+                emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
+                emptyHint={q ? 'Prueba con otro título' : undefined}
+              />
             </>
           ) : (
             <ul className="playlist-list">
-              {genreGroups.map((g) => (
+              {filteredGenres.map((g) => (
                 <li key={g.name}>
                   <button
                     type="button"
@@ -276,11 +358,13 @@ export function LibraryPage() {
                   </button>
                 </li>
               ))}
-              {genreGroups.length === 0 && (
+              {filteredGenres.length === 0 && (
                 <div className="empty-state">
-                  <p className="empty-state__title">Sin géneros</p>
+                  <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin géneros'}</p>
                   <p className="empty-state__hint">
-                    Sube canciones o busca info online para etiquetarlas
+                    {q
+                      ? 'Prueba con otro nombre'
+                      : 'Sube canciones o busca info online para etiquetarlas'}
                   </p>
                 </div>
               )}

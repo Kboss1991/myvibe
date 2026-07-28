@@ -1,8 +1,9 @@
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
-import { getAudioObjectUrl, getCoverObjectUrl, recordPlay } from '../lib/library'
-import { setMediaPlaybackState, shuffleArray, updateMediaSession } from '../lib/mediaSession'
+import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime } from '../lib/library'
+import { deleteBinary } from '../lib/opfs'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 
@@ -77,20 +78,115 @@ async function loadAndMaybePlay(
   shouldPlay: boolean,
   set: (partial: Partial<PlayerState>) => void,
 ) {
-  const url = await getAudioObjectUrl(trackId)
-  if (!url) return
+  let url = await getAudioObjectUrl(trackId)
+  if (!url) {
+    // Solo marcar remota si realmente no hay blob
+    try {
+      await db.tracks.update(trackId, { hasLocalAudio: false })
+    } catch {
+      // ignore
+    }
+    return false
+  }
 
   const coverUrl = await getCoverObjectUrl(trackId)
   set({ coverUrl, currentTrackId: trackId })
-  await audioEngine.load(url, resumeAt)
+  try {
+    await audioEngine.load(url, resumeAt)
+  } catch {
+    // Fallo al cargar: probar copia alternativa antes de rendirse
+    const retried = await retryAlternateAudioSource(trackId, resumeAt)
+    if (!retried) return false
+  }
 
   if (shouldPlay) {
+    audioEngine.applyPlaybackSession()
     await audioEngine.play()
+    if (audioEngine.element.error || audioEngine.paused) {
+      // Reintentar con la otra copia (IDB ↔ OPFS) si el decode falló
+      if (audioEngine.element.error) {
+        const ok = await retryAlternateAudioSource(trackId, resumeAt)
+        if (ok) await audioEngine.play()
+      }
+
+      if (audioEngine.element.error) {
+        const sources = await getAudioBlobSources(trackId)
+        const stillThere = Boolean(
+          (sources.idb && sources.idb.size >= 1024) || (sources.opfs && sources.opfs.size >= 1024),
+        )
+        if (!stillThere) {
+          try {
+            await db.tracks.update(trackId, { hasLocalAudio: false })
+          } catch {
+            // ignore
+          }
+        }
+        set({ isPlaying: false })
+        setMediaPlaybackState(false)
+        return false
+      }
+    }
     set({ isPlaying: !audioEngine.paused })
-    await recordPlay(trackId)
-    await persistRecent(trackId)
+    setMediaPlaybackState(!audioEngine.paused)
+    if (!audioEngine.paused) {
+      await recordPlay(trackId)
+      await persistRecent(trackId)
+    }
   } else {
     set({ isPlaying: false })
+    setMediaPlaybackState(false)
+  }
+  return true
+}
+
+/** Carga la copia alternativa (IDB ↔ OPFS) con MIME forzado. */
+async function retryAlternateAudioSource(trackId: string, resumeAt: number): Promise<boolean> {
+  const sources = await getAudioBlobSources(trackId)
+  const preferred = await getAudioBlob(trackId)
+  const preferredSize = preferred?.size ?? 0
+  const alternate =
+    sources.idb && sources.idb.size !== preferredSize
+      ? sources.idb
+      : sources.opfs && sources.opfs.size !== preferredSize
+        ? sources.opfs
+        : sources.idb && sources.opfs
+          ? sources.idb.size >= sources.opfs.size
+            ? sources.opfs
+            : sources.idb
+          : null
+
+  if (!alternate || alternate.size < 1024) return false
+
+  // Si OPFS estaba truncado, borrarlo para no volver a preferirlo en no-Apple
+  if (sources.opfs && sources.idb && sources.opfs.size < sources.idb.size) {
+    await deleteBinary('audio', trackId).catch(() => undefined)
+  }
+
+  let mimeHint = alternate.type
+  if (!mimeHint) {
+    try {
+      const track = await db.tracks.get(trackId)
+      mimeHint = track?.mimeType || 'audio/mpeg'
+    } catch {
+      mimeHint = 'audio/mpeg'
+    }
+  }
+
+  revokeCachedUrls(trackId)
+  const playable = ensureAudioMime(alternate, mimeHint)
+  // Guardar la copia buena en IDB para próximas veces
+  try {
+    await db.audio.put({ id: trackId, blob: playable })
+  } catch {
+    // ignore
+  }
+  const stable = await getAudioObjectUrl(trackId)
+  if (!stable) return false
+  try {
+    await audioEngine.load(stable, resumeAt)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -143,15 +239,17 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   syncFromEngine: () => {
     const playing = !audioEngine.paused
+    const position = audioEngine.currentTime
+    const duration = audioEngine.duration
     set({
-      position: audioEngine.currentTime,
-      duration: audioEngine.duration,
+      position,
+      duration,
       isPlaying: playing,
       volume: audioEngine.volume,
       muted: audioEngine.muted,
     })
-    setMediaPlaybackState(playing)
-    persistSoon({ position: audioEngine.currentTime })
+    setMediaPositionState(position, duration, playing)
+    persistSoon({ position })
   },
 
   getCurrentTrack: (tracks) => {
@@ -177,7 +275,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       shuffle: false,
       position: 0,
     })
-    await loadAndMaybePlay(trackId, 0, true, set)
+    const ok = await loadAndMaybePlay(trackId, 0, true, set)
+    if (!ok) {
+      // Saltar a la siguiente con audio real
+      for (let i = index + 1; i < nextQueue.length; i++) {
+        const nextId = nextQueue[i]!
+        set({ index: i, currentTrackId: nextId })
+        if (await loadAndMaybePlay(nextId, 0, true, set)) return
+      }
+    }
   },
 
   playTracks: async (trackIds, startId, options) => {
@@ -192,22 +298,30 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       queue = shuffleArray(queue, index >= 0 ? index : undefined)
       index = 0
     }
-    const trackId = queue[index]
     set({
       queue,
       originalQueue,
       index,
-      currentTrackId: trackId,
+      currentTrackId: queue[index] ?? null,
       shuffle: shuffleOn,
     })
     persistSoon({
       queue,
       index,
-      currentTrackId: trackId,
+      currentTrackId: queue[index] ?? null,
       shuffle: shuffleOn,
       position: 0,
     })
-    await loadAndMaybePlay(trackId, 0, true, set)
+    for (let i = index; i < queue.length; i++) {
+      const trackId = queue[i]!
+      set({ index: i, currentTrackId: trackId })
+      if (await loadAndMaybePlay(trackId, 0, true, set)) return
+    }
+    for (let i = 0; i < index; i++) {
+      const trackId = queue[i]!
+      set({ index: i, currentTrackId: trackId })
+      if (await loadAndMaybePlay(trackId, 0, true, set)) return
+    }
   },
 
   toggle: async () => {
@@ -218,6 +332,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   pause: () => {
     audioEngine.pause()
     set({ isPlaying: false })
+    setMediaPlaybackState(false)
   },
 
   play: async () => {
@@ -227,8 +342,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return
     }
     if (!currentTrackId) return
+    audioEngine.applyPlaybackSession()
     await audioEngine.play()
     set({ isPlaying: !audioEngine.paused })
+    setMediaPlaybackState(!audioEngine.paused)
   },
 
   next: async () => {
@@ -253,7 +370,22 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const trackId = queue[nextIndex]
     set({ index: nextIndex, currentTrackId: trackId })
     persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
-    await loadAndMaybePlay(trackId, 0, true, set)
+    const ok = await loadAndMaybePlay(trackId, 0, true, set)
+    if (!ok) {
+      // Evitar quedarse en silencio en una pista rota
+      for (let i = nextIndex + 1; i < queue.length; i++) {
+        const id = queue[i]!
+        set({ index: i, currentTrackId: id })
+        if (await loadAndMaybePlay(id, 0, true, set)) return
+      }
+      if (repeat === 'all') {
+        for (let i = 0; i < nextIndex; i++) {
+          const id = queue[i]!
+          set({ index: i, currentTrackId: id })
+          if (await loadAndMaybePlay(id, 0, true, set)) return
+        }
+      }
+    }
   },
 
   previous: async () => {

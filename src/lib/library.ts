@@ -2,47 +2,81 @@ import { db } from '../db'
 import {
   createId,
   getAudioDuration,
+  guessAudioMime,
   isAudioFile,
   isMp3File,
   materializeAudioFile,
   readTags,
-  readTagsEnriched,
 } from './fileImport'
-import { enrichFromInternet, fetchCoverBlob, isDoubtfulMetadata, isLowQualityRelease, isWrongKnownArtist, refineGenre, coreSongTitle } from './enrich'
+import { enrichFromInternet, fetchCoverBlob, isDoubtfulMetadata, isDisneyOrAnimeSearchContext, isLowQualityRelease, isWrongKnownArtist, refineGenre, coreSongTitle, titlesCompatible, artistsCompatible, knownTrackQueries } from './enrich'
 import type { OnlineTrackInfo } from './enrich'
-import { deleteBinary, readBinary, writeBinary } from './opfs'
+import { isAppleMobile } from './folderImport'
+import { deleteBinary, readBinary, writeBinary, clearOpfsFolder, listOpfsIds } from './opfs'
+import { groupDuplicateTracks, pickCanonicalTrack, tracksLookSame } from './trackDedupe'
 import type { Playlist, Track } from '../types'
 
+function pickBestBlob(...blobs: Array<Blob | null | undefined>): Blob | null {
+  const valid = blobs.filter((b): b is Blob => Boolean(b && b.size > 0))
+  if (!valid.length) return null
+  // Preferir la copia más grande: en iOS OPFS a veces deja audio truncado
+  // mientras IndexedDB tiene el archivo completo.
+  valid.sort((a, b) => b.size - a.size)
+  return valid[0] ?? null
+}
+
+/** Safari falla a decodificar blobs OPFS/File con type vacío. */
+export function ensureAudioMime(blob: Blob, mimeHint?: string): Blob {
+  const type = (blob.type || mimeHint || 'audio/mpeg').trim() || 'audio/mpeg'
+  if (blob.type === type) return blob
+  return blob.slice(0, blob.size, type)
+}
+
 export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
-  const mode = await writeBinary('audio', id, blob)
-  if (mode === 'fallback') {
-    await db.audio.put({ id, blob })
+  // Copia independiente: evita que Share/File detache el buffer
+  const safe = blob.slice(0, blob.size, blob.type || 'audio/mpeg')
+  revokeCachedUrls(id)
+  objectUrlCache.delete(`audio:${id}`)
+  // En iPhone/iPad OPFS es poco fiable con MP3 grandes: la carátula sí,
+  // el audio a veces queda truncado y luego tapa la copia buena de IDB.
+  if (!isAppleMobile()) {
+    await writeBinary('audio', id, safe)
   } else {
-    await db.audio.delete(id)
+    await deleteBinary('audio', id).catch(() => undefined)
   }
+  await db.audio.put({ id, blob: safe })
 }
 
 export async function saveCoverBlob(id: string, blob: Blob): Promise<void> {
-  const mode = await writeBinary('covers', id, blob)
-  if (mode === 'fallback') {
-    await db.covers.put({ id, blob })
-  } else {
-    await db.covers.delete(id)
+  const safe = blob.slice(0, blob.size, blob.type || 'image/jpeg')
+  revokeCachedUrls(id)
+  objectUrlCache.delete(`cover:${id}`)
+  await writeBinary('covers', id, safe)
+  await db.covers.put({ id, blob: safe })
+  try {
+    const { clearMediaArtworkCache } = await import('./mediaSession')
+    clearMediaArtworkCache(id)
+  } catch {
+    // ignore
   }
 }
 
 export async function getAudioBlob(id: string): Promise<Blob | null> {
-  const fromOpfs = await readBinary('audio', id)
-  if (fromOpfs) return fromOpfs
   const record = await db.audio.get(id)
-  return record?.blob ?? null
+  const fromIdb = record?.blob ?? null
+  if (isAppleMobile()) {
+    // En Apple priorizar IndexedDB; OPFS solo si IDB no tiene nada usable
+    if (fromIdb && fromIdb.size > 0) return fromIdb
+    return pickBestBlob(await readBinary('audio', id))
+  }
+  const fromOpfs = await readBinary('audio', id)
+  return pickBestBlob(fromIdb, fromOpfs)
 }
 
 export async function getCoverBlob(id: string): Promise<Blob | null> {
-  const fromOpfs = await readBinary('covers', id)
-  if (fromOpfs) return fromOpfs
   const record = await db.covers.get(id)
-  return record?.blob ?? null
+  const fromIdb = record?.blob ?? null
+  const fromOpfs = await readBinary('covers', id)
+  return pickBestBlob(fromIdb, fromOpfs)
 }
 
 const objectUrlCache = new Map<string, string>()
@@ -52,7 +86,20 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
   if (cached) return cached
   const blob = await getAudioBlob(id)
   if (!blob) return null
-  const url = URL.createObjectURL(blob)
+  let mimeHint = blob.type
+  if (!mimeHint) {
+    try {
+      const track = await db.tracks.get(id)
+      mimeHint =
+        track?.mimeType ||
+        (track?.fileName ? guessAudioMime(track.fileName) : '') ||
+        'audio/mpeg'
+    } catch {
+      mimeHint = 'audio/mpeg'
+    }
+  }
+  const playable = ensureAudioMime(blob, mimeHint)
+  const url = URL.createObjectURL(playable)
   objectUrlCache.set(`audio:${id}`, url)
   return url
 }
@@ -85,7 +132,10 @@ export async function importAudioFiles(
   const audioFiles = options?.mp3Only ? files.filter(isMp3File) : files.filter(isAudioFile)
   const imported: Track[] = []
   const errors: string[] = []
+  const existingTracks = await db.tracks.toArray()
+  const shouldEnrich = options?.enrich !== false
 
+  // 1) Carga primero: audio + tags locales (rápido, la canción ya aparece)
   for (let i = 0; i < audioFiles.length; i++) {
     const original = audioFiles[i]!
     onProgress?.(i, audioFiles.length, original.name)
@@ -93,15 +143,20 @@ export async function importAudioFiles(
     try {
       // iPhone/iCloud: hay que leer el archivo entero antes de usarlo
       const file = await materializeAudioFile(original)
-      const id = createId()
-      const tags =
-        options?.enrich === false
-          ? { ...(await readTags(file)), enriched: false as const }
-          : await readTagsEnriched(file)
+      const tags = await readTags(file)
       const duration = await getAudioDuration(file)
 
+      const candidate = {
+        title: tags.title,
+        artist: tags.artist,
+        duration,
+        fileName: file.name,
+      }
+      const dup = existingTracks.find((t) => tracksLookSame(t, candidate))
+      const id = dup?.id ?? createId()
+
       await saveAudioBlob(id, file)
-      let hasCover = false
+      let hasCover = Boolean(dup?.hasCover)
       if (tags.coverBlob) {
         try {
           await saveCoverBlob(id, tags.coverBlob)
@@ -113,24 +168,29 @@ export async function importAudioFiles(
 
       const track: Track = {
         id,
-        title: tags.title,
-        artist: tags.artist,
-        album: tags.album,
-        genre: tags.genre,
-        year: tags.year,
+        title: tags.title || dup?.title || file.name,
+        artist: tags.artist || dup?.artist || 'Artista desconocido',
+        album: tags.album || dup?.album || 'Sin álbum',
+        genre: tags.genre || dup?.genre || '',
+        year: tags.year || dup?.year || '',
         duration,
-        mimeType: file.type || 'audio/mpeg',
+        mimeType: file.type || dup?.mimeType || 'audio/mpeg',
         fileName: file.name,
         hasCover,
-        liked: false,
-        playCount: 0,
-        lastPlayedAt: null,
-        createdAt: Date.now(),
-        enriched: tags.enriched,
-        externalUrl: tags.externalUrl,
+        liked: dup?.liked ?? false,
+        playCount: dup?.playCount ?? 0,
+        lastPlayedAt: dup?.lastPlayedAt ?? null,
+        createdAt: dup?.createdAt ?? Date.now(),
+        enriched: Boolean(dup?.enriched),
+        externalUrl: dup?.externalUrl,
+        hasLocalAudio: true,
+        origin: dup?.origin === 'cloud' ? 'cloud' : 'local',
       }
 
       await db.tracks.put(track)
+      const idx = existingTracks.findIndex((t) => t.id === id)
+      if (idx >= 0) existingTracks[idx] = track
+      else existingTracks.push(track)
       imported.push(track)
     } catch (e) {
       const reason = e instanceof Error ? e.message : 'error'
@@ -154,7 +214,39 @@ export async function importAudioFiles(
     )
   }
 
+  // 2) Después: carátula + metadatos online (actualiza cada pista ya cargada)
+  if (shouldEnrich && imported.length) {
+    for (let i = 0; i < imported.length; i++) {
+      const t = imported[i]!
+      onProgress?.(i, imported.length, `${t.title} · carátula y datos…`)
+      try {
+        const result = await enrichTrackOnline(t.id)
+        if (result?.track) imported[i] = result.track
+      } catch {
+        // la canción ya está; el enrich es best-effort
+      }
+    }
+    onProgress?.(imported.length, imported.length, '')
+  }
+
   return imported
+}
+
+function isGenericArtist(artist: string): boolean {
+  return (
+    !artist.trim() ||
+    /^(artista desconocido|unknown artist|unknown|desconocido|various artists|varios artistas|varios|various)$/i.test(
+      artist.trim(),
+    )
+  )
+}
+
+function isGenericAlbum(album: string): boolean {
+  return !album.trim() || /^(sin álbum|sin album|unknown album|unknown|n\/a)$/i.test(album.trim())
+}
+
+function hasOstContext(text: string): boolean {
+  return isDisneyOrAnimeSearchContext(text)
 }
 
 export async function enrichTrackOnline(
@@ -164,56 +256,74 @@ export async function enrichTrackOnline(
   const track = await db.tracks.get(id)
   if (!track) return null
 
-  const doubtful = isDoubtfulMetadata(track)
   const junkLocal = isLowQualityRelease(track.artist, track.album, track.title)
   const knownWrong = isWrongKnownArtist(track.title, track.artist, track.album)
-  const force = Boolean(options?.force) || doubtful || junkLocal || knownWrong
-  const hintArtist = force ? '' : track.artist
+  const artistGeneric = isGenericArtist(track.artist)
+  const albumGeneric = isGenericAlbum(track.album)
+  const force = Boolean(options?.force)
+  // Solo reescribir artista/álbum con fuerza explícita o basura clara
+  const allowRewriteMeta = force || junkLocal || knownWrong
+
+  const hintArtist =
+    junkLocal || knownWrong || artistGeneric ? '' : track.artist
   const searchTitle = track.title || track.fileName
   const core = coreSongTitle(searchTitle)
-  const n = searchTitle.toLowerCase()
+  const n = `${searchTitle} ${track.fileName} ${track.album} ${track.artist}`.toLowerCase()
+  const ostCtx = hasOstContext(n)
+  // Álbum/archivo dan contexto Disney (p. ej. Mulán) cuando no hay artista
+  const fromFile = (track.fileName || '').replace(/\.[^.]+$/, '')
+  const extraCtx = [track.album, fromFile]
+    .filter((x) => x && !isGenericAlbum(x))
+    .join(' ')
 
   let online: OnlineTrackInfo | null =
-    (await enrichFromInternet(searchTitle, hintArtist)) ||
-    (core ? await enrichFromInternet(core, '') : null) ||
-    (track.fileName && track.fileName !== track.title
-      ? await enrichFromInternet(track.fileName, '')
+    (await enrichFromInternet(searchTitle, hintArtist, extraCtx)) ||
+    (hintArtist
+      ? await enrichFromInternet(`${hintArtist} ${core || searchTitle}`, '', extraCtx)
+      : null) ||
+    (core && core !== searchTitle
+      ? await enrichFromInternet(core, hintArtist, extraCtx)
       : null)
+
+  const score = online?.matchScore ?? 0
+  const titleOk = online ? titlesCompatible(searchTitle, online.title) : false
+  const artistOk =
+    !hintArtist || !online || artistsCompatible(hintArtist, online.artist)
 
   const stillBad =
     !online ||
+    !titleOk ||
     isLowQualityRelease(online.artist, online.album, online.title) ||
     isWrongKnownArtist(searchTitle, online.artist, online.album) ||
-    (options?.force &&
-      online &&
-      normArtistAlbum(online) === normArtistAlbum(track))
+    (force && online && normArtistAlbum(online) === normArtistAlbum(track))
 
-  if (stillBad || options?.force) {
+  if ((stillBad || force) && ostCtx) {
     const retries = [
-      /waka/i.test(n) ? 'Shakira Waka Waka This Time for Africa' : '',
-      /waka/i.test(n) ? 'Waka Waka Shakira' : '',
-      /mundo ideal|whole new world/i.test(n)
+      /waka waka/i.test(n) ? 'Shakira Waka Waka This Time for Africa' : '',
+      /\bun mundo ideal\b|\ba whole new world\b/i.test(n)
         ? 'A Whole New World Aladdin original soundtrack'
         : '',
-      /mundo ideal|whole new world/i.test(n) ? 'A Whole New World Brad Kane Lea Salonga' : '',
-      /mundo ideal|aladdin/i.test(n) ? `${core} Aladdin Disney` : '',
-      /bella|bestia|beauty/i.test(n)
+      /\bbella\b.*\bbestia\b|\bbeauty and the beast\b/i.test(n)
         ? 'Beauty and the Beast original motion picture soundtrack'
         : '',
-      /hakuna|ciclo de la vida|rey leon|lion king/i.test(n)
+      /\bhakuna matata\b|\bciclo de la vida\b|\brey leon\b|\blion king\b/i.test(n)
         ? `${core} The Lion King original soundtrack`
         : '',
-      `${core} Disney original soundtrack`,
-      `${core} original soundtrack`,
-      searchTitle,
+      /\breflejo\b|\breflection\b|\bmulan\b/i.test(n)
+        ? 'Reflejo Lucero Mulán Disney'
+        : '',
+      /\breflejo\b|\bmulan\b/i.test(n) ? 'Reflejo Lucero Mulan banda sonora' : '',
+      /\blibre soy\b|\bfrozen\b/i.test(n) ? 'Libre Soy Martina Stoessel Frozen Disney' : '',
+      ostCtx && core ? `${core} ${track.album || ''} Disney banda sonora`.trim() : '',
     ].filter(Boolean)
 
     for (const q of retries) {
-      const alt = await enrichFromInternet(q, '')
+      const alt = await enrichFromInternet(q, '', extraCtx || track.album)
       if (
         alt &&
+        titlesCompatible(searchTitle, alt.title) &&
         !isLowQualityRelease(alt.artist, alt.album, alt.title) &&
-        !isWrongKnownArtist(searchTitle, alt.artist, alt.album)
+        !isWrongKnownArtist(searchTitle, alt.artist, alt.album || track.album)
       ) {
         online = alt
         break
@@ -221,65 +331,157 @@ export async function enrichTrackOnline(
     }
   }
 
-  if (!online) {
+  // Canciones famosas (Britney, Backstreet…): reintento con queries fijas
+  if (stillBad || force || !online?.coverUrl) {
+    for (const q of knownTrackQueries(`${searchTitle} ${track.artist} ${track.fileName}`)) {
+      const alt = await enrichFromInternet(q, hintArtist, extraCtx)
+      if (
+        alt &&
+        titlesCompatible(searchTitle, alt.title) &&
+        !isLowQualityRelease(alt.artist, alt.album, alt.title) &&
+        (!hintArtist || artistsCompatible(hintArtist, alt.artist))
+      ) {
+        online = alt
+        break
+      }
+    }
+  }
+
+  if (!online || !titlesCompatible(searchTitle, online.title)) {
     return { track, found: false, coverUpdated: false }
   }
 
-  if (
-    !options?.force &&
-    (isLowQualityRelease(online.artist, online.album, online.title) ||
-      isWrongKnownArtist(searchTitle, online.artist, online.album))
-  ) {
+  if (isLowQualityRelease(online.artist, online.album, online.title)) {
     return { track, found: false, coverUpdated: false }
   }
 
-  // En modo force aceptamos el mejor resultado no basura
-  if (
-    options?.force &&
-    isLowQualityRelease(online.artist, online.album, online.title)
-  ) {
+  const finalScore = online.matchScore ?? score
+  const titleMatch = titlesCompatible(searchTitle, online.title)
+  const knownHit = knownTrackQueries(`${searchTitle} ${track.artist}`).length > 0
+  const artistMatchStrong =
+    Boolean(hintArtist) && artistsCompatible(hintArtist, online.artist)
+  // Carátula: buena coincidencia; canciones famosas / artista claro → más permisivo
+  const canUseCover =
+    titleMatch &&
+    artistOk &&
+    (force || !track.hasCover) &&
+    (finalScore >= 80 || knownHit || artistMatchStrong)
+  // Rellenar huecos (álbum/año/género) sin pisar datos buenos
+  const canFillGaps =
+    titleMatch && artistOk && (finalScore >= 80 || knownHit || artistMatchStrong)
+  // Reescribir artista/álbum solo con fuerza o basura clara
+  const canRewriteMeta =
+    allowRewriteMeta &&
+    titleMatch &&
+    (force || artistGeneric || artistOk) &&
+    (finalScore >= 100 || knownHit)
+
+  if (!canUseCover && !canRewriteMeta && !canFillGaps) {
     return { track, found: false, coverUpdated: false }
   }
 
   let hasCover = track.hasCover
   let coverUpdated = false
-  const coverCandidates = [
-    online.coverUrl,
-    online.coverUrl?.replace('/1000x1000-', '/500x500-'),
-    online.coverUrl?.replace('/1000x1000-', '/250x250-'),
-    online.coverUrl?.replace('600x600bb', '300x300bb'),
-  ].filter(Boolean) as string[]
 
-  for (const coverUrl of [...new Set(coverCandidates)]) {
-    const blob = await fetchCoverBlob(coverUrl)
-    if (blob) {
-      revokeCachedUrls(id)
-      objectUrlCache.delete(`cover:${id}`)
-      await saveCoverBlob(id, blob)
+  async function trySaveCover(coverUrl: string | null | undefined): Promise<boolean> {
+    if (!coverUrl) return false
+    const coverCandidates = [
+      coverUrl,
+      coverUrl.replace('/1000x1000-', '/500x500-'),
+      coverUrl.replace('/1000x1000-', '/250x250-'),
+      coverUrl.replace('600x600bb', '300x300bb'),
+      coverUrl.replace('100x100bb', '600x600bb'),
+    ]
+    for (const url of [...new Set(coverCandidates)]) {
+      const blob = await fetchCoverBlob(url)
+      if (blob && blob.size > 500) {
+        revokeCachedUrls(id)
+        objectUrlCache.delete(`cover:${id}`)
+        await saveCoverBlob(id, blob)
+        return true
+      }
+    }
+    return false
+  }
+
+  // Siempre intentar portada si falta (aunque el resto de meta ya esté)
+  if ((canUseCover || (!track.hasCover && titleMatch && artistOk)) && online.coverUrl) {
+    if (await trySaveCover(online.coverUrl)) {
       hasCover = true
       coverUpdated = true
-      break
     }
   }
 
+  // Britney / famosas: si aún no hay icono, otra pasada solo para portada
+  if (!hasCover) {
+    const coverQueries = [
+      ...knownTrackQueries(`${searchTitle} ${track.artist} ${track.fileName}`),
+      `${track.artist} ${core || searchTitle}`.trim(),
+    ].filter(Boolean)
+    for (const q of [...new Set(coverQueries)]) {
+      const alt = await enrichFromInternet(q, hintArtist || (artistGeneric ? '' : track.artist), '')
+      if (!alt?.coverUrl) continue
+      if (!titlesCompatible(searchTitle, alt.title)) continue
+      if (
+        !artistGeneric &&
+        track.artist &&
+        !artistsCompatible(track.artist, alt.artist)
+      ) {
+        continue
+      }
+      if (await trySaveCover(alt.coverUrl)) {
+        hasCover = true
+        coverUpdated = true
+        online = alt
+        break
+      }
+    }
+  }
+
+  // Por defecto NO tocar título; rellenar artista/álbum si faltan
+  const nextTitle = track.title
+  const nextArtist =
+    artistGeneric && (canFillGaps || canRewriteMeta)
+      ? online.artist
+      : canRewriteMeta && (junkLocal || knownWrong || force)
+        ? online.artist
+        : track.artist
+  const nextAlbum =
+    (canRewriteMeta && (albumGeneric || junkLocal || knownWrong || force)) ||
+    (albumGeneric && canFillGaps)
+      ? online.album
+      : track.album
+
   const patch: Partial<Track> = {
-    title: track.title,
-    artist: online.artist,
-    album: online.album,
-    genre: refineGenre({
-      title: track.title,
-      artist: online.artist,
-      album: online.album,
-      genre: online.genre || track.genre,
-      fileName: track.fileName,
-    }),
-    year: online.year || track.year,
+    title: nextTitle,
+    artist: nextArtist,
+    album: nextAlbum,
+    genre: track.genre
+      ? track.genre
+      : refineGenre({
+          title: nextTitle,
+          artist: nextArtist,
+          album: nextAlbum,
+          genre: (canFillGaps || canRewriteMeta ? online.genre : '') || '',
+          fileName: track.fileName,
+        }),
+    year: track.year || (canFillGaps || canRewriteMeta ? online.year : ''),
     hasCover,
     enriched: true,
     externalUrl: `${online.externalUrl || 'myvibe'}:e${Date.now()}`,
   }
   await db.tracks.update(id, patch)
-  return { track: { ...track, ...patch }, found: true, coverUpdated }
+  const metaChanged =
+    patch.artist !== track.artist ||
+    patch.album !== track.album ||
+    Boolean(patch.year && patch.year !== track.year) ||
+    Boolean(patch.genre && patch.genre !== track.genre)
+  return {
+    track: { ...track, ...patch },
+    // Antes: si meta ya estaba bien y fallaba la portada, salía “no encontrado”
+    found: coverUpdated || metaChanged || canRewriteMeta || canFillGaps || canUseCover,
+    coverUpdated,
+  }
 }
 
 function normArtistAlbum(t: { artist: string; album: string }): string {
@@ -325,6 +527,88 @@ export async function deleteTrack(id: string): Promise<void> {
   )
 }
 
+/** Fusiona duplicados locales (mismo archivo/título) y deja una sola copia. */
+export async function dedupeLibraryTracks(): Promise<number> {
+  const tracks = await db.tracks.toArray()
+  const groups = groupDuplicateTracks(tracks)
+  let removed = 0
+
+  for (const group of groups) {
+    // Elegir canónica por blob real, no solo por el flag hasLocalAudio
+    const ranked = await Promise.all(
+      group.map(async (t) => {
+        const blob = await getAudioBlob(t.id)
+        return { track: t, audioSize: blob && blob.size >= 1024 ? blob.size : 0 }
+      }),
+    )
+    ranked.sort((a, b) => {
+      if (a.audioSize !== b.audioSize) return b.audioSize - a.audioSize
+      return 0
+    })
+    const withAudio = ranked.filter((r) => r.audioSize > 0).map((r) => r.track)
+    const keep =
+      withAudio.length > 0
+        ? pickCanonicalTrack(withAudio)
+        : pickCanonicalTrack(group)
+    const keepAudioEntry = ranked.find((r) => r.track.id === keep.id)
+    let keepAudioSize = keepAudioEntry?.audioSize ?? 0
+    const drop = group.filter((t) => t.id !== keep.id)
+    if (!drop.length) continue
+
+    let liked = keep.liked
+    let playCount = keep.playCount || 0
+    let lastPlayedAt = keep.lastPlayedAt
+    let hasCover = keep.hasCover
+    let hasLocalAudio = keepAudioSize > 0
+
+    for (const other of drop) {
+      liked = liked || other.liked
+      playCount = Math.max(playCount, other.playCount || 0)
+      if ((other.lastPlayedAt || 0) > (lastPlayedAt || 0)) {
+        lastPlayedAt = other.lastPlayedAt
+      }
+      if (other.hasCover && !hasCover) {
+        const cover = await getCoverBlob(other.id)
+        if (cover) {
+          await saveCoverBlob(keep.id, cover)
+          hasCover = true
+        }
+      }
+      const otherAudio = await getAudioBlob(other.id)
+      const otherSize = otherAudio && otherAudio.size >= 1024 ? otherAudio.size : 0
+      // Siempre migrar audio si keep no tiene blob, o si other es claramente más completo
+      if (otherAudio && otherSize > 0 && (keepAudioSize <= 0 || otherSize > keepAudioSize * 1.02)) {
+        await saveAudioBlob(keep.id, otherAudio)
+        keepAudioSize = otherSize
+        hasLocalAudio = true
+      }
+
+      const playlists = await db.playlists.toArray()
+      for (const p of playlists) {
+        if (!p.trackIds.includes(other.id)) continue
+        const trackIds = p.trackIds.map((id) => (id === other.id ? keep.id : id))
+        await db.playlists.update(p.id, {
+          trackIds: [...new Set(trackIds)],
+          updatedAt: Date.now(),
+        })
+      }
+
+      await deleteTrack(other.id)
+      removed += 1
+    }
+
+    await db.tracks.update(keep.id, {
+      liked,
+      playCount,
+      lastPlayedAt,
+      hasCover,
+      hasLocalAudio,
+    })
+  }
+
+  return removed
+}
+
 export async function updateTrackMeta(
   id: string,
   patch: Partial<Pick<Track, 'title' | 'artist' | 'album' | 'genre' | 'year' | 'liked'>>,
@@ -355,6 +639,268 @@ export async function deleteTracks(ids: string[]): Promise<void> {
   for (const id of ids) {
     await deleteTrack(id)
   }
+}
+
+/**
+ * Sincroniza hasLocalAudio con la realidad del almacenamiento.
+ * - Si hay blob usable → marca local (recupera canciones mal marcadas en el PC)
+ * - Si no hay blob → marca remota
+ */
+export async function repairMissingLocalAudio(): Promise<number> {
+  const tracks = await db.tracks.toArray()
+  let fixed = 0
+  for (const t of tracks) {
+    const blob = await getAudioBlob(t.id)
+    const has = Boolean(blob && blob.size >= 1024)
+    if (has && t.hasLocalAudio === false) {
+      await db.tracks.update(t.id, { hasLocalAudio: true })
+      fixed += 1
+      continue
+    }
+    if (!has && t.hasLocalAudio !== false) {
+      await db.tracks.update(t.id, { hasLocalAudio: false })
+      if (blob && blob.size > 0) {
+        await db.audio.delete(t.id).catch(() => undefined)
+        await deleteBinary('audio', t.id).catch(() => undefined)
+        revokeCachedUrls(t.id)
+      }
+      fixed += 1
+    }
+  }
+  return fixed
+}
+
+/** Devuelve las dos copias posibles (IDB / OPFS) para reintentar reproducción. */
+export async function getAudioBlobSources(
+  id: string,
+): Promise<{ idb: Blob | null; opfs: Blob | null }> {
+  const record = await db.audio.get(id)
+  const idb = record?.blob && record.blob.size > 0 ? record.blob : null
+  const opfsRaw = await readBinary('audio', id)
+  const opfs = opfsRaw && opfsRaw.size > 0 ? opfsRaw : null
+  return { idb, opfs }
+}
+
+/**
+ * Borra toda la música de ESTE dispositivo (audio, carátulas, metadatos locales).
+ * No cierra la sesión. En el móvil el catálogo del PC puede volver como stubs al sincronizar.
+ */
+export async function clearLocalMusicLibrary(): Promise<{ tracks: number; playlists: number }> {
+  const tracks = await db.tracks.toArray()
+  for (const t of tracks) {
+    revokeCachedUrls(t.id)
+    await deleteBinary('audio', t.id)
+    await deleteBinary('covers', t.id)
+    await db.audio.delete(t.id)
+    await db.covers.delete(t.id)
+    await db.tracks.delete(t.id)
+  }
+  // Huérfanos en OPFS
+  await clearOpfsFolder('audio')
+  await clearOpfsFolder('covers')
+  // Vaciar tablas por si quedan restos
+  await db.audio.clear()
+  await db.covers.clear()
+
+  const playlists = await db.playlists.toArray()
+  for (const p of playlists) {
+    await db.playlists.update(p.id, { trackIds: [], updatedAt: Date.now() })
+  }
+
+  return { tracks: tracks.length, playlists: playlists.length }
+}
+
+function formatBytes(n: number): string {
+  if (n <= 0) return '0 B'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+/** Resumen de lo que borraría “Borrar música de este dispositivo”. */
+export async function previewClearLocalMusic(): Promise<{
+  tracks: number
+  withAudio: number
+  withCover: number
+  playlists: number
+  sampleTitles: string[]
+  bytesApprox: number
+  summary: string
+}> {
+  const tracks = await db.tracks.toArray()
+  const playlists = await db.playlists.toArray()
+  let withAudio = 0
+  let withCover = 0
+  let bytesApprox = 0
+
+  for (const t of tracks) {
+    if (t.hasLocalAudio !== false) withAudio += 1
+    if (t.hasCover) withCover += 1
+    const audio = await db.audio.get(t.id)
+    if (audio?.blob) bytesApprox += audio.blob.size
+    const cover = await db.covers.get(t.id)
+    if (cover?.blob) bytesApprox += cover.blob.size
+  }
+
+  const sampleTitles = tracks
+    .slice(0, 8)
+    .map((t) => `${t.title || 'Sin título'} — ${t.artist || 'Desconocido'}`)
+
+  const lines = [
+    `Se borrará de MyVibe en este dispositivo:`,
+    ``,
+    `· ${tracks.length} canción${tracks.length === 1 ? '' : 'es'} (metadatos)`,
+    `· ${withAudio} con audio/MP3 local`,
+    `· ${withCover} con carátula`,
+    `· Listas de reproducción: se vacían (${playlists.length})`,
+    bytesApprox > 0 ? `· Espacio aprox. a liberar: ${formatBytes(bytesApprox)}` : null,
+    ``,
+    `No se cierra la sesión ni se borra la cuenta.`,
+    `Las copias en Archivos/Descargas → MyVibe no se tocan.`,
+  ].filter((x): x is string => x !== null)
+
+  if (sampleTitles.length) {
+    lines.push(``, `Ejemplos:`, ...sampleTitles.map((t) => `· ${t}`))
+    if (tracks.length > sampleTitles.length) {
+      lines.push(`· … y ${tracks.length - sampleTitles.length} más`)
+    }
+  }
+
+  lines.push(``, `¿Continuar?`)
+
+  return {
+    tracks: tracks.length,
+    withAudio,
+    withCover,
+    playlists: playlists.length,
+    sampleTitles,
+    bytesApprox,
+    summary: lines.join('\n'),
+  }
+}
+
+/**
+ * Borra audio/carátulas huérfanas (IndexedDB + OPFS) sin pista en la biblioteca.
+ * No toca canciones activas ni la cuenta.
+ */
+export async function purgeOrphanLocalStorage(): Promise<{
+  audio: number
+  covers: number
+  bytesApprox: number
+}> {
+  const preview = await previewOrphanPurge()
+  if (preview.audio + preview.covers === 0) {
+    return { audio: 0, covers: 0, bytesApprox: 0 }
+  }
+
+  const trackIds = new Set((await db.tracks.toArray()).map((t) => t.id))
+  let audio = 0
+  let covers = 0
+  let bytesApprox = 0
+
+  const audioRows = await db.audio.toArray()
+  for (const row of audioRows) {
+    if (trackIds.has(row.id)) continue
+    bytesApprox += row.blob?.size || 0
+    await db.audio.delete(row.id)
+    await deleteBinary('audio', row.id)
+    audio += 1
+  }
+
+  const coverRows = await db.covers.toArray()
+  for (const row of coverRows) {
+    if (trackIds.has(row.id)) continue
+    bytesApprox += row.blob?.size || 0
+    await db.covers.delete(row.id)
+    await deleteBinary('covers', row.id)
+    covers += 1
+  }
+
+  // OPFS: entradas sin track (aunque IDB ya esté limpio)
+  for (const id of await listOpfsIds('audio')) {
+    if (trackIds.has(id)) continue
+    await deleteBinary('audio', id)
+    audio += 1
+  }
+  for (const id of await listOpfsIds('covers')) {
+    if (trackIds.has(id)) continue
+    await deleteBinary('covers', id)
+    covers += 1
+  }
+
+  return { audio, covers, bytesApprox }
+}
+
+/** Resumen de lo que borraría “Limpiar datos sin usar”. */
+export async function previewOrphanPurge(): Promise<{
+  audio: number
+  covers: number
+  bytesApprox: number
+  summary: string
+}> {
+  const trackIds = new Set((await db.tracks.toArray()).map((t) => t.id))
+  const audioOrphans = new Set<string>()
+  const coverOrphans = new Set<string>()
+  let bytesApprox = 0
+
+  for (const row of await db.audio.toArray()) {
+    if (trackIds.has(row.id)) continue
+    audioOrphans.add(row.id)
+    bytesApprox += row.blob?.size || 0
+  }
+  for (const row of await db.covers.toArray()) {
+    if (trackIds.has(row.id)) continue
+    coverOrphans.add(row.id)
+    bytesApprox += row.blob?.size || 0
+  }
+  for (const id of await listOpfsIds('audio')) {
+    if (!trackIds.has(id)) audioOrphans.add(id)
+  }
+  for (const id of await listOpfsIds('covers')) {
+    if (!trackIds.has(id)) coverOrphans.add(id)
+  }
+
+  const audio = audioOrphans.size
+  const covers = coverOrphans.size
+
+  if (audio + covers === 0) {
+    return {
+      audio: 0,
+      covers: 0,
+      bytesApprox: 0,
+      summary:
+        'No hay datos sin usar.\n\nNo se borrará ninguna canción de tu biblioteca.\n(Audio/carátulas huérfanos: 0)',
+    }
+  }
+
+  const lines = [
+    `Se borrarán solo restos huérfanos (sin canción en la lista):`,
+    ``,
+    `· ${audio} archivo${audio === 1 ? '' : 's'} de audio sin pista`,
+    `· ${covers} carátula${covers === 1 ? '' : 's'} sin pista`,
+    bytesApprox > 0 ? `· Espacio aprox.: ${formatBytes(bytesApprox)}` : null,
+    ``,
+    `Tu biblioteca actual (${trackIds.size} canciones) NO se toca.`,
+    `La cuenta y las playlists se mantienen.`,
+    ``,
+    `¿Continuar?`,
+  ].filter((x): x is string => x !== null)
+
+  return {
+    audio,
+    covers,
+    bytesApprox,
+    summary: lines.join('\n'),
+  }
+}
+
+/** Estimación de huérfanos sin borrarlos (para habilitar el botón en Perfil). */
+export async function countOrphanLocalStorage(): Promise<{
+  audio: number
+  covers: number
+}> {
+  const preview = await previewOrphanPurge()
+  return { audio: preview.audio, covers: preview.covers }
 }
 
 export async function enrichTracksByIds(

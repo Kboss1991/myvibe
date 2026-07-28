@@ -17,6 +17,15 @@ export interface Track {
   createdAt: number
   enriched: boolean
   externalUrl?: string
+  /** false = solo metadatos en la nube; falta MP3 local */
+  hasLocalAudio?: boolean
+  /**
+   * Origen de la pista:
+   * - local = importada en este dispositivo
+   * - cloud = llegó desde el catálogo/PC (stub o descarga)
+   * Sirve para borrar en el iPhone lo que se borre en el PC.
+   */
+  origin?: 'local' | 'cloud'
 }
 
 export interface Playlist {

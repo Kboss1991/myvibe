@@ -206,6 +206,28 @@
   color: var(--text);
 }
 
+.library-search {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+}
+
+.library-search__clear {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.library-search__clear:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+
 .chip-cloud {
   display: flex;
   flex-wrap: wrap;
@@ -296,6 +318,41 @@
   gap: 8px;
   padding: 10px 14px !important;
   white-space: nowrap;
+}
+
+.section__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.library-quiet-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.library-quiet-action:hover:not(:disabled) {
+  color: #e8e0d0;
+  border-color: rgba(201, 168, 76, 0.35);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.library-quiet-action:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .enrich-progress-text {
@@ -559,6 +616,19 @@
   margin: -16px -16px 20px;
   padding: 20px 16px 24px;
   background: linear-gradient(180deg, #3e3e3e 0%, #121212 100%);
+}
+
+@media (max-width: 899px) {
+  .spotify-hero {
+    /* No subir por encima del safe-area del iPhone */
+    margin: 0 0 20px;
+    padding: 8px 0 20px;
+    background: linear-gradient(180deg, #3e3e3e 0%, #121212 100%);
+  }
+
+  .page {
+    padding-top: 12px;
+  }
 }
 
 .spotify-hero__top {
@@ -871,6 +941,40 @@
   margin-bottom: 24px;
 }
 
+.profile-storage {
+  margin: 0 0 28px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid #333;
+  background: #181818;
+}
+
+.profile-storage__title {
+  margin: 0 0 6px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.profile-storage__hint {
+  margin: 0 0 14px;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.profile-storage__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.profile-storage__btn {
+  width: 100%;
+  justify-content: center;
+  min-height: 44px;
+}
+
 .profile-sheet-hint {
   color: var(--text-muted);
   font-size: 0.85rem;
@@ -980,7 +1084,8 @@
 }
 
 .receive-page {
-  min-height: 100dvh;
+  min-height: 100%;
+  height: 100%;
   display: grid;
   place-items: center;
   padding: 24px 16px;

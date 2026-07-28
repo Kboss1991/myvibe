@@ -1,5 +1,6 @@
 .auth-page {
-  min-height: 100dvh;
+  min-height: 100%;
+  height: 100%;
   display: grid;
   place-items: center;
   padding: 24px;
