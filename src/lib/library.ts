@@ -4,6 +4,8 @@ import {
   getAudioDuration,
   isAudioFile,
   isMp3File,
+  materializeAudioFile,
+  readTags,
   readTagsEnriched,
 } from './fileImport'
 import { enrichFromInternet, fetchCoverBlob, isDoubtfulMetadata, isLowQualityRelease, isWrongKnownArtist, refineGenre, coreSongTitle } from './enrich'
@@ -82,46 +84,76 @@ export async function importAudioFiles(
 ): Promise<Track[]> {
   const audioFiles = options?.mp3Only ? files.filter(isMp3File) : files.filter(isAudioFile)
   const imported: Track[] = []
+  const errors: string[] = []
 
   for (let i = 0; i < audioFiles.length; i++) {
-    const file = audioFiles[i]
-    onProgress?.(i, audioFiles.length, file.name)
+    const original = audioFiles[i]!
+    onProgress?.(i, audioFiles.length, original.name)
 
-    const id = createId()
-    const tags = await readTagsEnriched(file)
-    const duration = await getAudioDuration(file)
+    try {
+      // iPhone/iCloud: hay que leer el archivo entero antes de usarlo
+      const file = await materializeAudioFile(original)
+      const id = createId()
+      const tags =
+        options?.enrich === false
+          ? { ...(await readTags(file)), enriched: false as const }
+          : await readTagsEnriched(file)
+      const duration = await getAudioDuration(file)
 
-    await saveAudioBlob(id, file)
-    let hasCover = false
-    if (tags.coverBlob) {
-      await saveCoverBlob(id, tags.coverBlob)
-      hasCover = true
+      await saveAudioBlob(id, file)
+      let hasCover = false
+      if (tags.coverBlob) {
+        try {
+          await saveCoverBlob(id, tags.coverBlob)
+          hasCover = true
+        } catch {
+          // portada opcional
+        }
+      }
+
+      const track: Track = {
+        id,
+        title: tags.title,
+        artist: tags.artist,
+        album: tags.album,
+        genre: tags.genre,
+        year: tags.year,
+        duration,
+        mimeType: file.type || 'audio/mpeg',
+        fileName: file.name,
+        hasCover,
+        liked: false,
+        playCount: 0,
+        lastPlayedAt: null,
+        createdAt: Date.now(),
+        enriched: tags.enriched,
+        externalUrl: tags.externalUrl,
+      }
+
+      await db.tracks.put(track)
+      imported.push(track)
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : 'error'
+      errors.push(`${original.name}: ${reason}`)
+      // Quota / memoria: paramos para no perder más
+      if (/quota|memory|allocation|NotReadableError|NotFoundError/i.test(reason)) {
+        break
+      }
     }
 
-    const track: Track = {
-      id,
-      title: tags.title,
-      artist: tags.artist,
-      album: tags.album,
-      genre: tags.genre,
-      year: tags.year,
-      duration,
-      mimeType: file.type || 'audio/mpeg',
-      fileName: file.name,
-      hasCover,
-      liked: false,
-      playCount: 0,
-      lastPlayedAt: null,
-      createdAt: Date.now(),
-      enriched: tags.enriched,
-      externalUrl: tags.externalUrl,
-    }
-
-    await db.tracks.put(track)
-    imported.push(track)
+    if (i % 2 === 0) await new Promise((r) => setTimeout(r, 0))
   }
 
   onProgress?.(audioFiles.length, audioFiles.length, '')
+
+  if (!imported.length && errors.length) {
+    throw new Error(
+      errors.length === 1
+        ? errors[0]
+        : `No se pudo importar. Ejemplos: ${errors.slice(0, 2).join(' · ')}`,
+    )
+  }
+
   return imported
 }
 

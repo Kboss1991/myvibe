@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { AppIcon } from '../components/AppIcon'
 import { isInsecureLanContext } from '../lib/auth'
 import { useAuthStore } from '../store/authStore'
@@ -48,14 +49,19 @@ export function AuthPage() {
     try {
       await importAccount(file)
       const name = file.name.toLowerCase()
-      if (name.endsWith('.zip')) {
+      const zipMod = await import('../lib/zip')
+      if (name.endsWith('.zip') || (await zipMod.looksLikeZip(file))) {
         try {
-          const { extractAudioFilesFromZip } = await import('../lib/zip')
+          const { extractZipEntries, audioFilesFromZipEntries } = zipMod
           const { useLibraryStore } = await import('../store/libraryStore')
-          const audioFiles = await extractAudioFilesFromZip(file)
+          const entries = await extractZipEntries(file)
+          const audioFiles = audioFilesFromZipEntries(entries)
           if (audioFiles.length) {
             setImportMsg(`Cuenta lista. Importando ${audioFiles.length} canciones…`)
-            await useLibraryStore.getState().importFiles(audioFiles, { mp3Only: false })
+            await useLibraryStore.getState().importFiles(audioFiles, {
+              mp3Only: false,
+              enrich: false,
+            })
           }
         } catch {
           // Solo cuenta; la música se puede subir después
@@ -81,8 +87,8 @@ export function AuthPage() {
         </p>
 
         <p className="auth-lan-hint">
-          ¿Vienes de otro dispositivo? Importa tu cuenta (ZIP de biblioteca o de cuenta) y entrarás
-          con el mismo perfil. La música se importa en <strong>Subir</strong> si aún no está.
+          ¿Pasar música del PC? Escanea el <strong>QR</strong> del PC (cámara) o abre{' '}
+          <Link to="/receive">Recibir por Wi‑Fi</Link>. Las canciones se guardan en MyVibe.
         </p>
 
         <button

@@ -177,8 +177,9 @@ export async function importAccountFromJsonFile(file: File): Promise<User> {
   return applyAccount(parseAccountPayload(parsed))
 }
 
-export async function importAccountFromZip(file: File): Promise<User | null> {
-  const entries = await extractZipEntries(file)
+export async function importAccountFromZipEntries(
+  entries: import('./zip').ZipEntry[],
+): Promise<User | null> {
   const jsonEntry = entries.find(
     (e) =>
       e.name === ACCOUNT_JSON ||
@@ -198,9 +199,15 @@ export async function importAccountFromZip(file: File): Promise<User | null> {
   return applyAccount(pack, avatarEntry?.data)
 }
 
+export async function importAccountFromZip(file: File): Promise<User | null> {
+  const entries = await extractZipEntries(file)
+  return importAccountFromZipEntries(entries)
+}
+
 /** Importa cuenta desde .myvibe-account, ZIP de biblioteca o JSON suelto. */
 export async function importAccountTransfer(file: File): Promise<User> {
-  if (isZipFile(file)) {
+  const { looksLikeZip } = await import('./zip')
+  if (isZipFile(file) || (await looksLikeZip(file))) {
     const user = await importAccountFromZip(file)
     if (!user) throw new Error('Este ZIP no incluye una cuenta MyVibe')
     return user

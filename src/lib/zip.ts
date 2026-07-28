@@ -51,16 +51,16 @@ export function buildZipBlob(entries: ZipEntry[]): Blob {
 
     const local = new Uint8Array(30 + nameBytes.length)
     local.set([0x50, 0x4b, 0x03, 0x04], 0)
-    local.set(u16(20), 4) // version needed
-    local.set(u16(0), 6) // flags
-    local.set(u16(0), 8) // method STORE
-    local.set(u16(0), 10) // time
-    local.set(u16(0), 12) // date
+    local.set(u16(20), 4)
+    local.set(u16(0), 6)
+    local.set(u16(0), 8)
+    local.set(u16(0), 10)
+    local.set(u16(0), 12)
     local.set(u32(crc), 14)
     local.set(u32(size), 18)
     local.set(u32(size), 22)
     local.set(u16(nameBytes.length), 26)
-    local.set(u16(0), 28) // extra
+    local.set(u16(0), 28)
     local.set(nameBytes, 30)
 
     parts.push(local, data as BlobPart)
@@ -114,17 +114,29 @@ function readU32(view: DataView, offset: number): number {
 const AUDIO_EXT = /\.(mp3|m4a|aac|wav|ogg|flac|mpeg)$/i
 
 export function isZipFile(file: File): boolean {
-  const name = file.name.toLowerCase()
-  return (
-    name.endsWith('.zip') ||
-    file.type === 'application/zip' ||
-    file.type === 'application/x-zip-compressed'
-  )
+  const name = (file.name || '').toLowerCase()
+  const type = (file.type || '').toLowerCase()
+  if (name.endsWith('.zip') || name.includes('.zip.')) return true
+  if (type === 'application/zip' || type === 'application/x-zip-compressed') return true
+  // Android/WhatsApp a menudo manda octet-stream
+  if ((type === 'application/octet-stream' || type === '') && name.includes('zip')) return true
+  return false
+}
+
+/** Detecta ZIP por cabecera PK (útil si el móvil quita la extensión). */
+export async function looksLikeZip(file: File): Promise<boolean> {
+  if (isZipFile(file)) return true
+  try {
+    const head = new Uint8Array(await file.slice(0, 4).arrayBuffer())
+    return head[0] === 0x50 && head[1] === 0x4b && (head[2] === 0x03 || head[2] === 0x05 || head[2] === 0x07)
+  } catch {
+    return false
+  }
 }
 
 async function inflateRaw(data: Uint8Array): Promise<Uint8Array> {
   if (typeof DecompressionStream === 'undefined') {
-    throw new Error('Este navegador no puede leer ZIP comprimidos')
+    throw new Error('Este navegador no puede leer ZIP comprimidos. Prueba Chrome.')
   }
   const stream = new Blob([data as BlobPart]).stream().pipeThrough(
     new DecompressionStream('deflate-raw'),
@@ -147,10 +159,99 @@ function mimeForName(name: string): string {
   return 'application/octet-stream'
 }
 
-/** Todas las entradas de un ZIP (STORE o DEFLATE). */
-export async function extractZipEntries(file: File): Promise<ZipEntry[]> {
-  const bytes = new Uint8Array(await file.arrayBuffer())
+function findEocdOffset(bytes: Uint8Array, view: DataView): number {
+  const maxComment = 0xffff
+  const start = Math.max(0, bytes.length - (maxComment + 22))
+  for (let i = bytes.length - 22; i >= start; i--) {
+    if (readU32(view, i) === 0x06054b50) return i
+  }
+  throw new Error('ZIP inválido o incompleto (no se encontró el directorio)')
+}
+
+/**
+ * Parser robusto vía End of Central Directory.
+ * Soporta ZIPs reempaquetados (WhatsApp/Drive) con data descriptors.
+ */
+export async function extractZipEntriesFromBytes(bytes: Uint8Array): Promise<ZipEntry[]> {
+  if (bytes.length < 22) throw new Error('El archivo ZIP está vacío o dañado')
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+
+  // Firma PK
+  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    throw new Error('El archivo no parece un ZIP válido')
+  }
+
+  const eocd = findEocdOffset(bytes, view)
+  const totalEntries = readU16(view, eocd + 10)
+  const centralSize = readU32(view, eocd + 12)
+  const centralOffset = readU32(view, eocd + 16)
+
+  if (centralOffset === 0xffffffff || centralSize === 0xffffffff) {
+    throw new Error('ZIP demasiado grande (ZIP64). Exporta en partes más pequeñas.')
+  }
+  if (centralOffset + 46 > bytes.length) {
+    throw new Error('ZIP dañado: directorio central fuera de rango')
+  }
+
+  const out: ZipEntry[] = []
+  let offset = centralOffset
+
+  for (let i = 0; i < totalEntries; i++) {
+    if (offset + 46 > bytes.length) break
+    if (readU32(view, offset) !== 0x02014b50) break
+
+    const method = readU16(view, offset + 10)
+    let compSize = readU32(view, offset + 20)
+    const nameLen = readU16(view, offset + 28)
+    const extraLen = readU16(view, offset + 30)
+    const commentLen = readU16(view, offset + 32)
+    const localOffset = readU32(view, offset + 42)
+    const nameBytes = bytes.subarray(offset + 46, offset + 46 + nameLen)
+    const name = new TextDecoder().decode(nameBytes).replace(/\\/g, '/')
+    offset += 46 + nameLen + extraLen + commentLen
+
+    if (!name || name.endsWith('/')) continue
+    if (compSize === 0xffffffff || localOffset === 0xffffffff) continue
+    if (localOffset + 30 > bytes.length) continue
+    if (readU32(view, localOffset) !== 0x04034b50) continue
+
+    const localNameLen = readU16(view, localOffset + 26)
+    const localExtraLen = readU16(view, localOffset + 28)
+    // Si el CD tiene size 0, usar el del local header (raro pero posible)
+    if (!compSize) {
+      compSize = readU32(view, localOffset + 18)
+    }
+    const dataStart = localOffset + 30 + localNameLen + localExtraLen
+    if (dataStart + compSize > bytes.length) continue
+
+    const compressed = bytes.subarray(dataStart, dataStart + compSize)
+    let data: Uint8Array
+    try {
+      if (method === 0) {
+        data = compressed
+      } else if (method === 8) {
+        data = await inflateRaw(compressed)
+      } else {
+        continue
+      }
+    } catch {
+      continue
+    }
+
+    out.push({ name, data: new Uint8Array(data) })
+  }
+
+  // Fallback: recorrido secuencial de cabeceras locales (nuestros ZIP propios)
+  if (!out.length) {
+    return extractZipEntriesSequential(bytes, view)
+  }
+  return out
+}
+
+async function extractZipEntriesSequential(
+  bytes: Uint8Array,
+  view: DataView,
+): Promise<ZipEntry[]> {
   const out: ZipEntry[] = []
   let offset = 0
 
@@ -160,17 +261,19 @@ export async function extractZipEntries(file: File): Promise<ZipEntry[]> {
 
     const flags = readU16(view, offset + 6)
     const method = readU16(view, offset + 8)
-    const compSize = readU32(view, offset + 18)
+    let compSize = readU32(view, offset + 18)
     const nameLen = readU16(view, offset + 26)
     const extraLen = readU16(view, offset + 28)
     const nameStart = offset + 30
-    const nameBytes = bytes.subarray(nameStart, nameStart + nameLen)
-    const name = new TextDecoder().decode(nameBytes).replace(/\\/g, '/')
+    const name = new TextDecoder()
+      .decode(bytes.subarray(nameStart, nameStart + nameLen))
+      .replace(/\\/g, '/')
     const dataStart = nameStart + nameLen + extraLen
 
     if (flags & 0x8) {
+      // Data descriptor: no sabemos el tamaño aquí; saltar al CD en el otro parser
       throw new Error(
-        'ZIP no soportado (data descriptor). Vuelve a descargar la biblioteca desde MyVibe.',
+        'ZIP con formato especial. Si lo enviaste por WhatsApp, pásalo por Drive o cable y vuelve a intentar.',
       )
     }
 
@@ -180,25 +283,24 @@ export async function extractZipEntries(file: File): Promise<ZipEntry[]> {
 
     const compressed = bytes.subarray(dataStart, dataStart + compSize)
     offset = dataStart + compSize
-
     if (!name || name.endsWith('/')) continue
 
     let data: Uint8Array
-    if (method === 0) {
-      data = compressed
-    } else if (method === 8) {
-      data = await inflateRaw(compressed)
-    } else {
-      continue
-    }
+    if (method === 0) data = compressed
+    else if (method === 8) data = await inflateRaw(compressed)
+    else continue
 
     out.push({ name, data: new Uint8Array(data) })
   }
-
   return out
 }
 
-/** Extrae archivos de audio de un ZIP (STORE o DEFLATE). */
+export async function extractZipEntries(file: File): Promise<ZipEntry[]> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  return extractZipEntriesFromBytes(bytes)
+}
+
+/** Extrae archivos de audio de un ZIP. */
 export async function extractAudioFilesFromZip(file: File): Promise<File[]> {
   const entries = await extractZipEntries(file)
   const out: File[] = []
@@ -220,3 +322,19 @@ export async function extractAudioFilesFromZip(file: File): Promise<File[]> {
   return out
 }
 
+export function audioFilesFromZipEntries(entries: ZipEntry[]): File[] {
+  const out: File[] = []
+  for (const entry of entries) {
+    const base = entry.name.split('/').pop() || entry.name
+    if (base.startsWith('.') || !AUDIO_EXT.test(base)) continue
+    out.push(
+      new File([entry.data as BlobPart], base, {
+        type: mimeForName(base),
+        lastModified: Date.now(),
+      }),
+    )
+  }
+  return out
+}
+
+export { AUDIO_EXT, mimeForName }

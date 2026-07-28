@@ -1,7 +1,23 @@
-/** Pick a folder (Chrome/Edge desktop) and collect only .mp3 files recursively. */
+/** Pick a folder (Chrome/Edge desktop) and collect audio files recursively. */
 
 export function supportsDirectoryPicker(): boolean {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window
+}
+
+/** iPhone/iPad: Safari no permite elegir carpetas enteras. */
+export function isAppleMobile(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const ua = navigator.userAgent || ''
+  if (/iPhone|iPad|iPod/i.test(ua)) return true
+  return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1
+}
+
+export function isImportableAudio(file: File): boolean {
+  const name = (file.name || '').toLowerCase()
+  const type = (file.type || '').toLowerCase()
+  if (type.startsWith('audio/')) return true
+  if (type === 'video/mp4' && /\.(m4a|mp4|aac)$/i.test(name)) return true
+  return /\.(mp3|m4a|aac|wav|ogg|flac|mpeg|mp4)$/i.test(name)
 }
 
 async function walkDirectory(
@@ -16,7 +32,7 @@ async function walkDirectory(
     if (entry.kind === 'file') {
       const fileHandle = entry as FileSystemFileHandle
       const file = await fileHandle.getFile()
-      if (file.name.toLowerCase().endsWith('.mp3')) {
+      if (isImportableAudio(file)) {
         out.push(file)
       }
     } else if (entry.kind === 'directory') {
@@ -42,8 +58,9 @@ export async function pickMp3Folder(): Promise<File[]> {
 }
 
 export function filterMp3Only(files: File[]): File[] {
-  return files.filter((f) => {
-    const name = f.name.toLowerCase()
-    return name.endsWith('.mp3') || f.type === 'audio/mpeg' || f.type === 'audio/mp3'
-  })
+  return files.filter(isImportableAudio)
+}
+
+export function filterAudioFiles(files: File[]): File[] {
+  return files.filter(isImportableAudio)
 }

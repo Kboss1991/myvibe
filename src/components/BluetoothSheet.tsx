@@ -1,48 +1,89 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { audioEngine } from '../lib/audioEngine'
-import { IconBluetooth, IconClose } from './Icons'
+import {
+  IconBluetooth,
+  IconClose,
+  IconComputer,
+  IconHeadphones,
+  IconRefresh,
+  IconSpeaker,
+} from './Icons'
 import './TrackList.css'
 import './BluetoothSheet.css'
 
-type AudioOut = { deviceId: string; label: string }
+type AudioOut = {
+  deviceId: string
+  label: string
+  kind: 'phone' | 'speaker' | 'headphones' | 'other'
+}
 
 interface Props {
   open: boolean
   onClose: () => void
 }
 
+const SINK_KEY = 'myvibe_audio_sink'
+
 function canSelectAudioOutput(): boolean {
-  return typeof navigator !== 'undefined' &&
+  return (
+    typeof navigator !== 'undefined' &&
     !!navigator.mediaDevices &&
     typeof (navigator.mediaDevices as MediaDevices & {
       selectAudioOutput?: () => Promise<MediaDeviceInfo>
     }).selectAudioOutput === 'function'
+  )
 }
 
 function canSetSinkId(): boolean {
-  return typeof HTMLAudioElement !== 'undefined' &&
+  return (
+    typeof HTMLAudioElement !== 'undefined' &&
     typeof (HTMLAudioElement.prototype as HTMLAudioElement & {
       setSinkId?: unknown
     }).setSinkId === 'function'
+  )
+}
+
+function classifyOutput(label: string): AudioOut['kind'] {
+  const l = label.toLowerCase()
+  if (/headphone|auricular|airpods|buds|headset|cascos/i.test(l)) return 'headphones'
+  if (/speaker|altavoz|soundbar|echo|alexa|homepod|jbl|bose|sony|marshall/i.test(l)) {
+    return 'speaker'
+  }
+  if (/speaker|default|interno|built-in|macbook|laptop|pc|computer|altavoces/i.test(l)) {
+    return 'phone'
+  }
+  return 'other'
+}
+
+function DeviceIcon({ kind }: { kind: AudioOut['kind'] }) {
+  if (kind === 'headphones') return <IconHeadphones size={22} />
+  if (kind === 'speaker') return <IconSpeaker size={22} />
+  if (kind === 'phone') return <IconComputer size={22} />
+  return <IconBluetooth size={22} />
 }
 
 async function listAudioOutputs(): Promise<AudioOut[]> {
   if (!navigator.mediaDevices?.enumerateDevices) return []
   try {
-    // En algunos navegadores hace falta un permiso previo para ver etiquetas
-    await navigator.mediaDevices.getUserMedia({ audio: true }).then((s) => {
-      s.getTracks().forEach((t) => t.stop())
-    }).catch(() => undefined)
+    // Necesario en muchos navegadores para ver etiquetas reales
+    await navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then((s) => s.getTracks().forEach((t) => t.stop()))
+      .catch(() => undefined)
   } catch {
     // ignore
   }
   const all = await navigator.mediaDevices.enumerateDevices()
   return all
     .filter((d) => d.kind === 'audiooutput')
-    .map((d, i) => ({
-      deviceId: d.deviceId,
-      label: d.label || `Salida de audio ${i + 1}`,
-    }))
+    .map((d, i) => {
+      const label = d.label || `Dispositivo ${i + 1}`
+      return {
+        deviceId: d.deviceId,
+        label,
+        kind: classifyOutput(label),
+      }
+    })
 }
 
 function openSystemBluetoothSettings() {
@@ -59,44 +100,91 @@ export function BluetoothSheet({ open, onClose }: Props) {
   const [devices, setDevices] = useState<AudioOut[]>([])
   const [activeId, setActiveId] = useState('')
   const [busy, setBusy] = useState(false)
+  const [scanning, setScanning] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const supportsPicker = canSelectAudioOutput()
+  const supportsSink = canSetSinkId()
+
+  const refresh = useCallback(async () => {
+    if (!supportsSink) {
+      setDevices([])
+      return
+    }
+    setScanning(true)
+    setError(null)
+    try {
+      const list = await listAudioOutputs()
+      setDevices(list)
+      const current = audioEngine.sinkId || localStorage.getItem(SINK_KEY) || ''
+      setActiveId(current)
+      if (!list.length) {
+        setMessage(
+          'No hay salidas visibles aún. Empareja el altavoz en Bluetooth del sistema y pulsa Actualizar.',
+        )
+      } else {
+        setMessage(null)
+      }
+    } catch {
+      setDevices([])
+      setError('No se pudo listar dispositivos. Revisa permisos del micrófono/audio.')
+    } finally {
+      setScanning(false)
+    }
+  }, [supportsSink])
 
   useEffect(() => {
     if (!open) return
     setMessage(null)
     setError(null)
-    setActiveId(audioEngine.sinkId)
-    if (canSetSinkId()) {
-      void listAudioOutputs()
-        .then(setDevices)
-        .catch(() => setDevices([]))
+    void audioEngine.restoreSinkId()
+    void refresh()
+
+    const onChange = () => void refresh()
+    navigator.mediaDevices?.addEventListener?.('devicechange', onChange)
+    return () => {
+      navigator.mediaDevices?.removeEventListener?.('devicechange', onChange)
     }
-  }, [open])
+  }, [open, refresh])
 
   if (!open) return null
 
-  async function pickWithBrowser() {
+  /** Como el buscador de Spotify: abre el picker nativo del navegador */
+  async function searchDevices() {
     setBusy(true)
     setError(null)
     setMessage(null)
     try {
-      const md = navigator.mediaDevices as MediaDevices & {
-        selectAudioOutput: () => Promise<MediaDeviceInfo>
+      if (supportsPicker) {
+        const md = navigator.mediaDevices as MediaDevices & {
+          selectAudioOutput: () => Promise<MediaDeviceInfo>
+        }
+        const device = await md.selectAudioOutput()
+        await audioEngine.setSinkId(device.deviceId)
+        setActiveId(device.deviceId)
+        setMessage(`Reproduciendo en: ${device.label || 'dispositivo elegido'}`)
+        await refresh()
+        return
       }
-      const device = await md.selectAudioOutput()
-      await audioEngine.setSinkId(device.deviceId)
-      setActiveId(device.deviceId)
-      setMessage(`Sonido por: ${device.label || 'dispositivo elegido'}`)
-      const list = await listAudioOutputs()
-      setDevices(list)
+
+      // Sin picker: refrescar lista + guía de emparejar
+      await refresh()
+      if (!supportsSink) {
+        setMessage(
+          'En este navegador el audio sigue la salida del sistema. Conecta el Bluetooth en Ajustes y MyVibe sonará ahí.',
+        )
+        return
+      }
+      setMessage(
+        'Elige un dispositivo de la lista. Si no aparece, emparéjalo primero en Ajustes → Bluetooth.',
+      )
     } catch (e) {
       if (e instanceof DOMException && e.name === 'NotAllowedError') {
-        setError('Permiso denegado para elegir salida de audio.')
+        setError('Permiso denegado. Permite elegir la salida de audio e inténtalo de nuevo.')
       } else if (e instanceof DOMException && e.name === 'AbortError') {
-        // usuario canceló
+        // canceló
       } else {
-        setError(e instanceof Error ? e.message : 'No se pudo elegir el altavoz')
+        setError(e instanceof Error ? e.message : 'No se pudo buscar dispositivos')
       }
     } finally {
       setBusy(false)
@@ -109,7 +197,7 @@ export function BluetoothSheet({ open, onClose }: Props) {
     try {
       await audioEngine.setSinkId(id)
       setActiveId(id)
-      setMessage(`Sonido por: ${label}`)
+      setMessage(`Reproduciendo en: ${label}`)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'No se pudo cambiar la salida')
     } finally {
@@ -121,11 +209,11 @@ export function BluetoothSheet({ open, onClose }: Props) {
     setError(null)
     const opened = openSystemBluetoothSettings()
     if (opened) {
-      setMessage('Se abrieron los ajustes de Bluetooth. Empareja el altavoz y vuelve aquí.')
+      setMessage('Abre Ajustes Bluetooth, empareja el altavoz y vuelve. Luego pulsa Buscar.')
       return
     }
     setMessage(
-      'Empareja el altavoz en los ajustes Bluetooth de tu móvil o PC. Luego vuelve y pulsa “Elegir altavoz”.',
+      'Ve a Ajustes → Bluetooth de tu móvil/PC, empareja el altavoz (o Alexa en modo BT) y vuelve aquí a Buscar dispositivos.',
     )
   }
 
@@ -134,68 +222,87 @@ export function BluetoothSheet({ open, onClose }: Props) {
       <button type="button" className="sheet-backdrop" aria-label="Cerrar" onClick={onClose} />
       <div className="sheet__panel bt-sheet__panel" role="dialog" aria-labelledby="bt-title">
         <div className="bt-sheet__head">
-          <h3 id="bt-title">
-            <IconBluetooth size={22} /> Altavoz / Bluetooth
-          </h3>
+          <div>
+            <p className="bt-sheet__eyebrow">Conectar a un dispositivo</p>
+            <h3 id="bt-title">Escuchar en…</h3>
+          </div>
           <button type="button" className="icon-btn" aria-label="Cerrar" onClick={onClose}>
             <IconClose size={22} />
           </button>
         </div>
 
-        <p className="bt-sheet__lead">
-          MyVibe usa el audio del sistema. Primero empareja el altavoz (o Alexa en modo Bluetooth)
-          en tu móvil/PC; después elige aquí la salida.
-        </p>
+        <button
+          type="button"
+          className="bt-sheet__search"
+          disabled={busy || scanning}
+          onClick={() => void searchDevices()}
+        >
+          <IconBluetooth size={22} />
+          <span>
+            {scanning ? 'Buscando…' : supportsPicker ? 'Buscar dispositivos' : 'Actualizar dispositivos'}
+          </span>
+        </button>
 
-        <div className="bt-sheet__actions">
-          <button type="button" className="btn-primary" disabled={busy} onClick={pairNew}>
-            Emparejar dispositivo nuevo
+        <div className="bt-sheet__toolbar">
+          <button
+            type="button"
+            className="bt-sheet__ghost"
+            disabled={busy || scanning}
+            onClick={() => void refresh()}
+          >
+            <IconRefresh size={16} /> Actualizar lista
           </button>
-
-          {canSelectAudioOutput() && (
-            <button
-              type="button"
-              className="bt-sheet__secondary"
-              disabled={busy}
-              onClick={() => void pickWithBrowser()}
-            >
-              Elegir altavoz (buscar salidas)
-            </button>
-          )}
+          <button type="button" className="bt-sheet__ghost" disabled={busy} onClick={pairNew}>
+            Emparejar nuevo
+          </button>
         </div>
 
-        {canSetSinkId() && devices.length > 0 && (
-          <ul className="bt-sheet__list">
-            <li className="bt-sheet__list-label">Salidas disponibles</li>
-            {devices.map((d) => (
+        <ul className="bt-sheet__list">
+          <li className="bt-sheet__list-label">Disponibles cerca / conectados</li>
+          {devices.length === 0 && (
+            <li className="bt-sheet__empty">
+              {supportsSink
+                ? 'Ningún altavoz listado. Empareja por Bluetooth del sistema y pulsa Buscar.'
+                : 'Este navegador no lista salidas. Conecta el Bluetooth en el sistema: MyVibe usará esa salida automáticamente.'}
+            </li>
+          )}
+          {devices.map((d) => {
+            const active = activeId === d.deviceId || (!activeId && d.deviceId === 'default')
+            return (
               <li key={d.deviceId || d.label}>
                 <button
                   type="button"
-                  className={activeId === d.deviceId ? 'is-active' : ''}
+                  className={active ? 'is-active' : ''}
                   disabled={busy}
                   onClick={() => void pickDevice(d.deviceId, d.label)}
                 >
-                  <IconBluetooth size={18} />
-                  <span>{d.label}</span>
-                  {activeId === d.deviceId ? <em>En uso</em> : null}
+                  <span className="bt-sheet__icon">
+                    <DeviceIcon kind={d.kind} />
+                  </span>
+                  <span className="bt-sheet__meta">
+                    <strong>{d.label}</strong>
+                    <small>
+                      {d.kind === 'headphones'
+                        ? 'Auriculares'
+                        : d.kind === 'speaker'
+                          ? 'Altavoz Bluetooth'
+                          : d.kind === 'phone'
+                            ? 'Este dispositivo'
+                            : 'Salida de audio'}
+                    </small>
+                  </span>
+                  {active ? <em className="bt-sheet__now">En uso</em> : null}
                 </button>
               </li>
-            ))}
-          </ul>
-        )}
+            )
+          })}
+        </ul>
 
-        {!canSetSinkId() && (
-          <p className="bt-sheet__note">
-            Este navegador no permite cambiar la salida desde la web. Conecta el altavoz por
-            Bluetooth en el sistema y el audio de MyVibe saldrá por él automáticamente.
-          </p>
-        )}
-
-        <ol className="bt-sheet__steps">
-          <li>Activa Bluetooth en el altavoz / Alexa (modo emparejar).</li>
-          <li>En el móvil o PC: Ajustes → Bluetooth → vincular.</li>
-          <li>Vuelve a MyVibe y pulsa “Elegir altavoz” si aparece la lista.</li>
-        </ol>
+        <p className="bt-sheet__note">
+          Como en Spotify: eliges dónde suena. La diferencia es que el <strong>emparejamiento</strong>{' '}
+          Bluetooth lo hace el sistema (Ajustes). Aquí solo eliges la salida ya conectada y MyVibe
+          reproduce ahí.
+        </p>
 
         {message && <p className="form-status">{message}</p>}
         {error && <p className="form-error">{error}</p>}

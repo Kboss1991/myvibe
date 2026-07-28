@@ -122,15 +122,22 @@ export function getAudioDuration(file: Blob): Promise<number> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(file)
     const audio = new Audio()
+    let done = false
+    const finish = (value: number) => {
+      if (done) return
+      done = true
+      URL.revokeObjectURL(url)
+      resolve(value)
+    }
+    const timer = window.setTimeout(() => finish(0), 8000)
     audio.preload = 'metadata'
     audio.onloadedmetadata = () => {
-      const duration = Number.isFinite(audio.duration) ? audio.duration : 0
-      URL.revokeObjectURL(url)
-      resolve(duration)
+      window.clearTimeout(timer)
+      finish(Number.isFinite(audio.duration) ? audio.duration : 0)
     }
     audio.onerror = () => {
-      URL.revokeObjectURL(url)
-      resolve(0)
+      window.clearTimeout(timer)
+      finish(0)
     }
     audio.src = url
   })
@@ -145,17 +152,50 @@ export const AUDIO_EXTENSIONS = [
   'flac',
   'webm',
   'opus',
+  'mpeg',
+  'mp4',
 ]
 
 export function isAudioFile(file: File): boolean {
-  if (file.type.startsWith('audio/')) return true
-  const ext = file.name.split('.').pop()?.toLowerCase() ?? ''
+  const name = (file.name || '').toLowerCase()
+  const type = (file.type || '').toLowerCase()
+  if (type.startsWith('audio/')) return true
+  if (type === 'video/mp4' && /\.(m4a|mp4|aac)$/i.test(name)) return true
+  if (
+    (type === '' || type === 'application/octet-stream') &&
+    /\.(mp3|m4a|aac|wav|flac|ogg|mpeg)$/i.test(name)
+  ) {
+    return true
+  }
+  const ext = name.split('.').pop() ?? ''
   return AUDIO_EXTENSIONS.includes(ext)
 }
 
 export function isMp3File(file: File): boolean {
   const name = file.name.toLowerCase()
   return name.endsWith('.mp3') || file.type === 'audio/mpeg' || file.type === 'audio/mp3'
+}
+
+export function guessAudioMime(fileName: string): string {
+  const n = fileName.toLowerCase()
+  if (n.endsWith('.m4a') || n.endsWith('.mp4') || n.endsWith('.aac')) return 'audio/mp4'
+  if (n.endsWith('.wav')) return 'audio/wav'
+  if (n.endsWith('.ogg')) return 'audio/ogg'
+  if (n.endsWith('.flac')) return 'audio/flac'
+  return 'audio/mpeg'
+}
+
+/** Fuerza descarga desde iCloud/Archivos y fija un MIME usable. */
+export async function materializeAudioFile(file: File): Promise<File> {
+  const buf = await file.arrayBuffer()
+  const type =
+    file.type && file.type !== 'application/octet-stream'
+      ? file.type
+      : guessAudioMime(file.name)
+  return new File([buf], file.name || `cancion-${Date.now()}.mp3`, {
+    type,
+    lastModified: file.lastModified || Date.now(),
+  })
 }
 
 export function createId(): string {

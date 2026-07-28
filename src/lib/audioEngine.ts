@@ -108,7 +108,29 @@ class AudioEngine {
       throw new Error('Tu navegador no permite elegir la salida de audio')
     }
     await el.setSinkId(deviceId)
+    try {
+      localStorage.setItem('myvibe_audio_sink', deviceId)
+    } catch {
+      // ignore
+    }
     this.emit()
+  }
+
+  /** Restaura la salida guardada (Chrome/Edge). */
+  async restoreSinkId(): Promise<void> {
+    try {
+      const saved = localStorage.getItem('myvibe_audio_sink')
+      if (!saved) return
+      const el = this.audio as HTMLAudioElement & {
+        setSinkId?: (id: string) => Promise<void>
+      }
+      if (typeof el.setSinkId === 'function') {
+        await el.setSinkId(saved)
+        this.emit()
+      }
+    } catch {
+      // dispositivo ya no disponible
+    }
   }
 
   get sinkId(): string {

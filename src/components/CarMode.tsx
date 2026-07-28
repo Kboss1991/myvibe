@@ -44,7 +44,7 @@ export function CarMode() {
       <p className="car-mode__hint">Modo conducción · conecta un altavoz Bluetooth</p>
 
       <button type="button" className="car-mode__bt" onClick={() => setBtOpen(true)}>
-        <IconBluetooth size={20} /> Conectar altavoz / buscar dispositivos
+        <IconBluetooth size={20} /> Buscar dispositivos / altavoz
       </button>
 
       <CoverArt

@@ -253,3 +253,40 @@ export function IconBluetooth(p: IconProps) {
     </svg>
   )
 }
+
+export function IconSpeaker(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M4 9v6h3l5 4V5L7 9H4z" />
+      <path d="M15.5 8.5a4 4 0 0 1 0 7" />
+      <path d="M17.5 6a7 7 0 0 1 0 12" />
+    </svg>
+  )
+}
+
+export function IconComputer(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <rect x="3" y="4" width="18" height="12" rx="2" />
+      <path d="M8 20h8M12 16v4" />
+    </svg>
+  )
+}
+
+export function IconHeadphones(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M4 13a8 8 0 0 1 16 0" />
+      <path d="M4 13v5a2 2 0 0 0 2 2h2v-7H6a2 2 0 0 0-2 2zM20 13v5a2 2 0 0 1-2 2h-2v-7h2a2 2 0 0 1 2 2z" />
+    </svg>
+  )
+}
+
+export function IconRefresh(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M21 12a9 9 0 1 1-2.6-6.4" />
+      <path d="M21 3v6h-6" />
+    </svg>
+  )
+}

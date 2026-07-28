@@ -97,6 +97,11 @@
   color: #fff;
 }
 
+.auth-lan-hint a {
+  color: #f5a623;
+  font-weight: 700;
+}
+
 .auth-import {
   width: 100%;
   margin-bottom: 18px;

@@ -693,6 +693,46 @@
   background: #282828;
 }
 
+.folder-cta--primary {
+  border-color: rgba(245, 166, 35, 0.5);
+  background: rgba(245, 166, 35, 0.08);
+}
+
+.ios-upload-hint {
+  background: rgba(245, 166, 35, 0.1);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-radius: 12px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+  color: #f5d59a;
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.ios-upload-hint strong {
+  display: block;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.ios-upload-hint ol {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.ios-upload-hint em {
+  font-style: normal;
+  color: #fff;
+  font-weight: 600;
+}
+
+.ios-upload-hint__note {
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
 .folder-cta__icon {
   width: 56px;
   height: 56px;
@@ -887,4 +927,128 @@
 .dropzone__icon {
   background: #f5a623 !important;
   color: #000 !important;
+}
+
+.wifi-code-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 16px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #1a1a1a;
+  border: 1px solid #333;
+  text-align: center;
+}
+
+.wifi-code-box p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.wifi-code-box strong {
+  font-size: 2.4rem;
+  letter-spacing: 0.28em;
+  font-variant-numeric: tabular-nums;
+  color: #f5a623;
+}
+
+.wifi-qr {
+  width: min(240px, 70vw);
+  height: auto;
+  border-radius: 12px;
+  background: #fff;
+  padding: 8px;
+}
+
+.wifi-code-alt {
+  font-size: 0.8rem !important;
+}
+
+.wifi-url-hint {
+  font-size: 0.72rem !important;
+  word-break: break-all;
+  max-width: 100%;
+  opacity: 0.75;
+}
+
+.wifi-code-box span {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.receive-page {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(245, 166, 35, 0.18), transparent),
+    #121212;
+}
+
+.receive-card {
+  width: min(420px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 22px;
+  border-radius: 16px;
+  background: #181818;
+  border: 1px solid #2a2a2a;
+}
+
+.receive-logo {
+  align-self: center;
+}
+
+.receive-card h1 {
+  margin: 0;
+  text-align: center;
+  font-size: 1.6rem;
+}
+
+.receive-sub {
+  margin: 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.receive-label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.receive-label input {
+  font-size: 1.8rem;
+  letter-spacing: 0.35em;
+  text-align: center;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid #404040;
+  background: #000;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.receive-footer {
+  margin: 8px 0 0;
+  text-align: center;
+  font-size: 0.9rem;
+}
+
+.receive-footer a {
+  color: #f5a623;
+}
+
+a.folder-cta {
+  text-decoration: none;
+  color: inherit;
 }

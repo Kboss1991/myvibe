@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Navigate, Route, Routes } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppIcon } from './components/AppIcon'
 import { BottomNav } from './components/BottomNav'
 import { CarMode } from './components/CarMode'
@@ -11,6 +11,7 @@ import { LibraryPage } from './pages/LibraryPage'
 import { LikedPage } from './pages/LikedPage'
 import { PlaylistDetailPage } from './pages/PlaylistDetailPage'
 import { ProfilePage } from './pages/ProfilePage'
+import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
 import { useAuthStore } from './store/authStore'
@@ -25,6 +26,8 @@ export default function App() {
   const initLibrary = useLibraryStore((s) => s.init)
   const hydratePlayer = usePlayerStore((s) => s.hydrate)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const location = useLocation()
+  const isReceive = location.pathname.startsWith('/receive')
 
   useEffect(() => {
     void hydrateAuth()
@@ -45,6 +48,11 @@ export default function App() {
     )
   }
 
+  // Recibir por Wi‑Fi funciona sin iniciar sesión
+  if (isReceive) {
+    return <ReceivePage />
+  }
+
   if (!user) {
     return <AuthPage />
   }
@@ -62,6 +70,7 @@ export default function App() {
             <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
             <Route path="/upload" element={<UploadPage />} />
             <Route path="/profile" element={<ProfilePage />} />
+            <Route path="/receive" element={<ReceivePage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>

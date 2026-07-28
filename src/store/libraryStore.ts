@@ -11,7 +11,7 @@ interface LibraryState {
   importProgress: { done: number; total: number; name: string } | null
   enrichProgress: { done: number; total: number; name: string } | null
   init: () => () => void
-  importFiles: (files: File[], options?: { mp3Only?: boolean }) => Promise<Track[]>
+  importFiles: (files: File[], options?: { mp3Only?: boolean; enrich?: boolean }) => Promise<Track[]>
   enrichTrack: (id: string, options?: { force?: boolean }) => Promise<{ found: boolean; coverUpdated: boolean }>
   enrichMissingCovers: () => Promise<{ ok: number; fail: number }>
   enrichSelected: (ids: string[]) => Promise<{ ok: number; fail: number }>
@@ -19,6 +19,8 @@ interface LibraryState {
   sharePlaylist: (id: string) => Promise<'shared' | 'downloaded'>
   shareLiked: () => Promise<'shared' | 'downloaded'>
   shareLibrary: () => Promise<'shared' | 'downloaded'>
+  exportLibraryFolder: () => Promise<{ count: number; folderHint: string }>
+  exportLibraryPacks: () => Promise<{ packs: number; tracks: number }>
   importShare: (file: File) => Promise<{
     trackIds: string[]
     playlistId: string | null
@@ -169,6 +171,36 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     set({ importProgress: { done: 0, total: Math.max(total, 1), name: 'Preparando…' } })
     try {
       return await downloadLibraryZip(userId, (done, t, name) => {
+        set({ importProgress: { done, total: t, name } })
+      })
+    } finally {
+      set({ importProgress: null })
+    }
+  },
+
+  exportLibraryFolder: async () => {
+    const { exportLibraryToFolder } = await import('../lib/transfer')
+    const { useAuthStore } = await import('./authStore')
+    const userId = useAuthStore.getState().user?.id
+    const total = get().tracks.length
+    set({ importProgress: { done: 0, total: Math.max(total, 1), name: 'Preparando…' } })
+    try {
+      return await exportLibraryToFolder(userId, (done, t, name) => {
+        set({ importProgress: { done, total: t, name } })
+      })
+    } finally {
+      set({ importProgress: null })
+    }
+  },
+
+  exportLibraryPacks: async () => {
+    const { downloadLibraryPacks } = await import('../lib/transfer')
+    const { useAuthStore } = await import('./authStore')
+    const userId = useAuthStore.getState().user?.id
+    const total = get().tracks.length
+    set({ importProgress: { done: 0, total: Math.max(total, 1), name: 'Preparando…' } })
+    try {
+      return await downloadLibraryPacks(userId, (done, t, name) => {
         set({ importProgress: { done, total: t, name } })
       })
     } finally {
