@@ -12,13 +12,18 @@ export function isAppleMobile(): boolean {
   return navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1
 }
 
-/** Solo el PC/escritorio debe publicar el host Wi‑Fi (no móviles Android). */
-export function isLibraryHostDevice(): boolean {
+/** Solo el PC/escritorio puede ser biblioteca principal / host Wi‑Fi (no móviles). */
+export function isLibraryHostCapable(): boolean {
   if (typeof navigator === 'undefined') return false
   if (isAppleMobile()) return false
   const ua = navigator.userAgent || ''
   if (/Android|webOS|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)) return false
   return true
+}
+
+/** @deprecated Prefer `isLibraryHostDevice` from `./devices` (respeta preferencia/nube). */
+export function isLibraryHostDevice(): boolean {
+  return isLibraryHostCapable()
 }
 
 export function isImportableAudio(file: File): boolean {

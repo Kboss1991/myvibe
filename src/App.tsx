@@ -5,9 +5,10 @@ import { BrandWordmark } from './components/BrandWordmark'
 import { BottomNav } from './components/BottomNav'
 import { NowPlaying, PlayerBar, QueueSheet } from './components/Player'
 import { Sidebar } from './components/Sidebar'
-import { isLibraryHostDevice } from './lib/folderImport'
+import { heartbeatDevice, isLibraryHostDevice } from './lib/devices'
 import { isCloudAuthEnabled } from './lib/auth'
 import { startLibraryHost } from './lib/libraryHost'
+import { publishListeningNow } from './lib/friends'
 import { AuthPage } from './pages/AuthPage'
 import { HomePage } from './pages/HomePage'
 import { LibraryPage } from './pages/LibraryPage'
@@ -15,6 +16,7 @@ import { LikedPage } from './pages/LikedPage'
 import { PlaylistDetailPage } from './pages/PlaylistDetailPage'
 import { ProfilePage } from './pages/ProfilePage'
 import { RadiosPage } from './pages/RadiosPage'
+import { PodcastsPage } from './pages/PodcastsPage'
 import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
@@ -32,9 +34,10 @@ export default function App() {
   const hydratePlayer = usePlayerStore((s) => s.hydrate)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
+  const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
   const location = useLocation()
   const isReceive = location.pathname.startsWith('/receive')
-  const hasPlayer = Boolean(currentTrackId || currentRadioId)
+  const hasPlayer = Boolean(currentTrackId || currentRadioId || currentPodcastEpisodeId)
 
   useEffect(() => {
     void hydrateAuth()
@@ -47,20 +50,33 @@ export default function App() {
     return unsub
   }, [user, initLibrary, hydratePlayer])
 
-  // Catálogo en la nube + host Wi‑Fi en el PC
+  // Catálogo en la nube + host Wi‑Fi en el PC + dispositivos
   useEffect(() => {
     if (!user || !isCloudAuthEnabled()) return
     let stopped = false
     let hostStop: (() => void) | null = null
     let syncTimer: number | undefined
+    let deviceTimer: number | undefined
 
     const runSync = () => {
       void syncCloudCatalog().catch((e) => console.warn('Sync catálogo', e))
     }
 
+    const runDevice = async () => {
+      try {
+        const { revoked } = await heartbeatDevice(user.id)
+        if (revoked) {
+          await useAuthStore.getState().logout()
+        }
+      } catch (e) {
+        console.warn('Dispositivo', e)
+      }
+    }
+
     const run = async () => {
-      // Espera un instante a que IndexedDB tenga las pistas
       await new Promise((r) => setTimeout(r, 800))
+      if (stopped) return
+      await runDevice()
       if (stopped) return
       runSync()
       if (stopped) return
@@ -79,12 +95,14 @@ export default function App() {
       }
 
       syncTimer = window.setInterval(runSync, 30_000)
+      deviceTimer = window.setInterval(() => void runDevice(), 40_000)
     }
 
     void run()
     return () => {
       stopped = true
       if (syncTimer) window.clearInterval(syncTimer)
+      if (deviceTimer) window.clearInterval(deviceTimer)
       hostStop?.()
     }
   }, [user, syncCloudCatalog])
@@ -99,6 +117,20 @@ export default function App() {
     }, 500)
     return () => window.clearTimeout(t)
   }, [user, tracksLen, syncCloudCatalog])
+
+  // Presencia “escuchando ahora” para el círculo
+  useEffect(() => {
+    if (!user || !isCloudAuthEnabled() || !currentTrackId) return
+    const track = useLibraryStore.getState().tracks.find((t) => t.id === currentTrackId)
+    if (!track) return
+    const t = window.setTimeout(() => {
+      void publishListeningNow({
+        title: track.title,
+        artist: track.artist,
+      }).catch(() => {})
+    }, 1200)
+    return () => window.clearTimeout(t)
+  }, [user, currentTrackId])
 
   if (!authReady) {
     return (
@@ -128,6 +160,7 @@ export default function App() {
             <Route path="/search" element={<SearchPage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/radios" element={<RadiosPage />} />
+            <Route path="/podcasts" element={<PodcastsPage />} />
             <Route path="/liked" element={<LikedPage />} />
             <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
             <Route path="/upload" element={<UploadPage />} />

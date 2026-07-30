@@ -3,7 +3,16 @@ import { Link } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
 import { TrackColumnsHead } from '../components/TrackColumnsHead'
 import { CoverArt } from '../components/CoverArt'
-import { IconHeart, IconPlus, IconPlay, IconTrash, IconSearch, IconUpload } from '../components/Icons'
+import {
+  IconPlus,
+  IconPlay,
+  IconTrash,
+  IconSearch,
+  IconSparkles,
+  IconUpload,
+  IconSelect,
+  IconClose,
+} from '../components/Icons'
 import { playlistCoverId } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
@@ -13,23 +22,14 @@ import './pages.css'
 
 type Tab = 'songs' | 'playlists' | 'artists' | 'albums' | 'genres'
 
-function norm(s: string): string {
-  return s
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/\p{M}/gu, '')
-}
-
 export function LibraryPage() {
   const [tab, setTab] = useState<Tab>('songs')
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
-  const [query, setQuery] = useState('')
   const [genreFilter, setGenreFilter] = useState<string | null>(null)
+  const [selectMode, setSelectMode] = useState(false)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
-  const search = useLibraryStore((s) => s.search)
-  const getLiked = useLibraryStore((s) => s.getLiked)
   const createPlaylist = useLibraryStore((s) => s.createPlaylist)
   const deletePlaylist = useLibraryStore((s) => s.deletePlaylist)
   const enrichMissingCovers = useLibraryStore((s) => s.enrichMissingCovers)
@@ -39,70 +39,42 @@ export function LibraryPage() {
   const albums = useLibraryStore((s) => s.albums)
   const genres = useLibraryStore((s) => s.genres)
   const playTracks = usePlayerStore((s) => s.playTracks)
-  const liked = getLiked()
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
   const missingAudio = tracks.filter((t) => t.hasLocalAudio === false)
   const [enrichBusy, setEnrichBusy] = useState(false)
   const [restoreBusy, setRestoreBusy] = useState(false)
   const restoreInputRef = useRef<HTMLInputElement>(null)
-  const q = query.trim()
-  const qn = norm(q)
 
-  const filteredTracks = useMemo(() => (q ? search(q) : tracks), [q, search, tracks])
-  const filteredPlaylists = useMemo(() => {
-    if (!qn) return playlists
-    return playlists.filter((p) => norm(p.name).includes(qn))
-  }, [playlists, qn])
-  const filteredArtists = useMemo(() => {
-    const list = artists()
-    if (!qn) return list
-    return list.filter((a) => norm(a.name).includes(qn))
-  }, [artists, tracks, qn])
-  const filteredAlbums = useMemo(() => {
-    const list = albums()
-    if (!qn) return list
-    return list.filter(
-      (a) => norm(a.name).includes(qn) || norm(a.artist).includes(qn),
-    )
-  }, [albums, tracks, qn])
+  const artistList = useMemo(() => artists(), [artists, tracks])
+  const albumList = useMemo(() => albums(), [albums, tracks])
   const genreGroups = genres()
-  const filteredGenres = useMemo(() => {
-    if (!qn) return genreGroups
-    return genreGroups.filter((g) => norm(g.name).includes(qn))
-  }, [genreGroups, qn])
   const genreTracks = genreFilter
     ? genreGroups.find((g) => g.name === genreFilter)?.tracks ?? []
     : []
-  const filteredGenreTracks = useMemo(() => {
-    if (!genreFilter) return []
-    if (!q) return genreTracks
-    const allowed = new Set(search(q).map((t) => t.id))
-    return genreTracks.filter((t) => allowed.has(t.id))
-  }, [genreFilter, genreTracks, q, search])
 
   const { progress, collapsed } = useMainScrollCollapse(64)
 
   const metaLabel =
     tab === 'songs'
-      ? q
-        ? `${filteredTracks.length} resultado${filteredTracks.length === 1 ? '' : 's'}`
-        : `${tracks.length} canciones`
+      ? `${tracks.length} canciones`
       : tab === 'playlists'
-        ? `${filteredPlaylists.length} playlist${filteredPlaylists.length === 1 ? '' : 's'}`
+        ? `${playlists.length} playlist${playlists.length === 1 ? '' : 's'}`
         : tab === 'artists'
-          ? `${filteredArtists.length} artista${filteredArtists.length === 1 ? '' : 's'}`
+          ? `${artistList.length} artista${artistList.length === 1 ? '' : 's'}`
           : tab === 'albums'
-            ? `${filteredAlbums.length} álbum${filteredAlbums.length === 1 ? '' : 'es'}`
+            ? `${albumList.length} álbum${albumList.length === 1 ? '' : 'es'}`
             : genreFilter
               ? genreFilter
-              : `${filteredGenres.length} género${filteredGenres.length === 1 ? '' : 's'}`
+              : `${genreGroups.length} género${genreGroups.length === 1 ? '' : 's'}`
 
-  const playableForTab =
-    tab === 'songs'
-      ? filteredTracks
-      : tab === 'genres' && genreFilter
-        ? filteredGenreTracks
-        : []
+  const playQueueIds = useMemo(() => {
+    if (tab === 'genres' && genreFilter) return genreTracks.map((t) => t.id)
+    return tracks.map((t) => t.id)
+  }, [tab, genreFilter, genreTracks, tracks])
+
+  const showSelect =
+    (tab === 'songs' && tracks.length > 0) ||
+    (tab === 'genres' && Boolean(genreFilter) && genreTracks.length > 0)
 
   return (
     <div
@@ -122,88 +94,7 @@ export function LibraryPage() {
           </button>
         </div>
 
-        <label className="search-box library-search sticky-chrome__search">
-          <IconSearch size={18} />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar en tu biblioteca"
-            autoCapitalize="off"
-            autoCorrect="off"
-            enterKeyHint="search"
-          />
-          {query ? (
-            <button
-              type="button"
-              className="library-search__clear"
-              aria-label="Limpiar búsqueda"
-              onClick={() => setQuery('')}
-            >
-              ×
-            </button>
-          ) : null}
-        </label>
-
-        <div className="sticky-chrome__meta">
-          <h2>{metaLabel}</h2>
-          <div className="sticky-chrome__meta-actions">
-            {tab === 'songs' && !q && missingAudio.length > 0 && (
-              <button
-                type="button"
-                className="library-quiet-action"
-                disabled={restoreBusy}
-                title="Elegir MP3 para canciones sin audio"
-                onClick={() => restoreInputRef.current?.click()}
-              >
-                <IconUpload size={14} />
-                {restoreBusy ? 'Subiendo…' : `${missingAudio.length} sin audio`}
-              </button>
-            )}
-            {tab === 'songs' && !q && missingCover.length > 0 && (
-              <button
-                type="button"
-                className="library-quiet-action"
-                disabled={enrichBusy}
-                title="Buscar portada, artista y álbum en internet"
-                onClick={() => {
-                  setEnrichBusy(true)
-                  void enrichMissingCovers()
-                    .then((r) => {
-                      alert(
-                        `Listo: ${r.ok} actualizadas` +
-                          (r.fail ? `, ${r.fail} sin resultado` : ''),
-                      )
-                    })
-                    .finally(() => setEnrichBusy(false))
-                }}
-              >
-                <IconSearch size={14} />
-                {enrichBusy
-                  ? 'Buscando…'
-                  : enrichProgress
-                    ? `${enrichProgress.done}/${enrichProgress.total}`
-                    : `${missingCover.length} sin datos`}
-              </button>
-            )}
-            {playableForTab.length > 0 && (
-              <button
-                type="button"
-                className="chip-play"
-                onClick={() => void playTracks(playableForTab.map((t) => t.id))}
-              >
-                <IconPlay size={16} /> Reproducir
-              </button>
-            )}
-          </div>
-        </div>
-
-        {(tab === 'songs' || (tab === 'genres' && genreFilter)) && (
-          <TrackColumnsHead />
-        )}
-      </div>
-
-      <div className="library-fade">
-        <div className="tabs">
+        <div className="tabs library-tabs sticky-chrome__tabs">
           {(
             [
               ['songs', 'Canciones'],
@@ -219,6 +110,7 @@ export function LibraryPage() {
               className={`tab ${tab === id ? 'is-active' : ''}`}
               onClick={() => {
                 setTab(id)
+                setSelectMode(false)
                 if (id !== 'genres') setGenreFilter(null)
               }}
             >
@@ -227,21 +119,103 @@ export function LibraryPage() {
           ))}
         </div>
 
-        {tab === 'songs' && !q && liked.length > 0 && (
-          <button
-            type="button"
-            className="liked-banner"
-            onClick={() => void playTracks(liked.map((t) => t.id))}
-          >
-            <span className="liked-banner__icon">
-              <IconHeart size={22} filled />
-            </span>
-            <div>
-              <strong>Canciones que te gustan</strong>
-              <span>{liked.length} temas</span>
-            </div>
-            <IconPlay size={20} />
-          </button>
+        <div className="sticky-chrome__meta">
+          <div className="library-songs-head__count">
+            {tab === 'genres' && genreFilter ? (
+              <button
+                type="button"
+                className="chip-play"
+                onClick={() => {
+                  setGenreFilter(null)
+                  setSelectMode(false)
+                }}
+              >
+                ← Géneros
+              </button>
+            ) : null}
+            <h2>{metaLabel}</h2>
+            <Link
+              to="/search"
+              className="library-meta-icon"
+              aria-label="Buscar en la biblioteca"
+              title="Buscar"
+            >
+              <IconSearch size={16} />
+            </Link>
+            {tab === 'songs' && missingCover.length > 0 ? (
+              <button
+                type="button"
+                className="library-meta-icon"
+                disabled={enrichBusy}
+                aria-label={
+                  enrichBusy
+                    ? 'Mejorando datos…'
+                    : `Completar datos de ${missingCover.length} canciones`
+                }
+                title="Mejorar portada, artista y álbum"
+                onClick={() => {
+                  setEnrichBusy(true)
+                  void enrichMissingCovers()
+                    .then((r) => {
+                      alert(
+                        `Listo: ${r.ok} actualizadas` +
+                          (r.fail ? `, ${r.fail} sin resultado` : ''),
+                      )
+                    })
+                    .finally(() => setEnrichBusy(false))
+                }}
+              >
+                <IconSparkles size={16} />
+                {enrichBusy || enrichProgress ? (
+                  <span className="library-meta-icon__hint">
+                    {enrichProgress
+                      ? `${enrichProgress.done}/${enrichProgress.total}`
+                      : '…'}
+                  </span>
+                ) : null}
+              </button>
+            ) : null}
+            {showSelect ? (
+              <button
+                type="button"
+                className={`library-select-btn ${selectMode ? 'is-on' : ''}`}
+                aria-label={selectMode ? 'Cancelar selección' : 'Selección múltiple'}
+                aria-pressed={selectMode}
+                onClick={() => setSelectMode((v) => !v)}
+              >
+                {selectMode ? <IconClose size={16} /> : <IconSelect size={16} />}
+                <span>{selectMode ? 'Cancelar' : 'Seleccionar'}</span>
+              </button>
+            ) : null}
+          </div>
+          <div className="sticky-chrome__meta-actions">
+            {tab === 'songs' && missingAudio.length > 0 && (
+              <button
+                type="button"
+                className="library-meta-icon"
+                disabled={restoreBusy}
+                aria-label={`Restaurar ${missingAudio.length} sin audio`}
+                title="Elegir MP3 para canciones sin audio"
+                onClick={() => restoreInputRef.current?.click()}
+              >
+                <IconUpload size={16} />
+              </button>
+            )}
+            <button
+              type="button"
+              className="library-meta-play"
+              disabled={!playQueueIds.length}
+              aria-label="Reproducir"
+              title="Reproducir"
+              onClick={() => void playTracks(playQueueIds)}
+            >
+              <IconPlay size={22} />
+            </button>
+          </div>
+        </div>
+
+        {(tab === 'songs' || (tab === 'genres' && genreFilter)) && (
+          <TrackColumnsHead selecting={selectMode} />
         )}
       </div>
 
@@ -279,17 +253,20 @@ export function LibraryPage() {
 
       {tab === 'songs' && (
         <TrackList
-          tracks={filteredTracks}
+          tracks={tracks}
           showColumns
           hideColumnHead
-          emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
-          emptyHint={q ? 'Prueba con otro título o artista' : 'Sube música para empezar'}
+          selectMode={selectMode}
+          onSelectModeChange={setSelectMode}
+          showSelectToggle={false}
+          emptyTitle="Sin canciones"
+          emptyHint="Sube música para empezar"
         />
       )}
 
       {tab === 'playlists' && (
         <ul className="playlist-list">
-          {filteredPlaylists.map((p) => (
+          {playlists.map((p) => (
             <li key={p.id}>
               <Link to={`/playlist/${p.id}`} className="playlist-list__link">
                 <CoverArt
@@ -314,12 +291,10 @@ export function LibraryPage() {
               </button>
             </li>
           ))}
-          {filteredPlaylists.length === 0 && (
+          {playlists.length === 0 && (
             <div className="empty-state">
-              <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin playlists'}</p>
-              <p className="empty-state__hint">
-                {q ? 'Prueba con otro nombre' : 'Pulsa + para crear una'}
-              </p>
+              <p className="empty-state__title">Sin playlists</p>
+              <p className="empty-state__hint">Pulsa + para crear una</p>
             </div>
           )}
         </ul>
@@ -327,7 +302,7 @@ export function LibraryPage() {
 
       {tab === 'artists' && (
         <ul className="simple-list">
-          {filteredArtists.map((a) => (
+          {artistList.map((a) => (
             <li key={a.name}>
               <button type="button" onClick={() => void playTracks(a.tracks.map((t) => t.id))}>
                 <CoverArt
@@ -344,9 +319,9 @@ export function LibraryPage() {
               </button>
             </li>
           ))}
-          {filteredArtists.length === 0 && (
+          {artistList.length === 0 && (
             <div className="empty-state">
-              <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin artistas'}</p>
+              <p className="empty-state__title">Sin artistas</p>
             </div>
           )}
         </ul>
@@ -354,7 +329,7 @@ export function LibraryPage() {
 
       {tab === 'albums' && (
         <ul className="simple-list">
-          {filteredAlbums.map((a) => (
+          {albumList.map((a) => (
             <li key={`${a.name}-${a.artist}`}>
               <button type="button" onClick={() => void playTracks(a.tracks.map((t) => t.id))}>
                 <CoverArt
@@ -370,9 +345,9 @@ export function LibraryPage() {
               </button>
             </li>
           ))}
-          {filteredAlbums.length === 0 && (
+          {albumList.length === 0 && (
             <div className="empty-state">
-              <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin álbumes'}</p>
+              <p className="empty-state__title">Sin álbumes</p>
             </div>
           )}
         </ul>
@@ -381,27 +356,18 @@ export function LibraryPage() {
       {tab === 'genres' && (
         <>
           {genreFilter ? (
-            <>
-              <div className="section__head tight" style={{ marginTop: 4 }}>
-                <button
-                  type="button"
-                  className="chip-play"
-                  onClick={() => setGenreFilter(null)}
-                >
-                  ← Géneros
-                </button>
-              </div>
-              <TrackList
-                tracks={filteredGenreTracks}
-                showColumns
-                hideColumnHead
-                emptyTitle={q ? 'Sin resultados' : 'Sin canciones'}
-                emptyHint={q ? 'Prueba con otro título' : undefined}
-              />
-            </>
+            <TrackList
+              tracks={genreTracks}
+              showColumns
+              hideColumnHead
+              selectMode={selectMode}
+              onSelectModeChange={setSelectMode}
+              showSelectToggle={false}
+              emptyTitle="Sin canciones"
+            />
           ) : (
             <ul className="playlist-list">
-              {filteredGenres.map((g) => (
+              {genreGroups.map((g) => (
                 <li key={g.name}>
                   <button
                     type="button"
@@ -431,13 +397,11 @@ export function LibraryPage() {
                   </button>
                 </li>
               ))}
-              {filteredGenres.length === 0 && (
+              {genreGroups.length === 0 && (
                 <div className="empty-state">
-                  <p className="empty-state__title">{q ? 'Sin resultados' : 'Sin géneros'}</p>
+                  <p className="empty-state__title">Sin géneros</p>
                   <p className="empty-state__hint">
-                    {q
-                      ? 'Prueba con otro nombre'
-                      : 'Sube canciones o busca info online para etiquetarlas'}
+                    Sube canciones o busca info online para etiquetarlas
                   </p>
                 </div>
               )}

@@ -16,7 +16,7 @@ import {
   removeCloudTracks,
   syncLibraryTaste,
 } from '../lib/cloudLibrary'
-import { isLibraryHostDevice } from '../lib/folderImport'
+import { isLibraryHostDevice } from '../lib/devices'
 import { downloadTracksFromPc } from '../lib/libraryHost'
 import { useAuthStore } from './authStore'
 
@@ -75,6 +75,7 @@ interface LibraryState {
     ids: string[]
   } | null
   lastSyncMessage: string | null
+  lastSyncAt: number | null
   init: () => () => void
   importFiles: (files: File[], options?: { mp3Only?: boolean; enrich?: boolean }) => Promise<Track[]>
   enrichTrack: (id: string, options?: { force?: boolean }) => Promise<{ found: boolean; coverUpdated: boolean }>
@@ -140,6 +141,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   pcOnline: null,
   downloadProgress: null,
   lastSyncMessage: null,
+  lastSyncAt: null,
 
   init: () => {
     void ensurePlaybackSnapshot()
@@ -407,6 +409,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       const playlistCount = get().playlists.length
       set({
         pcOnline: Boolean(peer && age < 3 * 60 * 1000),
+        lastSyncAt: Date.now(),
         lastSyncMessage:
           `Local: ${localCount} · Nube: ${cloudCount}` +
           ` · Me gusta: ${likedCount} · Listas: ${playlistCount}` +

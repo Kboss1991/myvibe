@@ -85,6 +85,16 @@ create policy "library_likes_update_own"
 create policy "library_likes_delete_own"
   on public.library_likes for delete using (auth.uid() = user_id);
 
+-- Contenido para emparejar me gusta entre PC y móvil (ids locales distintos)
+alter table public.library_likes
+  add column if not exists title text not null default '';
+alter table public.library_likes
+  add column if not exists artist text not null default '';
+alter table public.library_likes
+  add column if not exists duration double precision not null default 0;
+alter table public.library_likes
+  add column if not exists file_name text not null default '';
+
 -- Playlists (perfil): sync PC ↔ móvil
 create table if not exists public.library_playlists (
   user_id uuid not null references auth.users (id) on delete cascade,

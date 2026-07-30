@@ -1,4 +1,5 @@
 import { getCoverBlob } from './library'
+import type { RadioStation } from './radios'
 import type { Track } from '../types'
 
 export function formatTime(seconds: number): string {
@@ -114,6 +115,59 @@ export async function buildLockScreenArtwork(trackId: string): Promise<MediaImag
   }
 }
 
+function bindMediaHandlers(handlers: {
+  play: () => void
+  pause: () => void
+  previoustrack: () => void
+  nexttrack: () => void
+  seekto?: (time: number) => void
+  getPosition?: () => number
+  /** ±15 s en pantalla de bloqueo — solo podcasts */
+  seekSkip?: boolean
+}) {
+  navigator.mediaSession.setActionHandler('play', () => {
+    handlers.play()
+  })
+  navigator.mediaSession.setActionHandler('pause', () => {
+    handlers.pause()
+  })
+  navigator.mediaSession.setActionHandler('previoustrack', () => {
+    handlers.previoustrack()
+  })
+  navigator.mediaSession.setActionHandler('nexttrack', () => {
+    handlers.nexttrack()
+  })
+
+  try {
+    if (handlers.seekto) {
+      if (handlers.seekSkip && handlers.getPosition) {
+        navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+          const offset = details.seekOffset ?? 15
+          const pos = handlers.getPosition?.() ?? 0
+          handlers.seekto?.(Math.max(0, pos - offset))
+        })
+        navigator.mediaSession.setActionHandler('seekforward', (details) => {
+          const offset = details.seekOffset ?? 15
+          const pos = handlers.getPosition?.() ?? 0
+          handlers.seekto?.(pos + offset)
+        })
+      } else {
+        navigator.mediaSession.setActionHandler('seekbackward', null)
+        navigator.mediaSession.setActionHandler('seekforward', null)
+      }
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (typeof details.seekTime === 'number') handlers.seekto?.(details.seekTime)
+      })
+    } else {
+      navigator.mediaSession.setActionHandler('seekbackward', null)
+      navigator.mediaSession.setActionHandler('seekforward', null)
+      navigator.mediaSession.setActionHandler('seekto', null)
+    }
+  } catch {
+    // some handlers unsupported on older browsers
+  }
+}
+
 export async function updateMediaSession(
   track: Track | null,
   _coverUrl: string | null,
@@ -124,6 +178,7 @@ export async function updateMediaSession(
     nexttrack: () => void
     seekto?: (time: number) => void
     getPosition?: () => number
+    seekSkip?: boolean
   },
 ) {
   if (!('mediaSession' in navigator)) return
@@ -141,7 +196,13 @@ export async function updateMediaSession(
     artwork: [],
   })
 
-  const artwork = await buildLockScreenArtwork(track.id)
+  const artwork =
+    track.hasLocalAudio !== false
+      ? await buildLockScreenArtwork(track.id)
+      : _coverUrl
+        ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
+        : []
+
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
     artist: track.artist,
@@ -149,36 +210,35 @@ export async function updateMediaSession(
     artwork,
   })
 
-  navigator.mediaSession.setActionHandler('play', () => {
-    handlers.play()
-  })
-  navigator.mediaSession.setActionHandler('pause', () => {
-    handlers.pause()
-  })
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
-    handlers.previoustrack()
-  })
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
-    handlers.nexttrack()
+  bindMediaHandlers(handlers)
+}
+
+export async function updateRadioMediaSession(
+  station: RadioStation,
+  handlers: {
+    play: () => void
+    pause: () => void
+    previoustrack: () => void
+    nexttrack: () => void
+  },
+) {
+  if (!('mediaSession' in navigator)) return
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: station.name,
+    artist: 'En directo',
+    album: station.tagline || 'Radio',
+    artwork: station.logoUrl
+      ? [{ src: station.logoUrl, sizes: '200x200', type: 'image/png' }]
+      : [],
   })
 
-  // Música: NO registrar seek ±10/15 — en Android/coche sustituyen siguiente/anterior.
-  // Solo scrub con seekto si el SO lo ofrece.
-  try {
-    navigator.mediaSession.setActionHandler('seekbackward', null)
-    navigator.mediaSession.setActionHandler('seekforward', null)
-  } catch {
-    /* ignore */
-  }
-  try {
-    if (handlers.seekto) {
-      navigator.mediaSession.setActionHandler('seekto', (details) => {
-        if (typeof details.seekTime === 'number') handlers.seekto?.(details.seekTime)
-      })
-    }
-  } catch {
-    // some handlers unsupported on older browsers
-  }
+  bindMediaHandlers({
+    ...handlers,
+    seekto: undefined,
+    getPosition: undefined,
+    seekSkip: false,
+  })
 }
 
 export function setMediaPlaybackState(playing: boolean) {

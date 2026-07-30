@@ -6,7 +6,7 @@ import App from './App'
 import './styles/tokens.css'
 
 function forceReloadOnce(reason: string) {
-  const key = `mv-reload:${reason}`
+  const key = `mv-reload:v20260729b:${reason}`
   if (sessionStorage.getItem(key)) return
   sessionStorage.setItem(key, '1')
   window.location.reload()

@@ -43,6 +43,8 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
+  max-height: min(42vh, 280px);
+  overflow: hidden;
 }
 
 .app-dock .player-bar,
@@ -62,7 +64,7 @@ body.sheet-open .app-dock {
   align-items: center;
   justify-content: center;
   gap: 16px;
-  background: #121212;
+  background: #181818;
   padding-top: var(--safe-top-pad);
 }
 
@@ -88,16 +90,49 @@ body.sheet-open .app-dock {
 }
 
 @media (max-width: 899px) {
+  /* Marcos laterales + inferior = mismo color que el dock (sin corte a negro) */
   .app-shell {
+    flex-direction: column;
     padding: 0;
     gap: 0;
+    background: #181818;
+    padding-top: var(--safe-top);
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
   }
 
   .app-column {
     border-radius: 0;
+    padding-left: 0;
+    padding-right: 0;
+    /* Espacio para que el dock bajado no se recorte */
+    padding-bottom: 55px;
+    background: #121212;
   }
 
-  /* Espacio extra al final para que la última canción no quede bajo el dock */
+  .app-main {
+    background: #121212;
+  }
+
+  .app-dock {
+    background: #181818;
+    /* Cubre laterales del safe-area bajo la barra */
+    margin-left: calc(-1 * var(--safe-left));
+    margin-right: calc(-1 * var(--safe-right));
+    /* Baja el dock hacia el borde inferior (el padding del column evita el corte) */
+    margin-bottom: -55px;
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+    border-top-color: #282828;
+    overflow: visible;
+    max-height: none;
+  }
+
+  body.sheet-open .app-dock {
+    overflow: hidden;
+    max-height: min(42vh, 280px);
+  }
+
   .app-main .page {
     padding-bottom: 28px;
   }

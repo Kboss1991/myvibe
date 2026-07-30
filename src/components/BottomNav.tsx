@@ -1,7 +1,5 @@
 import { NavLink } from 'react-router-dom'
-import { IconHome, IconLibrary, IconRadio, IconSearch } from './Icons'
-import { UserAvatar } from './UserAvatar'
-import { useAuthStore } from '../store/authStore'
+import { IconHome, IconLibrary, IconPodcast, IconRadio, IconSearch } from './Icons'
 import './BottomNav.css'
 
 const links = [
@@ -9,11 +7,10 @@ const links = [
   { to: '/search', label: 'Buscar', icon: IconSearch },
   { to: '/library', label: 'Biblioteca', icon: IconLibrary },
   { to: '/radios', label: 'Radios', icon: IconRadio },
+  { to: '/podcasts', label: 'Podcasts', icon: IconPodcast },
 ]
 
 export function BottomNav() {
-  const user = useAuthStore((s) => s.user)
-
   return (
     <nav className="bottom-nav" aria-label="Principal">
       {links.map(({ to, label, icon: Icon, end }) => (
@@ -23,17 +20,10 @@ export function BottomNav() {
           end={end}
           className={({ isActive }) => `bottom-nav__link ${isActive ? 'is-active' : ''}`}
         >
-          <Icon size={22} />
+          <Icon size={26} />
           <span>{label}</span>
         </NavLink>
       ))}
-      <NavLink
-        to="/profile"
-        className={({ isActive }) => `bottom-nav__link ${isActive ? 'is-active' : ''}`}
-      >
-        <UserAvatar user={user} size={22} className="bottom-nav__avatar" />
-        <span>Perfil</span>
-      </NavLink>
     </nav>
   )
 }

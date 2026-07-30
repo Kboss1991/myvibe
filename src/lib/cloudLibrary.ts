@@ -2,7 +2,7 @@ import { db } from '../db'
 import type { Playlist, Track } from '../types'
 import { isCloudAuthEnabled, getSupabase } from './supabase'
 import { deleteTrack, getAudioBlob } from './library'
-import { isLibraryHostDevice } from './folderImport'
+import { isLibraryHostDevice } from './devices'
 import { groupDuplicateTracks, pickCanonicalTrack, trackContentKeys, tracksLookSame } from './trackDedupe'
 
 export type CloudTrackRow = {
@@ -147,17 +147,24 @@ export async function pruneCloudDuplicateTracks(userId: string): Promise<number>
 
   const groups = groupDuplicateTracks(asTracks)
   const removeIds: string[] = []
+  const removeToKeep = new Map<string, string>()
   for (const group of groups) {
     // Preferir el que está en este dispositivo
     const keep =
       group.find((t) => localIds.has(t.id)) || pickCanonicalTrack(group)
     for (const t of group) {
-      if (t.id !== keep.id) removeIds.push(t.id)
+      if (t.id !== keep.id) {
+        removeIds.push(t.id)
+        removeToKeep.set(t.id, keep.id)
+      }
     }
   }
 
   const uniqueRemove = [...new Set(removeIds)]
   if (!uniqueRemove.length) return 0
+
+  // Antes de borrar ids del catálogo: reasignar me gusta al id canónico
+  await remapCloudLikes(userId, removeToKeep)
 
   const chunk = 80
   for (let i = 0; i < uniqueRemove.length; i += chunk) {
@@ -170,6 +177,105 @@ export async function pruneCloudDuplicateTracks(userId: string): Promise<number>
     if (delErr) throw new Error(delErr.message)
   }
   return uniqueRemove.length
+}
+
+type CloudLikeRow = {
+  local_id: string
+  liked: boolean
+  updated_at: string
+  title?: string | null
+  artist?: string | null
+  duration?: number | null
+  file_name?: string | null
+}
+
+/** Fusiona me gusta de ids duplicados al id que se conserva (LWW). */
+async function remapCloudLikes(
+  userId: string,
+  removeToKeep: Map<string, string>,
+): Promise<void> {
+  if (!removeToKeep.size || !isCloudAuthEnabled()) return
+  const supabase = getSupabase()
+  const removeIds = [...removeToKeep.keys()]
+  const keepIds = [...new Set(removeToKeep.values())]
+  const allIds = [...new Set([...removeIds, ...keepIds])]
+
+  const { data, error } = await supabase
+    .from('library_likes')
+    .select('local_id,liked,updated_at')
+    .eq('user_id', userId)
+    .in('local_id', allIds)
+  if (error) {
+    console.warn('Remap likes', error.message)
+    return
+  }
+  const byId = new Map(
+    ((data || []) as CloudLikeRow[]).map((r) => [r.local_id, r]),
+  )
+
+  for (const [removeId, keepId] of removeToKeep) {
+    const removedLike = byId.get(removeId)
+    if (!removedLike) continue
+    const keepLike = byId.get(keepId)
+    const removedTs = Date.parse(removedLike.updated_at) || 0
+    const keepTs = keepLike ? Date.parse(keepLike.updated_at) || 0 : 0
+
+    if (!keepLike || removedTs >= keepTs) {
+      const { error: upErr } = await supabase.from('library_likes').upsert(
+        {
+          user_id: userId,
+          local_id: keepId,
+          liked: removedLike.liked,
+          updated_at: removedLike.updated_at,
+        },
+        { onConflict: 'user_id,local_id' },
+      )
+      if (upErr) console.warn('Remap like upsert', upErr.message)
+      else {
+        byId.set(keepId, {
+          local_id: keepId,
+          liked: removedLike.liked,
+          updated_at: removedLike.updated_at,
+        })
+      }
+    }
+
+    const { error: delErr } = await supabase
+      .from('library_likes')
+      .delete()
+      .eq('user_id', userId)
+      .eq('local_id', removeId)
+    if (delErr) console.warn('Remap like delete', delErr.message)
+    byId.delete(removeId)
+  }
+}
+
+/** Id de catálogo canónico para una pista local (mismo contenido, distinto id). */
+function pickCloudLocalIdForTrack(
+  track: Track,
+  cloud: Array<{
+    local_id: string
+    title: string
+    artist: string
+    duration: number
+    file_name: string
+  }>,
+  localIds: Set<string>,
+): string {
+  const matches = cloud.filter((c) =>
+    tracksLookSame(track, {
+      title: c.title,
+      artist: c.artist,
+      duration: c.duration,
+      fileName: c.file_name,
+    }),
+  )
+  if (!matches.length) return track.id
+  const self = matches.find((m) => m.local_id === track.id)
+  if (self) return self.local_id
+  const onThisDevice = matches.find((m) => localIds.has(m.local_id))
+  if (onThisDevice) return onThisDevice.local_id
+  return matches[0]!.local_id
 }
 
 /** Baja el catálogo de la nube y crea stubs grises si no hay audio local. */
@@ -371,12 +477,6 @@ export async function getCloudCatalogCount(userId: string): Promise<number> {
   return count ?? 0
 }
 
-type CloudLikeRow = {
-  local_id: string
-  liked: boolean
-  updated_at: string
-}
-
 type CloudPlaylistRow = {
   local_id: string
   name: string
@@ -411,15 +511,114 @@ function writeKnownPlaylistIds(userId: string, ids: Set<string>) {
 }
 
 /** Resuelve un id de canción local (mismo contenido, distinto id entre dispositivos). */
-async function resolveLocalTrackId(preferredId: string): Promise<string | null> {
-  const direct = await db.tracks.get(preferredId)
-  if (direct) return preferredId
-  return null
+function resolveLocalTrackId(
+  preferredId: string,
+  cloud: CloudTrackLite[],
+  locals: Track[],
+): string | null {
+  if (locals.some((t) => t.id === preferredId)) return preferredId
+
+  const meta = cloud.find((c) => c.local_id === preferredId)
+  if (!meta) return null
+  const match = locals.find((t) =>
+    tracksLookSame(t, {
+      title: meta.title,
+      artist: meta.artist,
+      duration: meta.duration,
+      fileName: meta.file_name,
+    }),
+  )
+  return match?.id ?? null
+}
+
+type CloudTrackLite = {
+  local_id: string
+  title: string
+  artist: string
+  duration: number
+  file_name: string
+}
+
+async function fetchCloudTrackLite(userId: string): Promise<CloudTrackLite[]> {
+  const { data, error } = await getSupabase()
+    .from('library_tracks')
+    .select('local_id,title,artist,duration,file_name')
+    .eq('user_id', userId)
+  if (error) throw new Error(error.message)
+  return (data || []) as CloudTrackLite[]
+}
+
+/**
+ * Reasigna me gusta huérfanos (id de otro dispositivo) al id canónico del catálogo / local.
+ */
+async function consolidateCloudLikes(userId: string): Promise<void> {
+  if (!isCloudAuthEnabled()) return
+  const supabase = getSupabase()
+  const [{ data, error }, cloud, locals] = await Promise.all([
+    supabase
+      .from('library_likes')
+      .select('local_id,liked,updated_at,title,artist,duration,file_name')
+      .eq('user_id', userId),
+    fetchCloudTrackLite(userId),
+    db.tracks.toArray(),
+  ])
+  // Select con columnas nuevas puede fallar si no se ejecutó el ALTER
+  let likes: CloudLikeRow[] = []
+  if (error && /title|artist|file_name|duration|column|schema/i.test(error.message)) {
+    const bare = await supabase
+      .from('library_likes')
+      .select('local_id,liked,updated_at')
+      .eq('user_id', userId)
+    if (bare.error) {
+      console.warn('Consolidate likes', bare.error.message)
+      return
+    }
+    likes = (bare.data || []) as CloudLikeRow[]
+  } else if (error) {
+    console.warn('Consolidate likes', error.message)
+    return
+  } else {
+    likes = (data || []) as CloudLikeRow[]
+  }
+  if (!likes.length) return
+
+  const localIds = new Set(locals.map((t) => t.id))
+  const cloudById = new Map(cloud.map((c) => [c.local_id, c]))
+  const removeToKeep = new Map<string, string>()
+
+  for (const like of likes) {
+    const meta = cloudById.get(like.local_id)
+    const probe = meta
+      ? {
+          title: meta.title,
+          artist: meta.artist,
+          duration: meta.duration,
+          fileName: meta.file_name,
+        }
+      : like.title || like.file_name
+        ? {
+            title: like.title || '',
+            artist: like.artist || '',
+            duration: Number(like.duration) || 0,
+            fileName: like.file_name || '',
+          }
+        : null
+    if (!probe) continue
+
+    const localMatch = locals.find((t) => tracksLookSame(t, probe))
+    if (!localMatch) continue
+    const preferred = pickCloudLocalIdForTrack(localMatch, cloud, localIds)
+    if (preferred && preferred !== like.local_id) {
+      removeToKeep.set(like.local_id, preferred)
+    }
+  }
+
+  if (removeToKeep.size) await remapCloudLikes(userId, removeToKeep)
 }
 
 /**
  * Sube me gusta al perfil (Supabase).
- * Si se pasa trackId, solo esa canción; si no, todas las que tienen likedUpdatedAt o liked.
+ * Usa el local_id canónico del catálogo (mismo contenido entre PC y móvil).
  */
 export async function pushLibraryLikes(
   userId: string,
@@ -427,86 +626,177 @@ export async function pushLibraryLikes(
 ): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
   const supabase = getSupabase()
+  const allLocal = await db.tracks.toArray()
   const tracks = trackId
-    ? ([await db.tracks.get(trackId)].filter(Boolean) as Track[])
-    : await db.tracks.toArray()
+    ? allLocal.filter((t) => t.id === trackId)
+    : allLocal
+  const cloud = await fetchCloudTrackLite(userId)
+  const localIds = new Set(allLocal.map((t) => t.id))
 
-  const rows = tracks
-    .filter((t) => t.liked || typeof t.likedUpdatedAt === 'number')
-    .map((t) => ({
+  const rows: Array<{
+    user_id: string
+    local_id: string
+    liked: boolean
+    updated_at: string
+    title: string
+    artist: string
+    duration: number
+    file_name: string
+  }> = []
+  const staleIds: string[] = []
+
+  for (const t of tracks) {
+    if (!(t.liked || typeof t.likedUpdatedAt === 'number')) continue
+    const local_id = pickCloudLocalIdForTrack(t, cloud, localIds)
+    if (local_id !== t.id) staleIds.push(t.id)
+    rows.push({
       user_id: userId,
-      local_id: t.id,
+      local_id,
       liked: Boolean(t.liked),
       updated_at: new Date(
         t.likedUpdatedAt || t.createdAt || Date.now(),
       ).toISOString(),
-    }))
+      title: t.title || '',
+      artist: t.artist || '',
+      duration: t.duration || 0,
+      file_name: t.fileName || '',
+    })
+  }
 
   if (!rows.length) return 0
 
   const chunk = 80
   for (let i = 0; i < rows.length; i += chunk) {
     const slice = rows.slice(i, i + chunk)
-    const { error } = await supabase.from('library_likes').upsert(slice, {
+    let { error } = await supabase.from('library_likes').upsert(slice, {
       onConflict: 'user_id,local_id',
     })
+    // Si aún no se ejecutó el ALTER de columnas de contenido, reintentar sin ellas
+    if (error && /title|artist|file_name|duration|column|schema/i.test(error.message)) {
+      const bare = slice.map(({ user_id, local_id, liked, updated_at }) => ({
+        user_id,
+        local_id,
+        liked,
+        updated_at,
+      }))
+      ;({ error } = await supabase.from('library_likes').upsert(bare, {
+        onConflict: 'user_id,local_id',
+      }))
+    }
     if (error) throw new Error(error.message || 'Error al sincronizar me gusta')
   }
+
+  // Quitar likes bajo el id del otro dispositivo si ya están en el canónico
+  const kept = new Set(rows.map((r) => r.local_id))
+  const toDelete = [...new Set(staleIds)].filter((id) => !kept.has(id))
+  if (toDelete.length) {
+    for (let i = 0; i < toDelete.length; i += chunk) {
+      const slice = toDelete.slice(i, i + chunk)
+      await supabase
+        .from('library_likes')
+        .delete()
+        .eq('user_id', userId)
+        .in('local_id', slice)
+    }
+  }
+
   return rows.length
 }
 
-/** Baja me gusta del perfil y aplica LWW sobre las pistas locales. */
+/** Baja me gusta del perfil y aplica LWW sobre las pistas locales (por id o contenido). */
 export async function pullLibraryLikes(userId: string): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
   const supabase = getSupabase()
-  const { data, error } = await supabase
+  let likes: CloudLikeRow[] = []
+  const withMeta = await supabase
     .from('library_likes')
-    .select('local_id,liked,updated_at')
+    .select('local_id,liked,updated_at,title,artist,duration,file_name')
     .eq('user_id', userId)
-  if (error) throw new Error(error.message)
+  if (withMeta.error && /title|artist|file_name|duration|column|schema/i.test(withMeta.error.message)) {
+    const bare = await supabase
+      .from('library_likes')
+      .select('local_id,liked,updated_at')
+      .eq('user_id', userId)
+    if (bare.error) throw new Error(bare.error.message)
+    likes = (bare.data || []) as CloudLikeRow[]
+  } else if (withMeta.error) {
+    throw new Error(withMeta.error.message)
+  } else {
+    likes = (withMeta.data || []) as CloudLikeRow[]
+  }
 
-  const rows = (data || []) as CloudLikeRow[]
-  let applied = 0
+  const cloud = await fetchCloudTrackLite(userId)
+  if (!likes.length) return 0
+
   const locals = await db.tracks.toArray()
+  const likesById = new Map(likes.map((r) => [r.local_id, r]))
+  const cloudById = new Map(cloud.map((c) => [c.local_id, c]))
 
-  for (const row of rows) {
-    let track = await db.tracks.get(row.local_id)
-    if (!track) {
-      // Misma canción con otro id local (contenido)
-      const cloudMeta = await supabase
-        .from('library_tracks')
-        .select('title,artist,duration,file_name')
-        .eq('user_id', userId)
-        .eq('local_id', row.local_id)
-        .maybeSingle()
-      const meta = cloudMeta.data as
-        | { title: string; artist: string; duration: number; file_name: string }
-        | null
-      if (meta) {
-        track =
-          locals.find((t) =>
-            tracksLookSame(t, {
-              title: meta.title,
-              artist: meta.artist,
-              duration: meta.duration,
-              fileName: meta.file_name,
-            }),
-          ) || undefined
+  let applied = 0
+
+  for (const track of locals) {
+    const candidateIds = new Set<string>([track.id])
+
+    for (const ct of cloud) {
+      if (
+        tracksLookSame(track, {
+          title: ct.title,
+          artist: ct.artist,
+          duration: ct.duration,
+          fileName: ct.file_name,
+        })
+      ) {
+        candidateIds.add(ct.local_id)
       }
     }
-    if (!track) continue
 
-    const remoteTs = Date.parse(row.updated_at) || 0
+    for (const like of likes) {
+      if (candidateIds.has(like.local_id)) continue
+      const meta = cloudById.get(like.local_id)
+      const probe = meta
+        ? {
+            title: meta.title,
+            artist: meta.artist,
+            duration: meta.duration,
+            fileName: meta.file_name,
+          }
+        : like.title || like.file_name
+          ? {
+              title: like.title || '',
+              artist: like.artist || '',
+              duration: Number(like.duration) || 0,
+              fileName: like.file_name || '',
+            }
+          : null
+      if (!probe) continue
+      if (tracksLookSame(track, probe)) candidateIds.add(like.local_id)
+    }
+
+    let best: CloudLikeRow | null = null
+    let bestTs = -1
+    for (const id of candidateIds) {
+      const like = likesById.get(id)
+      if (!like) continue
+      const ts = Date.parse(like.updated_at) || 0
+      if (ts >= bestTs) {
+        best = like
+        bestTs = ts
+      }
+    }
+    if (!best) continue
+
+    const remoteTs = Date.parse(best.updated_at) || 0
     const localTs = track.likedUpdatedAt || 0
     if (remoteTs < localTs) continue
-    if (track.liked === row.liked && localTs >= remoteTs) continue
+    if (track.liked === best.liked && localTs >= remoteTs) continue
 
     await db.tracks.update(track.id, {
-      liked: row.liked,
+      liked: best.liked,
       likedUpdatedAt: remoteTs,
     })
     applied += 1
   }
+
   return applied
 }
 
@@ -570,10 +860,14 @@ export async function removeCloudPlaylist(
 export async function pullLibraryPlaylists(userId: string): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
   const supabase = getSupabase()
-  const { data, error } = await supabase
-    .from('library_playlists')
-    .select('local_id,name,description,track_ids,has_cover,created_at,updated_at')
-    .eq('user_id', userId)
+  const [{ data, error }, cloud, locals] = await Promise.all([
+    supabase
+      .from('library_playlists')
+      .select('local_id,name,description,track_ids,has_cover,created_at,updated_at')
+      .eq('user_id', userId),
+    fetchCloudTrackLite(userId),
+    db.tracks.toArray(),
+  ])
   if (error) throw new Error(error.message)
 
   const rows = (data || []) as CloudPlaylistRow[]
@@ -591,7 +885,7 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
 
     const resolvedIds: string[] = []
     for (const id of trackIds) {
-      const resolved = await resolveLocalTrackId(id)
+      const resolved = resolveLocalTrackId(id, cloud, locals)
       resolvedIds.push(resolved || id)
     }
 
@@ -638,6 +932,10 @@ export async function syncLibraryTaste(userId: string): Promise<{
   playlistsIn: number
   playlistsOut: number
 }> {
+  // Unifica likes de distintos local_id (PC vs móvil) antes de subir/bajar
+  await consolidateCloudLikes(userId).catch((e) =>
+    console.warn('Consolidate likes', e),
+  )
   const likesOut = await pushLibraryLikes(userId)
   const playlistsOut = await pushLibraryPlaylists(userId)
   const likesIn = await pullLibraryLikes(userId)

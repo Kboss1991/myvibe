@@ -33,10 +33,14 @@ export function IconSearch(p: IconProps) {
   )
 }
 
+/** Lucide library — lomos de discoteca / estantería */
 export function IconLibrary(p: IconProps) {
   return (
-    <svg {...base(p)}>
-      <path d="M4 5h3v14H4zM9 5h3v14H9zM14 5.5 20 4v15.5L14 21z" />
+    <svg {...base({ ...p, strokeWidth: 2 })}>
+      <path d="M4 4v16" />
+      <path d="M8 8v12" />
+      <path d="M12 6v14" />
+      <path d="m16 6 4 14" />
     </svg>
   )
 }
@@ -265,6 +269,73 @@ export function IconRadio(p: IconProps) {
       <path d="M7 7 16 3" />
       <circle cx="8.5" cy="13.5" r="1.5" />
       <path d="M13 12h5M13 15.5h5" />
+    </svg>
+  )
+}
+
+export function IconPodcast(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <circle cx="12" cy="12" r="2.25" />
+      <path d="M8.2 8.2a5.4 5.4 0 0 1 7.6 0" />
+      <path d="M5.5 5.5a9.2 9.2 0 0 1 13 0" />
+      <path d="M12 14.2v4.3" />
+      <path d="M9.5 18.5h5" />
+    </svg>
+  )
+}
+
+/** Retroceso −15 s (podcasts). */
+export function IconSkipBack15(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M3 12a9 9 0 1 0 2.4-6" />
+      <path d="M3 3v5h5" />
+      <text
+        x="12"
+        y="15.2"
+        textAnchor="middle"
+        fill="currentColor"
+        stroke="none"
+        fontSize="7.5"
+        fontWeight="700"
+        fontFamily="system-ui, sans-serif"
+      >
+        15
+      </text>
+    </svg>
+  )
+}
+
+/** Avance +15 s (podcasts). */
+export function IconSkipForward15(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M21 12a9 9 0 1 1-2.4-6" />
+      <path d="M21 3v5h-5" />
+      <text
+        x="12"
+        y="15.2"
+        textAnchor="middle"
+        fill="currentColor"
+        stroke="none"
+        fontSize="7.5"
+        fontWeight="700"
+        fontFamily="system-ui, sans-serif"
+      >
+        15
+      </text>
+    </svg>
+  )
+}
+
+/** Completar / mejorar metadatos (portada, artista, álbum) */
+export function IconSparkles(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M12 3.5 13.2 8.5 18 9.7 13.2 10.9 12 16l-1.2-5.1L6 9.7l4.8-1.2L12 3.5z" />
+      <path d="M18.5 14.5 19.1 17 21.5 17.6 19.1 18.2 18.5 20.7 17.9 18.2 15.5 17.6 17.9 17z" />
+      <path d="M5.5 13.5 6 15.2 7.7 15.7 6 16.2 5.5 17.9 5 16.2 3.3 15.7 5 15.2z" />
     </svg>
   )
 }

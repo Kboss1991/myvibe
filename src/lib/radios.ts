@@ -110,3 +110,20 @@ export const RADIO_STATIONS = RADIO_SEED_STATIONS
 export function isHlsUrl(url: string): boolean {
   return /\.m3u8(\?|$)/i.test(url) || /\/hls\//i.test(url) || /m3u8/i.test(url)
 }
+
+export { getRadioStation, listMyRadios } from './myRadios'
+
+export function formatRadioDelay(sec: number): string {
+  const n = Math.max(0, sec)
+  let whole = Math.floor(n)
+  let ms = Math.round((n - whole) * 1000)
+  if (ms >= 1000) {
+    whole += 1
+    ms = 0
+  }
+  return ms > 0 ? `${whole},${ms.toString().padStart(3, '0')} s` : `${whole} s`
+}
+
+export function roundRadioDelayMs(sec: number): number {
+  return Math.round(Math.max(0, sec) * 1000) / 1000
+}

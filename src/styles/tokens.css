@@ -21,9 +21,9 @@
   --like: #f5a623;
   --gradient-hero: linear-gradient(180deg, #535353 0%, #121212 45%);
   --gradient-player: #181818;
-  --font-brand: 'Outfit', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --font-display: 'Outfit', 'Helvetica Neue', Helvetica, Arial, sans-serif;
-  --font-body: 'Outfit', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-brand: 'Figtree', 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-display: 'Figtree', 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --font-body: 'Figtree', 'Segoe UI', 'Helvetica Neue', Helvetica, Arial, sans-serif;
   --radius: 4px;
   --radius-lg: 8px;
   --nav-h: 64px;
@@ -45,8 +45,10 @@
 
 @media (max-width: 899px) {
   :root {
-    /* Si Safari no reporta bottom inset, deja hueco mínimo para el home indicator */
-    --safe-bottom-pad: max(var(--safe-bottom), 22px);
+    /* Solo el inset real: el mínimo 22px dejaba un hueco muerto bajo la nav */
+    --safe-bottom-pad: var(--safe-bottom);
+    /* Sube cabeceras / menús superiores ~25px */
+    --safe-top-pad: max(0px, calc(var(--safe-top) - 25px));
   }
 }
 
@@ -60,7 +62,7 @@
 
 html {
   height: 100%;
-  background: #121212;
+  background: #181818;
 }
 
 body {
@@ -73,7 +75,7 @@ body {
   overflow: hidden;
   overscroll-behavior: none;
   font-family: var(--font-body);
-  background: #121212;
+  background: #181818;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -89,7 +91,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #121212;
+  background: #181818;
 }
 
 /* Asegura que el árbol flex permita scroll interno en iOS */

@@ -291,7 +291,7 @@ class AudioEngine {
   async load(
     url: string,
     resumeAt = 0,
-    options?: { live?: boolean; isObjectUrl?: boolean },
+    options?: { live?: boolean; isObjectUrl?: boolean; skipCors?: boolean },
   ): Promise<void> {
     this.mountIntoDom()
     this.applyPlaybackSession()
@@ -307,7 +307,7 @@ class AudioEngine {
     // No revocar blob URLs: library.ts los cachea
     this.objectUrl = options?.isObjectUrl ? url : null
 
-    if (options?.isObjectUrl) {
+    if (options?.isObjectUrl || options?.skipCors) {
       this.audio.removeAttribute('crossorigin')
     } else {
       this.audio.crossOrigin = 'anonymous'

@@ -1,6 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { audioEngine } from '../lib/audioEngine'
 import { formatTime } from '../lib/mediaSession'
+import { formatRadioDelay, getRadioStation } from '../lib/radios'
+import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
+import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
 import { useLibraryStore } from '../store/libraryStore'
 import { bindMediaSession, usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
@@ -16,40 +19,65 @@ import {
   IconChevronDown,
   IconVolume,
   IconClose,
+  IconRadio,
+  IconPodcast,
+  IconSkipBack15,
+  IconSkipForward15,
 } from './Icons'
 import './Player.css'
+import './TrackList.css'
 
 export function PlayerBar() {
   const tracks = useLibraryStore((s) => s.tracks)
+  const toggleLike = useLibraryStore((s) => s.toggleLike)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
+  const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const position = usePlayerStore((s) => s.position)
   const duration = usePlayerStore((s) => s.duration)
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const repeat = usePlayerStore((s) => s.repeat)
+  const volume = usePlayerStore((s) => s.volume)
+  const muted = usePlayerStore((s) => s.muted)
   const toggle = usePlayerStore((s) => s.toggle)
   const seek = usePlayerStore((s) => s.seek)
+  const skipForward = usePlayerStore((s) => s.skipForward)
+  const skipBack = usePlayerStore((s) => s.skipBack)
   const next = usePlayerStore((s) => s.next)
   const previous = usePlayerStore((s) => s.previous)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
+  const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
+  const setVolume = usePlayerStore((s) => s.setVolume)
+  const toggleMute = usePlayerStore((s) => s.toggleMute)
   const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
   const track = tracks.find((t) => t.id === currentTrackId)
-  const radio = usePlayerStore((s) => s.getCurrentRadio())
+  // Resolver por id (estable); no usar getCurrentRadio() en el selector (objeto nuevo cada tick)
+  const radio = currentRadioId ? getRadioStation(currentRadioId) : null
+  const podcastEp = currentPodcastEpisodeId ? getPodcastEpisode(currentPodcastEpisodeId) : null
+  const podcastShow = podcastEp ? getPodcastShow(podcastEp.showId) : null
   const coverUrl = usePlayerStore((s) => s.coverUrl)
   const radioDelay = usePlayerStore((s) => s.radioDelay)
-  const setRadioDelay = usePlayerStore((s) => s.setRadioDelay)
+  const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
+  const maxDelay = audioEngine.maxRadioDelay
+  const displayDelay = useDisplayedRadioDelay(radioDelay, radioPauseStartedAt, maxDelay)
 
   useEffect(() => {
     void bindMediaSession(tracks)
-  }, [tracks, currentTrackId, currentRadioId, coverUrl])
+  }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl])
 
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible') {
+        audioEngine.applyPlaybackSession()
         void audioEngine.ensureAudible()
         void bindMediaSession(tracks)
-        const st = usePlayerStore.getState()
-        if (st.isPlaying && audioEngine.paused) {
-          void st.play()
+        const playing = usePlayerStore.getState().isPlaying
+        if (playing && audioEngine.paused) {
+          void usePlayerStore.getState().play()
+        } else if (playing) {
+          void audioEngine.play()
         }
       } else {
         void bindMediaSession(tracks)
@@ -57,48 +85,156 @@ export function PlayerBar() {
     }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
-  }, [tracks, currentTrackId, currentRadioId, coverUrl])
+  }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl])
 
-  if (!track && !radio) return null
+  // Si queda un sheet/overlay colgado, quitarlo al sintonizar radio
+  useEffect(() => {
+    if (!currentRadioId) return
+    document.body.classList.remove('sheet-open')
+  }, [currentRadioId])
+
+  if (!track && !radio && !podcastEp) return null
 
   const isLive = Boolean(radio)
 
+  /* Radio: barra compacta — tocar info abre vista grande */
+  if (isLive && radio) {
+    return (
+      <div className="player-bar player-bar--radio" role="region" aria-label="Radio en directo">
+        <div className="player-bar__radio-row">
+          <button
+            type="button"
+            className="player-bar__radio-info player-bar__radio-info--btn"
+            onClick={() => setNowPlayingOpen(true)}
+            aria-label="Abrir radio a pantalla completa"
+          >
+            {radio.logoUrl ? (
+              <img
+                className="player-bar__radio-logo"
+                src={radio.logoUrl}
+                alt=""
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <span className="player-bar__radio-logo player-bar__radio-logo--empty" />
+            )}
+            <div className="player-bar__meta">
+              <span className="player-bar__title">{radio.name}</span>
+              <span className="player-bar__artist">
+                {radioPauseStartedAt != null
+                  ? 'Sincronizando con la tele…'
+                  : displayDelay > 0
+                    ? `Retraso ${formatRadioDelay(displayDelay)}`
+                    : radio.tagline || 'En directo'}
+              </span>
+            </div>
+          </button>
+          <button
+            type="button"
+            className="player-bar__play"
+            aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+            onClick={() => void toggle()}
+          >
+            {isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
+          </button>
+        </div>
+        <button
+          type="button"
+          className="player-bar__seek player-bar__seek--radio-open"
+          title="Abrir controles de radio"
+          onClick={() => setNowPlayingOpen(true)}
+        >
+          <span className="player-bar__time" aria-live="polite">
+            {formatRadioDelay(displayDelay)}
+          </span>
+          <span className="player-bar__seek-hint">Toca para ampliar · sync tele</span>
+          <span className="player-bar__time">{formatRadioDelay(maxDelay)}</span>
+        </button>
+      </div>
+    )
+  }
+
   return (
-    <div className="player-bar" role="region" aria-label="Reproductor">
-      <div className="player-bar__row">
+    <div
+      className={`player-bar ${podcastEp ? 'player-bar--podcast' : ''}`}
+      role="region"
+      aria-label="Reproductor"
+    >
+      {/* Izquierda: ahora suena */}
+      <div className="player-bar__left">
         <button
           type="button"
           className="player-bar__main"
-          onClick={() => (isLive ? undefined : setNowPlayingOpen(true))}
-          aria-label={isLive ? radio!.name : 'Abrir ahora suena'}
+          onClick={() => setNowPlayingOpen(true)}
+          aria-label="Abrir ahora suena"
         >
-          {radio ? (
-            <img className="player-bar__radio-logo" src={radio.logoUrl} alt="" referrerPolicy="no-referrer" />
+          {podcastEp ? (
+            podcastEp.artworkUrl || podcastShow?.artworkUrl || coverUrl ? (
+              <img
+                className="player-bar__cover-img"
+                src={podcastEp.artworkUrl || podcastShow?.artworkUrl || coverUrl || ''}
+                alt=""
+                referrerPolicy="no-referrer"
+                width={56}
+                height={56}
+              />
+            ) : (
+              <span className="player-bar__cover-fallback" aria-hidden>
+                <IconPodcast size={24} />
+              </span>
+            )
           ) : (
             <CoverArt
               trackId={track!.id}
               hasCover={track!.hasCover}
-              refreshKey={`${track!.artist}|${track!.album}|${track!.externalUrl ?? ''}|${track!.coverUpdatedAt ?? 0}`}
-              size={48}
+              refreshKey={`${track!.artist}|${track!.album}|${track!.externalUrl ?? ''}`}
+              size={56}
               rounded="sm"
             />
           )}
           <div className="player-bar__meta">
-            <span className="player-bar__title">{radio ? radio.name : track!.title}</span>
+            <span className="player-bar__title">
+              {podcastEp ? podcastEp.title : track!.title}
+            </span>
             <span className="player-bar__artist">
-              {radio ? radio.tagline : track!.artist}
+              {podcastEp
+                ? podcastShow?.name || podcastShow?.artist || 'Podcast'
+                : track!.artist}
             </span>
           </div>
         </button>
-        <div className="player-bar__actions">
-          {!isLive && (
+        {track ? (
+          <button
+            type="button"
+            className={`icon-btn player-bar__like ${track.liked ? 'is-liked' : ''}`}
+            aria-label="Me gusta"
+            onClick={() => void toggleLike(track.id)}
+          >
+            <IconHeart size={18} filled={track.liked} />
+          </button>
+        ) : null}
+      </div>
+
+      {/* Centro: controles + progreso */}
+      <div className="player-bar__center">
+        <div className="player-bar__controls">
+          {podcastEp ? (
             <button
               type="button"
-              className="icon-btn player-bar__queue"
-              aria-label="Cola"
-              onClick={() => setQueueOpen(true)}
+              className="icon-btn player-bar__ctrl"
+              aria-label="Retroceder 15 segundos"
+              onClick={() => skipBack(15)}
             >
-              <IconQueue size={22} />
+              <IconSkipBack15 size={18} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`icon-btn player-bar__ctrl ${shuffle ? 'is-on' : ''}`}
+              aria-label="Aleatorio"
+              onClick={() => toggleShuffle()}
+            >
+              <IconShuffle size={16} />
             </button>
           )}
           <button
@@ -107,7 +243,7 @@ export function PlayerBar() {
             aria-label="Anterior"
             onClick={() => void previous()}
           >
-            <IconSkipBack size={26} />
+            <IconSkipBack size={20} />
           </button>
           <button
             type="button"
@@ -115,7 +251,7 @@ export function PlayerBar() {
             aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
             onClick={() => void toggle()}
           >
-            {isPlaying ? <IconPause size={22} /> : <IconPlay size={22} />}
+            {isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
           </button>
           <button
             type="button"
@@ -123,40 +259,29 @@ export function PlayerBar() {
             aria-label="Siguiente"
             onClick={() => void next()}
           >
-            <IconSkipForward size={26} />
+            <IconSkipForward size={20} />
           </button>
-        </div>
-      </div>
-      {isLive ? (
-        <div className="player-bar__seek player-bar__seek--live">
-          <span className="player-bar__live">EN DIRECTO</span>
-          <div className="player-bar__delay" title="Retraso para sincronizar con la tele">
+          {podcastEp ? (
             <button
               type="button"
-              className="player-bar__delay-btn"
-              aria-label="Menos retraso"
-              disabled={radioDelay <= 0}
-              onClick={() => setRadioDelay(Math.round((radioDelay - 0.5) * 2) / 2)}
+              className="icon-btn player-bar__ctrl"
+              aria-label="Avanzar 15 segundos"
+              onClick={() => skipForward(15)}
             >
-              −
+              <IconSkipForward15 size={18} />
             </button>
-            <span className="player-bar__delay-val">
-              {radioDelay <= 0
-                ? 'Sync TV'
-                : `${radioDelay.toLocaleString('es-ES', { maximumFractionDigits: 1 })} s`}
-            </span>
+          ) : (
             <button
               type="button"
-              className="player-bar__delay-btn"
-              aria-label="Más retraso"
-              disabled={radioDelay >= audioEngine.maxRadioDelay}
-              onClick={() => setRadioDelay(Math.round((radioDelay + 0.5) * 2) / 2)}
+              className={`icon-btn player-bar__ctrl ${repeat !== 'off' ? 'is-on' : ''}`}
+              aria-label="Repetir"
+              onClick={() => cycleRepeat()}
             >
-              +
+              <IconRepeat size={16} />
             </button>
-          </div>
+          )}
         </div>
-      ) : (
+
         <div className="player-bar__seek">
           <span className="player-bar__time">{formatTime(position)}</span>
           <input
@@ -170,7 +295,40 @@ export function PlayerBar() {
           />
           <span className="player-bar__time">{formatTime(duration)}</span>
         </div>
-      )}
+      </div>
+
+      {/* Derecha: cola + volumen */}
+      <div className="player-bar__right">
+        {!podcastEp ? (
+          <button
+            type="button"
+            className="icon-btn player-bar__queue"
+            aria-label="Cola"
+            onClick={() => setQueueOpen(true)}
+          >
+            <IconQueue size={18} />
+          </button>
+        ) : null}
+        <div className="player-bar__volume">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={muted ? 'Quitar silencio' : 'Silenciar'}
+            onClick={() => toggleMute()}
+          >
+            <IconVolume size={18} />
+          </button>
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={muted ? 0 : volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            aria-label="Volumen"
+          />
+        </div>
+      </div>
     </div>
   )
 }
@@ -181,6 +339,8 @@ export function NowPlaying() {
   const open = usePlayerStore((s) => s.nowPlayingOpen)
   const setOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const currentRadioId = usePlayerStore((s) => s.currentRadioId)
+  const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const position = usePlayerStore((s) => s.position)
   const duration = usePlayerStore((s) => s.duration)
@@ -192,14 +352,215 @@ export function NowPlaying() {
   const next = usePlayerStore((s) => s.next)
   const previous = usePlayerStore((s) => s.previous)
   const seek = usePlayerStore((s) => s.seek)
+  const skipForward = usePlayerStore((s) => s.skipForward)
+  const skipBack = usePlayerStore((s) => s.skipBack)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
   const setVolume = usePlayerStore((s) => s.setVolume)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
+  const radioDelay = usePlayerStore((s) => s.radioDelay)
+  const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
+  const setRadioDelay = usePlayerStore((s) => s.setRadioDelay)
+  const coverUrl = usePlayerStore((s) => s.coverUrl)
   const track = tracks.find((t) => t.id === currentTrackId)
+  const radio = currentRadioId ? getRadioStation(currentRadioId) : null
+  const podcastEp = currentPodcastEpisodeId ? getPodcastEpisode(currentPodcastEpisodeId) : null
+  const podcastShow = podcastEp ? getPodcastShow(podcastEp.showId) : null
+  const maxDelay = audioEngine.maxRadioDelay
+  const displayDelay = useDisplayedRadioDelay(radioDelay, radioPauseStartedAt, maxDelay)
   const seekRef = useRef<HTMLInputElement>(null)
 
-  if (!open || !track) return null
+  if (!open) return null
+  if (!track && !radio && !podcastEp) return null
+
+  if (radio) {
+    return (
+      <div className="now-playing now-playing--radio">
+        <header className="now-playing__header">
+          <button className="icon-btn" aria-label="Cerrar" onClick={() => setOpen(false)}>
+            <IconChevronDown size={28} />
+          </button>
+          <div>
+            <p className="now-playing__eyebrow">En directo</p>
+            <p className="now-playing__album">{radio.tagline || 'Radio'}</p>
+          </div>
+          <span aria-hidden className="now-playing__header-spacer" />
+        </header>
+
+        <div className="now-playing__art-wrap">
+          {radio.logoUrl ? (
+            <img
+              className={`now-playing__art now-playing__radio-art ${isPlaying ? 'is-live' : ''}`}
+              src={radio.logoUrl}
+              alt=""
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <div className={`now-playing__art now-playing__radio-art now-playing__radio-art--empty ${isPlaying ? 'is-live' : ''}`}>
+              <IconRadio size={72} />
+            </div>
+          )}
+        </div>
+
+        <div className="now-playing__info">
+          <div>
+            <h1>{radio.name}</h1>
+            <p>
+              {radioPauseStartedAt != null
+                ? 'Sincronizando con la tele…'
+                : radio.tagline || 'Emisora en directo'}
+            </p>
+          </div>
+        </div>
+
+        <div className="seek-block seek-block--radio">
+          <label className="now-playing__delay-label" htmlFor="np-radio-delay">
+            Retraso para la tele
+          </label>
+          <input
+            id="np-radio-delay"
+            type="range"
+            min={0}
+            max={maxDelay}
+            step={0.001}
+            value={displayDelay}
+            onChange={(e) => setRadioDelay(Number(e.target.value))}
+            aria-label="Retraso en segundos y milisegundos"
+          />
+          <div className="seek-times">
+            <span>{formatRadioDelay(displayDelay)}</span>
+            <span>{formatRadioDelay(maxDelay)}</span>
+          </div>
+        </div>
+
+        <div className="transport">
+          <span className="transport__spacer" aria-hidden />
+          <button type="button" className="icon-btn" aria-label="Anterior" onClick={() => void previous()}>
+            <IconSkipBack size={28} />
+          </button>
+          <button
+            type="button"
+            className="transport__play"
+            aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+            onClick={() => void toggle()}
+          >
+            {isPlaying ? <IconPause size={32} /> : <IconPlay size={32} />}
+          </button>
+          <button type="button" className="icon-btn" aria-label="Siguiente" onClick={() => void next()}>
+            <IconSkipForward size={28} />
+          </button>
+          <span className="transport__spacer" aria-hidden />
+        </div>
+
+        <p className="now-playing__radio-hint">
+          Pausa y play para afinar el retraso con la televisión
+        </p>
+      </div>
+    )
+  }
+
+  if (podcastEp) {
+    const art = podcastEp.artworkUrl || podcastShow?.artworkUrl || coverUrl || ''
+    return (
+      <div className="now-playing now-playing--podcast">
+        <header className="now-playing__header">
+          <button className="icon-btn" aria-label="Cerrar" onClick={() => setOpen(false)}>
+            <IconChevronDown size={28} />
+          </button>
+          <div>
+            <p className="now-playing__eyebrow">Podcast</p>
+            <p className="now-playing__album">{podcastShow?.name || 'Episodio'}</p>
+          </div>
+          <span aria-hidden className="now-playing__header-spacer" />
+        </header>
+
+        <div className="now-playing__art-wrap">
+          {art ? (
+            <img
+              className={`now-playing__art now-playing__podcast-art ${isPlaying ? 'is-live' : ''}`}
+              src={art}
+              alt=""
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <span className="now-playing__art now-playing__podcast-art now-playing__podcast-art--empty">
+              <IconPodcast size={72} />
+            </span>
+          )}
+        </div>
+
+        <div className="now-playing__info">
+          <div>
+            <h1>{podcastEp.title}</h1>
+            <p>{podcastShow?.artist || podcastShow?.name || 'Podcast'}</p>
+          </div>
+        </div>
+
+        <div className="seek-block">
+          <input
+            ref={seekRef}
+            type="range"
+            min={0}
+            max={duration || 0}
+            step={0.1}
+            value={Math.min(position, duration || 0)}
+            onChange={(e) => seek(Number(e.target.value))}
+            aria-label="Progreso"
+          />
+          <div className="seek-times">
+            <span>{formatTime(position)}</span>
+            <span>{formatTime(duration)}</span>
+          </div>
+        </div>
+
+        <div className="transport">
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Retroceder 15 segundos"
+            onClick={() => skipBack(15)}
+          >
+            <IconSkipBack15 size={24} />
+          </button>
+          <button type="button" className="icon-btn" aria-label="Anterior" onClick={() => void previous()}>
+            <IconSkipBack size={28} />
+          </button>
+          <button
+            type="button"
+            className="transport__play"
+            aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+            onClick={() => void toggle()}
+          >
+            {isPlaying ? <IconPause size={32} /> : <IconPlay size={32} />}
+          </button>
+          <button type="button" className="icon-btn" aria-label="Siguiente" onClick={() => void next()}>
+            <IconSkipForward size={28} />
+          </button>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label="Avanzar 15 segundos"
+            onClick={() => skipForward(15)}
+          >
+            <IconSkipForward15 size={24} />
+          </button>
+        </div>
+
+        <div className="volume-row">
+          <IconVolume size={18} />
+          <input
+            type="range"
+            min={0}
+            max={1}
+            step={0.01}
+            value={muted ? 0 : volume}
+            onChange={(e) => setVolume(Number(e.target.value))}
+            aria-label="Volumen"
+          />
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="now-playing">
@@ -209,15 +570,15 @@ export function NowPlaying() {
         </button>
         <div>
           <p className="now-playing__eyebrow">Reproduciendo</p>
-          <p className="now-playing__album">{track.album}</p>
+          <p className="now-playing__album">{track!.album}</p>
         </div>
         <span aria-hidden className="now-playing__header-spacer" />
       </header>
 
       <div className="now-playing__art-wrap">
         <CoverArt
-          trackId={track.id}
-          hasCover={track.hasCover}
+          trackId={track!.id}
+          hasCover={track!.hasCover}
           size="min(72vw, 340px)"
           rounded="lg"
           className={`now-playing__art ${isPlaying ? 'is-spinning' : ''}`}
@@ -226,15 +587,15 @@ export function NowPlaying() {
 
       <div className="now-playing__info">
         <div>
-          <h1>{track.title}</h1>
-          <p>{track.artist}</p>
+          <h1>{track!.title}</h1>
+          <p>{track!.artist}</p>
         </div>
         <button
-          className={`icon-btn like-btn ${track.liked ? 'is-liked' : ''}`}
-          onClick={() => void toggleLike(track.id)}
+          className={`icon-btn like-btn ${track!.liked ? 'is-liked' : ''}`}
+          onClick={() => void toggleLike(track!.id)}
           aria-label="Me gusta"
         >
-          <IconHeart size={26} filled={track.liked} />
+          <IconHeart size={26} filled={track!.liked} />
         </button>
       </div>
 
@@ -257,29 +618,32 @@ export function NowPlaying() {
 
       <div className="transport">
         <button
+          type="button"
           className={`icon-btn ${shuffle ? 'is-on' : ''}`}
           aria-label="Aleatorio"
-          onClick={toggleShuffle}
+          onClick={() => toggleShuffle()}
         >
           <IconShuffle size={22} />
         </button>
-        <button className="icon-btn" aria-label="Anterior" onClick={() => void previous()}>
+        <button type="button" className="icon-btn" aria-label="Anterior" onClick={() => void previous()}>
           <IconSkipBack size={28} />
         </button>
         <button
+          type="button"
           className="transport__play"
           aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
           onClick={() => void toggle()}
         >
           {isPlaying ? <IconPause size={32} /> : <IconPlay size={32} />}
         </button>
-        <button className="icon-btn" aria-label="Siguiente" onClick={() => void next()}>
+        <button type="button" className="icon-btn" aria-label="Siguiente" onClick={() => void next()}>
           <IconSkipForward size={28} />
         </button>
         <button
+          type="button"
           className={`icon-btn ${repeat !== 'off' ? 'is-on' : ''}`}
           aria-label="Repetir"
-          onClick={cycleRepeat}
+          onClick={() => cycleRepeat()}
         >
           <IconRepeat size={22} />
         </button>
@@ -296,7 +660,7 @@ export function NowPlaying() {
           onChange={(e) => setVolume(Number(e.target.value))}
           aria-label="Volumen"
         />
-        <button className="icon-btn" aria-label="Cola" onClick={() => setQueueOpen(true)}>
+        <button type="button" className="icon-btn" aria-label="Cola" onClick={() => setQueueOpen(true)}>
           <IconQueue size={22} />
         </button>
       </div>
@@ -308,60 +672,55 @@ export function QueueSheet() {
   const open = usePlayerStore((s) => s.queueOpen)
   const setOpen = usePlayerStore((s) => s.setQueueOpen)
   const queue = usePlayerStore((s) => s.queue)
-  const index = usePlayerStore((s) => s.index)
   const removeFromQueue = usePlayerStore((s) => s.removeFromQueue)
-  const clearQueue = usePlayerStore((s) => s.clearQueue)
   const playTracks = usePlayerStore((s) => s.playTracks)
   const tracks = useLibraryStore((s) => s.tracks)
-  const map = new Map(tracks.map((t) => [t.id, t]))
+  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
 
   if (!open) return null
 
   return (
     <div className="sheet">
-      <button className="sheet-backdrop" onClick={() => setOpen(false)} />
+      <button type="button" className="sheet-backdrop" onClick={() => setOpen(false)} />
       <div className="sheet__panel queue-sheet">
         <div className="queue-sheet__head">
-          <h3>Cola de reproducción</h3>
-          <button className="icon-btn" onClick={() => setOpen(false)} aria-label="Cerrar">
+          <h3>Cola</h3>
+          <button type="button" className="icon-btn" aria-label="Cerrar" onClick={() => setOpen(false)}>
             <IconClose size={22} />
           </button>
         </div>
         {queue.length === 0 ? (
           <p className="empty-state__hint">La cola está vacía</p>
         ) : (
-          <>
-            <button className="text-btn" onClick={clearQueue}>
-              Vaciar cola
-            </button>
-            <ul className="queue-list">
-              {queue.map((id, i) => {
-                const t = map.get(id)
-                if (!t) return null
-                return (
-                  <li key={`${id}-${i}`} className={i === index ? 'is-current' : ''}>
-                    <button
-                      className="queue-list__main"
-                      onClick={() => void playTracks(queue, id)}
-                    >
-                      <CoverArt trackId={t.id} hasCover={t.hasCover} size={40} />
-                      <div>
-                        <strong>{t.title}</strong>
-                        <span>{t.artist}</span>
-                      </div>
-                    </button>
-                    <button
-                      className="icon-btn"
-                      aria-label="Quitar"
-                      onClick={() => removeFromQueue(i)}
-                    >
-                      <IconClose size={18} />
-                    </button>
-                  </li>
-                )
-              })}
-            </ul>
-          </>
+          <ul className="queue-list">
+            {queue.map((id, i) => {
+              const t = tracks.find((x) => x.id === id)
+              if (!t) return null
+              return (
+                <li key={`${id}-${i}`} className={id === currentTrackId ? 'is-active' : ''}>
+                  <button
+                    type="button"
+                    className="queue-list__main"
+                    onClick={() => void playTracks(queue, id)}
+                  >
+                    <CoverArt trackId={t.id} hasCover={t.hasCover} size={40} />
+                    <div>
+                      <strong>{t.title}</strong>
+                      <span>{t.artist}</span>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Quitar de la cola"
+                    onClick={() => removeFromQueue(i)}
+                  >
+                    <IconClose size={18} />
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
         )}
       </div>
     </div>

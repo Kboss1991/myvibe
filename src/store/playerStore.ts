@@ -3,10 +3,22 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
-import { getRadioStation, type RadioStation } from '../lib/myRadios'
+import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
+import { roundRadioDelayMs } from '../lib/radios'
+import {
+  getPodcastEpisode,
+  getPodcastResumeAt,
+  getPodcastShow,
+  markPodcastCompleted,
+  rememberPodcastEpisode,
+  rememberPodcastShow,
+  savePodcastProgress,
+  type PodcastEpisode,
+  type PodcastShow,
+} from '../lib/podcasts'
 
 interface PlayerState {
   queue: string[]
@@ -15,6 +27,8 @@ interface PlayerState {
   currentTrackId: string | null
   /** Emisora de radio en directo (null = biblioteca) */
   currentRadioId: string | null
+  /** Episodio de podcast en reproducción */
+  currentPodcastEpisodeId: string | null
   isPlaying: boolean
   shuffle: boolean
   repeat: RepeatMode
@@ -26,6 +40,10 @@ interface PlayerState {
   queueOpen: boolean
   coverUrl: string | null
   hydrated: boolean
+  /** Se incrementa al guardar progreso de podcast (para refrescar la UI). */
+  podcastProgressTick: number
+  /** Timestamp performance.now() al pausar radio para sumar al delay; null si no está midiendo */
+  radioPauseStartedAt: number | null
 
   hydrate: () => Promise<void>
   playTrack: (trackId: string, queue?: string[]) => Promise<void>
@@ -35,6 +53,11 @@ interface PlayerState {
     options?: { shuffle?: boolean },
   ) => Promise<void>
   playRadio: (stationId: string) => Promise<void>
+  playPodcastEpisode: (
+    episode: PodcastEpisode,
+    show: PodcastShow,
+    siblings?: PodcastEpisode[],
+  ) => Promise<void>
   setRadioDelay: (seconds: number) => void
   radioDelay: number
   toggle: () => Promise<void>
@@ -43,6 +66,8 @@ interface PlayerState {
   next: () => Promise<void>
   previous: () => Promise<void>
   seek: (time: number) => void
+  skipForward: (seconds?: number) => void
+  skipBack: (seconds?: number) => void
   setVolume: (v: number) => void
   toggleMute: () => void
   toggleShuffle: () => void
@@ -56,6 +81,8 @@ interface PlayerState {
   syncFromEngine: () => void
   getCurrentTrack: (tracks: Track[]) => Track | null
   getCurrentRadio: () => RadioStation | null
+  getCurrentPodcastEpisode: () => PodcastEpisode | null
+  getCurrentPodcastShow: () => PodcastShow | null
 }
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null
@@ -65,6 +92,58 @@ let trackAdvanceLockUntil = 0
 let prefetchedNextId: string | null = null
 /** Si el avance automático no pudo hacer play (bloqueo), reintentar al volver. */
 let pendingBackgroundPlay = false
+/** Cola de episodios del show abierto (ids). */
+let podcastEpisodeQueue: string[] = []
+let podcastPlayEpoch = 0
+let lastPodcastProgressSave = 0
+
+function bumpPodcastProgressTick(
+  set: (partial: Partial<PlayerState>) => void,
+  get: () => PlayerState,
+) {
+  set({ podcastProgressTick: get().podcastProgressTick + 1 })
+}
+
+function persistPodcastProgressNow(
+  set: (partial: Partial<PlayerState>) => void,
+  get: () => PlayerState,
+  forceComplete = false,
+) {
+  const id = get().currentPodcastEpisodeId
+  if (!id) return
+  const position = audioEngine.currentTime
+  const duration = Number.isFinite(audioEngine.duration)
+    ? audioEngine.duration
+    : get().duration
+  if (forceComplete) {
+    markPodcastCompleted(id)
+  } else {
+    savePodcastProgress(id, position, duration)
+  }
+  lastPodcastProgressSave = performance.now()
+  bumpPodcastProgressTick(set, get)
+}
+
+function podcastSyntheticTrack(episode: PodcastEpisode, show: PodcastShow): Track {
+  return {
+    id: episode.id,
+    title: episode.title,
+    artist: show.name || show.artist || 'Podcast',
+    album: show.artist || show.name || '',
+    genre: '',
+    year: '',
+    duration: episode.durationSec || 0,
+    mimeType: 'audio/mpeg',
+    fileName: '',
+    hasCover: Boolean(episode.artworkUrl || show.artworkUrl),
+    liked: false,
+    playCount: 0,
+    lastPlayedAt: null,
+    createdAt: 0,
+    enriched: false,
+    hasLocalAudio: false,
+  }
+}
 
 function persistSoon(partial: Partial<{
   currentTrackId: string | null
@@ -98,7 +177,7 @@ async function loadAndMaybePlay(
   }
 
   // Portada en paralelo: no retrasar el audio (crítico al pasar de pista en bloqueo)
-  set({ currentTrackId: trackId, currentRadioId: null })
+  set({ currentTrackId: trackId, currentRadioId: null, currentPodcastEpisodeId: null })
   void getCoverObjectUrl(trackId).then((coverUrl) => {
     if (usePlayerStore.getState().currentTrackId === trackId) {
       set({ coverUrl })
@@ -224,7 +303,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   index: 0,
   currentTrackId: null,
   currentRadioId: null,
+  currentPodcastEpisodeId: null,
   radioDelay: audioEngine.radioDelay,
+  radioPauseStartedAt: null,
   isPlaying: false,
   shuffle: false,
   repeat: 'off',
@@ -236,6 +317,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   queueOpen: false,
   coverUrl: null,
   hydrated: false,
+  podcastProgressTick: 0,
 
   hydrate: async () => {
     const snap = await ensurePlaybackSnapshot()
@@ -260,6 +342,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       endedUnsub = audioEngine.onEnded(() => {
         const now = Date.now()
         if (now < trackAdvanceLockUntil) return
+        if (get().currentRadioId || audioEngine.isLive) return
+        if (get().currentPodcastEpisodeId) {
+          persistPodcastProgressNow(set, get, true)
+        }
         trackAdvanceLockUntil = now + 500
         void get().next()
       })
@@ -272,11 +358,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   syncFromEngine: () => {
     const playing = !audioEngine.paused
+    const live = Boolean(get().currentRadioId) || audioEngine.isLive
+    if (live) {
+      set({
+        isPlaying: pendingBackgroundPlay ? true : playing,
+        position: 0,
+        duration: 0,
+      })
+      setMediaPlaybackState(pendingBackgroundPlay ? true : playing)
+      return
+    }
     const position = audioEngine.currentTime
     const duration = audioEngine.duration
     set({
       position,
-      duration,
+      duration: Number.isFinite(duration) ? duration : 0,
       isPlaying: pendingBackgroundPlay ? true : playing,
       volume: audioEngine.volume,
       muted: audioEngine.muted,
@@ -284,10 +380,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     setMediaPositionState(position, duration, pendingBackgroundPlay ? true : playing)
     persistSoon({ position })
 
+    if (get().currentPodcastEpisodeId && playing) {
+      const now = performance.now()
+      if (now - lastPodcastProgressSave > 3000) {
+        persistPodcastProgressNow(set, get)
+      }
+    }
+
     // Prefetch del siguiente blob para que el cambio de pista en bloqueo sea inmediato
-    const { queue, index, currentTrackId, currentRadioId } = get()
+    const { queue, index, currentTrackId, currentRadioId, currentPodcastEpisodeId } = get()
     if (
       !currentRadioId &&
+      !currentPodcastEpisodeId &&
       currentTrackId &&
       duration > 20 &&
       position > 0 &&
@@ -310,15 +414,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   playRadio: async (stationId) => {
     const station = getRadioStation(stationId)
     if (!station) return
+    if (get().currentPodcastEpisodeId) {
+      persistPodcastProgressNow(set, get)
+    }
+    podcastEpisodeQueue = []
     set({
       currentRadioId: station.id,
       currentTrackId: null,
+      currentPodcastEpisodeId: null,
       coverUrl: station.logoUrl || null,
       queue: [],
       originalQueue: [],
       index: 0,
       position: 0,
       duration: 0,
+      radioPauseStartedAt: null,
     })
     try {
       const { reportStationClick } = await import('../lib/radioBrowser')
@@ -328,20 +438,76 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       await audioEngine.play()
       set({ isPlaying: !audioEngine.paused })
       setMediaPlaybackState(!audioEngine.paused)
-      if ('mediaSession' in navigator) {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: station.name,
-          artist: 'En directo',
-          album: station.tagline,
-          artwork: station.logoUrl
-            ? [{ src: station.logoUrl, sizes: '200x200', type: 'image/png' }]
-            : [],
-        })
-      }
+      void updateRadioMediaSession(station, {
+        play: () => void usePlayerStore.getState().play(),
+        pause: () => usePlayerStore.getState().pause(),
+        previoustrack: () => void usePlayerStore.getState().previous(),
+        nexttrack: () => void usePlayerStore.getState().next(),
+      })
     } catch (e) {
       console.warn('Radio', e)
       set({ isPlaying: false, currentRadioId: null })
       alert(`No se pudo sintonizar ${station.name}. Prueba otra emisora.`)
+    }
+  },
+
+  playPodcastEpisode: async (episode, show, siblings) => {
+    if (!episode?.audioUrl) return
+    if (get().currentPodcastEpisodeId && get().currentPodcastEpisodeId !== episode.id) {
+      persistPodcastProgressNow(set, get)
+    }
+    rememberPodcastShow(show)
+    rememberPodcastEpisode(episode)
+    const list = (siblings?.length ? siblings : [episode]).filter((e) => e.audioUrl)
+    for (const ep of list) rememberPodcastEpisode(ep)
+    podcastEpisodeQueue = list.map((e) => e.id)
+    const epoch = ++podcastPlayEpoch
+    const index = Math.max(0, podcastEpisodeQueue.indexOf(episode.id))
+    const resumeAt = getPodcastResumeAt(episode.id)
+
+    set({
+      currentPodcastEpisodeId: episode.id,
+      currentRadioId: null,
+      currentTrackId: null,
+      coverUrl: episode.artworkUrl || show.artworkUrl || '',
+      queue: [],
+      originalQueue: [],
+      index,
+      position: resumeAt,
+      duration: episode.durationSec || 0,
+      radioPauseStartedAt: null,
+      queueOpen: false,
+    })
+
+    try {
+      await audioEngine.load(episode.audioUrl, resumeAt, { live: false, skipCors: true })
+      if (epoch !== podcastPlayEpoch || get().currentPodcastEpisodeId !== episode.id) return
+      audioEngine.applyPlaybackSession()
+      await audioEngine.ensureAudible()
+      await audioEngine.play()
+      if (epoch !== podcastPlayEpoch || get().currentPodcastEpisodeId !== episode.id) return
+      set({ isPlaying: !audioEngine.paused, queueOpen: false })
+      setMediaPlaybackState(!audioEngine.paused)
+      await updateMediaSession(
+        podcastSyntheticTrack(episode, show),
+        episode.artworkUrl || show.artworkUrl,
+        {
+          play: () => void usePlayerStore.getState().play(),
+          pause: () => usePlayerStore.getState().pause(),
+          previoustrack: () => void usePlayerStore.getState().previous(),
+          nexttrack: () => void usePlayerStore.getState().next(),
+          seekto: (time) => usePlayerStore.getState().seek(time),
+          getPosition: () => usePlayerStore.getState().position,
+          seekSkip: true,
+        },
+      )
+    } catch (e) {
+      if (epoch !== podcastPlayEpoch) return
+      console.warn('Podcast', e)
+      if (get().currentPodcastEpisodeId === episode.id) {
+        set({ isPlaying: false, currentPodcastEpisodeId: null })
+      }
+      alert(`No se pudo reproducir «${episode.title}».`)
     }
   },
 
@@ -417,17 +583,44 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   pause: () => {
+    const { currentRadioId, radioPauseStartedAt, currentPodcastEpisodeId } = get()
+    if (currentPodcastEpisodeId) {
+      persistPodcastProgressNow(set, get)
+    }
     pendingBackgroundPlay = false
     audioEngine.pause()
-    set({ isPlaying: false })
+    set({
+      isPlaying: false,
+      ...(currentRadioId && radioPauseStartedAt == null
+        ? { radioPauseStartedAt: performance.now() }
+        : {}),
+    })
     setMediaPlaybackState(false)
   },
 
   play: async () => {
-    const { currentTrackId, currentRadioId, queue, index } = get()
+    const {
+      currentTrackId,
+      currentRadioId,
+      currentPodcastEpisodeId,
+      queue,
+      index,
+      radioPauseStartedAt,
+      radioDelay,
+    } = get()
     if (currentRadioId) {
       const station = getRadioStation(currentRadioId)
       if (!station) return
+
+      if (radioPauseStartedAt != null) {
+        const added = (performance.now() - radioPauseStartedAt) / 1000
+        const next = roundRadioDelayMs(
+          Math.min(audioEngine.maxRadioDelay, radioDelay + added),
+        )
+        audioEngine.setRadioDelay(next)
+        set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
+      }
+
       // Si el stream se cortó, volver a cargar
       if (!audioEngine.element.src && !audioEngine.isLive) {
         await get().playRadio(currentRadioId)
@@ -442,10 +635,40 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         await get().playRadio(currentRadioId)
         return
       }
+      set({ isPlaying: !audioEngine.paused, radioPauseStartedAt: null })
+      setMediaPlaybackState(!audioEngine.paused)
+      return
+    }
+    if (currentPodcastEpisodeId) {
+      if (radioPauseStartedAt != null) set({ radioPauseStartedAt: null })
+      audioEngine.applyPlaybackSession()
+      await audioEngine.ensureAudible()
+      const resumeAt =
+        Number.isFinite(audioEngine.currentTime) && audioEngine.currentTime > 0
+          ? audioEngine.currentTime
+          : get().position
+      const locked =
+        typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      let ok = locked ? await audioEngine.hardResume(resumeAt) : await audioEngine.play()
+      if (!ok || audioEngine.paused) {
+        ok = await audioEngine.hardResume(resumeAt)
+      }
+      if (!ok || audioEngine.paused) {
+        const ep = getPodcastEpisode(currentPodcastEpisodeId)
+        const show = ep ? getPodcastShow(ep.showId) : null
+        if (ep && show) {
+          const siblings = podcastEpisodeQueue
+            .map((id) => getPodcastEpisode(id))
+            .filter((e): e is PodcastEpisode => Boolean(e))
+          await get().playPodcastEpisode(ep, show, siblings)
+        }
+        return
+      }
       set({ isPlaying: !audioEngine.paused })
       setMediaPlaybackState(!audioEngine.paused)
       return
     }
+    if (radioPauseStartedAt != null) set({ radioPauseStartedAt: null })
     if (!currentTrackId && queue.length) {
       await loadAndMaybePlay(queue[index] ?? queue[0], 0, true, set)
       return
@@ -475,12 +698,30 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   next: async () => {
     if (get().currentRadioId) {
-      const { listMyRadios } = await import('../lib/myRadios')
       const list = listMyRadios()
       if (!list.length) return
       const i = list.findIndex((s) => s.id === get().currentRadioId)
       const next = list[(i + 1) % list.length]
       if (next) await get().playRadio(next.id)
+      return
+    }
+    if (get().currentPodcastEpisodeId && podcastEpisodeQueue.length) {
+      const cur = get().currentPodcastEpisodeId!
+      const i = podcastEpisodeQueue.indexOf(cur)
+      const nextId = podcastEpisodeQueue[i + 1]
+      if (!nextId) {
+        pendingBackgroundPlay = false
+        get().pause()
+        return
+      }
+      const ep = getPodcastEpisode(nextId)
+      const show = ep ? getPodcastShow(ep.showId) : null
+      if (ep && show) {
+        const siblings = podcastEpisodeQueue
+          .map((id) => getPodcastEpisode(id))
+          .filter((e): e is PodcastEpisode => Boolean(e))
+        await get().playPodcastEpisode(ep, show, siblings)
+      }
       return
     }
     const { queue, index, repeat } = get()
@@ -522,12 +763,34 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   previous: async () => {
     if (get().currentRadioId) {
-      const { listMyRadios } = await import('../lib/myRadios')
       const list = listMyRadios()
       if (!list.length) return
       const i = list.findIndex((s) => s.id === get().currentRadioId)
       const prev = list[(i - 1 + list.length) % list.length]
       if (prev) await get().playRadio(prev.id)
+      return
+    }
+    if (get().currentPodcastEpisodeId && podcastEpisodeQueue.length) {
+      const { position } = get()
+      if (position > 3) {
+        audioEngine.seek(0)
+        return
+      }
+      const cur = get().currentPodcastEpisodeId!
+      const i = podcastEpisodeQueue.indexOf(cur)
+      const prevId = podcastEpisodeQueue[i - 1]
+      if (!prevId) {
+        audioEngine.seek(0)
+        return
+      }
+      const ep = getPodcastEpisode(prevId)
+      const show = ep ? getPodcastShow(ep.showId) : null
+      if (ep && show) {
+        const siblings = podcastEpisodeQueue
+          .map((id) => getPodcastEpisode(id))
+          .filter((e): e is PodcastEpisode => Boolean(e))
+        await get().playPodcastEpisode(ep, show, siblings)
+      }
       return
     }
     const { queue, index, position } = get()
@@ -547,6 +810,31 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (get().currentRadioId || audioEngine.isLive) return
     audioEngine.seek(time)
     persistSoon({ position: time })
+    if (get().currentPodcastEpisodeId) {
+      persistPodcastProgressNow(set, get)
+    }
+  },
+
+  skipForward: (seconds = 15) => {
+    if (!get().currentPodcastEpisodeId) return
+    if (get().currentRadioId || audioEngine.isLive) return
+    const dur = Number.isFinite(audioEngine.duration)
+      ? audioEngine.duration
+      : get().duration
+    const cur = audioEngine.currentTime
+    const next = Math.min(
+      Number.isFinite(dur) && dur > 0 ? dur : cur + seconds,
+      cur + Math.max(1, seconds),
+    )
+    get().seek(next)
+  },
+
+  skipBack: (seconds = 15) => {
+    if (!get().currentPodcastEpisodeId) return
+    if (get().currentRadioId || audioEngine.isLive) return
+    const cur = audioEngine.currentTime
+    const next = Math.max(0, cur - Math.max(1, seconds))
+    get().seek(next)
   },
 
   setVolume: (v) => {
@@ -625,12 +913,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   clearQueue: () => {
     get().pause()
+    podcastEpisodeQueue = []
     set({
       queue: [],
       originalQueue: [],
       index: 0,
       currentTrackId: null,
       currentRadioId: null,
+      currentPodcastEpisodeId: null,
       coverUrl: null,
     })
     persistSoon({ queue: [], index: 0, currentTrackId: null, position: 0 })
@@ -641,9 +931,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   getCurrentRadio: () => getRadioStation(get().currentRadioId),
 
+  getCurrentPodcastEpisode: () => getPodcastEpisode(get().currentPodcastEpisodeId),
+
+  getCurrentPodcastShow: () => {
+    const ep = getPodcastEpisode(get().currentPodcastEpisodeId)
+    return ep ? getPodcastShow(ep.showId) : null
+  },
+
   setRadioDelay: (seconds) => {
-    audioEngine.setRadioDelay(seconds)
-    set({ radioDelay: audioEngine.radioDelay })
+    audioEngine.setRadioDelay(roundRadioDelayMs(seconds))
+    set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
   },
 }))
 
@@ -651,27 +948,33 @@ export async function bindMediaSession(tracks: Track[]) {
   const state = usePlayerStore.getState()
   if (state.currentRadioId) {
     const station = getRadioStation(state.currentRadioId)
-    if (station && 'mediaSession' in navigator) {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: station.name,
-        artist: 'En directo',
-        album: station.tagline,
-        artwork: station.logoUrl
-          ? [{ src: station.logoUrl, sizes: '200x200', type: 'image/png' }]
-          : [],
+    if (station) {
+      await updateRadioMediaSession(station, {
+        play: () => void usePlayerStore.getState().play(),
+        pause: () => usePlayerStore.getState().pause(),
+        previoustrack: () => void usePlayerStore.getState().previous(),
+        nexttrack: () => void usePlayerStore.getState().next(),
       })
-      navigator.mediaSession.setActionHandler('play', () => void usePlayerStore.getState().play())
-      navigator.mediaSession.setActionHandler('pause', () => usePlayerStore.getState().pause())
-      navigator.mediaSession.setActionHandler('previoustrack', () =>
-        void usePlayerStore.getState().previous(),
+    }
+    return
+  }
+  if (state.currentPodcastEpisodeId) {
+    const ep = getPodcastEpisode(state.currentPodcastEpisodeId)
+    const show = ep ? getPodcastShow(ep.showId) : null
+    if (ep && show) {
+      await updateMediaSession(
+        podcastSyntheticTrack(ep, show),
+        ep.artworkUrl || show.artworkUrl || state.coverUrl,
+        {
+          play: () => void usePlayerStore.getState().play(),
+          pause: () => usePlayerStore.getState().pause(),
+          previoustrack: () => void usePlayerStore.getState().previous(),
+          nexttrack: () => void usePlayerStore.getState().next(),
+          seekto: (time) => usePlayerStore.getState().seek(time),
+          getPosition: () => usePlayerStore.getState().position,
+          seekSkip: true,
+        },
       )
-      navigator.mediaSession.setActionHandler('nexttrack', () => void usePlayerStore.getState().next())
-      try {
-        navigator.mediaSession.setActionHandler('seekbackward', null)
-        navigator.mediaSession.setActionHandler('seekforward', null)
-      } catch {
-        /* ignore */
-      }
     }
     return
   }
@@ -683,5 +986,6 @@ export async function bindMediaSession(tracks: Track[]) {
     nexttrack: () => void usePlayerStore.getState().next(),
     seekto: (time) => usePlayerStore.getState().seek(time),
     getPosition: () => usePlayerStore.getState().position,
+    seekSkip: false,
   })
 }

@@ -244,10 +244,17 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #242424;
-  border-radius: 4px;
+  background: var(--accent-dim);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-radius: 8px;
   padding: 8px 10px;
-  color: var(--text-muted);
+  color: var(--brand-amber);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sp-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(245, 166, 35, 0.18);
 }
 
 .sp-search input {
@@ -256,6 +263,10 @@
   outline: none;
   color: #fff;
   width: min(40vw, 200px);
+}
+
+.sp-search input::placeholder {
+  color: rgba(240, 208, 120, 0.55);
 }
 
 .sp-search--block {

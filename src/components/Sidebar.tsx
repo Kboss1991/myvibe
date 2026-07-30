@@ -4,6 +4,7 @@ import {
   IconHome,
   IconLibrary,
   IconPlus,
+  IconPodcast,
   IconRadio,
   IconSearch,
   IconUpload,
@@ -21,6 +22,7 @@ const links = [
   { to: '/search', label: 'Buscar', icon: IconSearch },
   { to: '/library', label: 'Tu biblioteca', icon: IconLibrary },
   { to: '/radios', label: 'Radios', icon: IconRadio },
+  { to: '/podcasts', label: 'Podcasts', icon: IconPodcast },
   { to: '/upload', label: 'Subir', icon: IconUpload },
 ]
 

@@ -44,6 +44,11 @@ interface Props {
   showColumns?: boolean
   /** Si el encabezado Título/Tiempo va fuera (sticky) */
   hideColumnHead?: boolean
+  /** Modo selección controlado por el padre */
+  selectMode?: boolean
+  onSelectModeChange?: (mode: boolean) => void
+  /** Si false, el padre muestra el toggle (p. ej. junto al conteo) */
+  showSelectToggle?: boolean
 }
 
 export function TrackList({
@@ -54,6 +59,9 @@ export function TrackList({
   selectable = true,
   showColumns = false,
   hideColumnHead = false,
+  selectMode: selectModeProp,
+  onSelectModeChange,
+  showSelectToggle = true,
 }: Props) {
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
@@ -88,7 +96,12 @@ export function TrackList({
   const [deletingVisible, setDeletingVisible] = useState(false)
   const [editTrack, setEditTrack] = useState<Track | null>(null)
   const [playlistPickIds, setPlaylistPickIds] = useState<string[] | null>(null)
-  const [selectMode, setSelectMode] = useState(false)
+  const [selectModeInternal, setSelectModeInternal] = useState(false)
+  const selectMode = selectModeProp ?? selectModeInternal
+  const setSelectMode = (mode: boolean) => {
+    onSelectModeChange?.(mode)
+    if (selectModeProp === undefined) setSelectModeInternal(mode)
+  }
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
   const [replacingId, setReplacingId] = useState<string | null>(null)
@@ -105,6 +118,10 @@ export function TrackList({
     [selectedTracks],
   )
   const allSelected = tracks.length > 0 && selected.size === tracks.length
+
+  useEffect(() => {
+    if (!selectMode) setSelected(new Set())
+  }, [selectMode])
 
   useEffect(() => {
     const open = Boolean(menuTrack || playlistPickIds || deleteNotice || editTrack)
@@ -282,36 +299,31 @@ export function TrackList({
         hidden
         onChange={(e) => void onReplaceBulkFiles(e.target.files)}
       />
-      {selectable && (
+      {selectable && selectMode && (
         <div className="select-toolbar">
-          {!selectMode ? (
-            <button
-              type="button"
-              className="select-toolbar__toggle"
-              onClick={() => setSelectMode(true)}
-            >
-              <IconSelect size={18} /> Selección múltiple
-            </button>
-          ) : (
-            <>
-              <button type="button" className="select-toolbar__toggle is-on" onClick={toggleSelectAll}>
-                <span className={`check-box ${allSelected ? 'is-checked' : ''}`}>
-                  {allSelected ? <IconCheck size={14} /> : null}
-                </span>
-                {allSelected ? 'Quitar todo' : 'Seleccionar todo'}
-              </button>
-              <span className="select-toolbar__count">
-                {selected.size} seleccionada{selected.size === 1 ? '' : 's'}
-              </span>
-              <button
-                type="button"
-                className="select-toolbar__cancel"
-                onClick={exitSelectMode}
-              >
-                <IconClose size={18} /> Cancelar
-              </button>
-            </>
-          )}
+          <button type="button" className="select-toolbar__toggle is-on" onClick={toggleSelectAll}>
+            <span className={`check-box ${allSelected ? 'is-checked' : ''}`}>
+              {allSelected ? <IconCheck size={14} /> : null}
+            </span>
+            {allSelected ? 'Quitar todo' : 'Seleccionar todo'}
+          </button>
+          <span className="select-toolbar__count">
+            {selected.size} seleccionada{selected.size === 1 ? '' : 's'}
+          </span>
+          <button type="button" className="select-toolbar__cancel" onClick={exitSelectMode}>
+            <IconClose size={18} /> Cancelar
+          </button>
+        </div>
+      )}
+      {selectable && !selectMode && showSelectToggle && (
+        <div className="select-toolbar">
+          <button
+            type="button"
+            className="select-toolbar__toggle"
+            onClick={() => setSelectMode(true)}
+          >
+            <IconSelect size={18} /> Selección múltiple
+          </button>
         </div>
       )}
 

@@ -54,6 +54,8 @@
 
 .sidebar__link.is-active {
   color: var(--accent);
+  background: var(--accent-dim);
+  border-radius: 6px;
 }
 
 .sidebar__add:hover {

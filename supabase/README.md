@@ -16,3 +16,6 @@ La música NO se sube a Supabase (sigue en cada dispositivo). Sí se sincronizan
 
 Tras crear el proyecto, ejecuta también `library.sql` (catálogo + likes + playlists).
 Si ya tenías `library.sql` antiguo, vuelve a ejecutarlo: añade las tablas `library_likes` y `library_playlists`.
+
+7. SQL Editor → ejecuta `profile-social.sql` (dispositivos, círculo cercano, presencia y playlists compartidas).
+   Sin este script, el perfil muestra stats locales y sync, pero dispositivos/amigos fallarán en nube.

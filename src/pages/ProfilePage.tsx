@@ -1,17 +1,34 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
-import { hasRealEmail } from '../lib/auth'
-import { startWifiHost } from '../lib/wifiTransfer'
-import { buildReceiveUrl, isLocalhostHost, receiveQrDataUrl } from '../lib/receiveQr'
-import { IconDownload, IconEdit } from '../components/Icons'
+import { hasRealEmail, isCloudAuthEnabled } from '../lib/auth'
+import { IconEdit } from '../components/Icons'
 import { UserAvatar } from '../components/UserAvatar'
-import { isLibraryHostDevice } from '../lib/folderImport'
+import {
+  claimLibraryHost,
+  clearLibraryHostClaim,
+  formatLastSeen,
+  isLibraryHostDevice,
+  listDevices,
+  revokeDevice,
+  type UserDevice,
+} from '../lib/devices'
+import { isLibraryHostCapable } from '../lib/folderImport'
+import {
+  addFriendByCode,
+  addFriendByEmail,
+  ensureInviteCode,
+  listCircle,
+  listSharedPlaylists,
+  removeFriend,
+  sharePlaylistWithFriend,
+  type CircleFriend,
+  type SharedPlaylistCard,
+} from '../lib/friends'
+import { computeListenStats, formatListenMinutes } from '../lib/listenStats'
 import './pages.css'
 import '../components/TrackList.css'
-
-type Sheet = 'profile' | 'email' | 'password' | 'transfer' | null
 
 export function ProfilePage() {
   const user = useAuthStore((s) => s.user)
@@ -20,20 +37,20 @@ export function ProfilePage() {
   const setEmail = useAuthStore((s) => s.setEmail)
   const setAvatar = useAuthStore((s) => s.setAvatar)
   const clearAvatar = useAuthStore((s) => s.clearAvatar)
-  const exportAccount = useAuthStore((s) => s.exportAccount)
   const changePassword = useAuthStore((s) => s.changePassword)
   const authError = useAuthStore((s) => s.error)
   const clearError = useAuthStore((s) => s.clearError)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
   const getLiked = useLibraryStore((s) => s.getLiked)
-  const exportLibraryFolder = useLibraryStore((s) => s.exportLibraryFolder)
-  const exportLibraryPacks = useLibraryStore((s) => s.exportLibraryPacks)
-  const importProgress = useLibraryStore((s) => s.importProgress)
+  const lastSyncMessage = useLibraryStore((s) => s.lastSyncMessage)
+  const lastSyncAt = useLibraryStore((s) => s.lastSyncAt)
+  const pcOnline = useLibraryStore((s) => s.pcOnline)
+  const syncCloudCatalog = useLibraryStore((s) => s.syncCloudCatalog)
   const navigate = useNavigate()
   const avatarInputRef = useRef<HTMLInputElement>(null)
 
-  const [sheet, setSheet] = useState<Sheet>(null)
+  const [editing, setEditing] = useState(false)
   const [displayName, setDisplayName] = useState(user?.displayName ?? '')
   const [bio, setBio] = useState(user?.bio ?? '')
   const [email, setEmailField] = useState('')
@@ -42,25 +59,39 @@ export function ProfilePage() {
   const [busy, setBusy] = useState(false)
   const [localError, setLocalError] = useState<string | null>(null)
   const [okMsg, setOkMsg] = useState<string | null>(null)
-  const [wifiCode, setWifiCode] = useState<string | null>(null)
-  const [wifiQr, setWifiQr] = useState<string | null>(null)
-  const [wifiReceiveUrl, setWifiReceiveUrl] = useState<string | null>(null)
-  const [wifiStatus, setWifiStatus] = useState<string | null>(null)
-  const [wifiProgress, setWifiProgress] = useState<{
-    done: number
-    total: number
-    name: string
-  } | null>(null)
-  const [orphanCount, setOrphanCount] = useState<{ audio: number; covers: number } | null>(
-    null,
-  )
-  const wifiStopRef = useRef<(() => void) | null>(null)
+  const [orphanCount, setOrphanCount] = useState<{ audio: number; covers: number } | null>(null)
 
-  useEffect(() => {
-    return () => {
-      wifiStopRef.current?.()
+  const [devices, setDevices] = useState<UserDevice[]>([])
+  const [inviteCode, setInviteCode] = useState('')
+  const [friends, setFriends] = useState<CircleFriend[]>([])
+  const [shared, setShared] = useState<SharedPlaylistCard[]>([])
+  const [friendInput, setFriendInput] = useState('')
+  const [shareFriendId, setShareFriendId] = useState('')
+  const [sharePlaylistId, setSharePlaylistId] = useState('')
+  const [syncing, setSyncing] = useState(false)
+
+  const stats = useMemo(() => computeListenStats(tracks), [tracks])
+  const isHost = isLibraryHostDevice()
+  const canHost = isLibraryHostCapable()
+  const cloud = isCloudAuthEnabled()
+
+  async function refreshProfileExtras() {
+    if (!user) return
+    try {
+      const [devs, code, circle, shares] = await Promise.all([
+        listDevices(user.id),
+        ensureInviteCode(user.id).catch(() => ''),
+        listCircle(user.id).catch(() => [] as CircleFriend[]),
+        listSharedPlaylists(user.id).catch(() => [] as SharedPlaylistCard[]),
+      ])
+      setDevices(devs)
+      setInviteCode(code)
+      setFriends(circle)
+      setShared(shares)
+    } catch (e) {
+      console.warn('Perfil extras', e)
     }
-  }, [])
+  }
 
   useEffect(() => {
     void useLibraryStore
@@ -70,83 +101,36 @@ export function ProfilePage() {
       .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
   }, [tracks.length])
 
+  useEffect(() => {
+    void refreshProfileExtras()
+  }, [user?.id])
+
   if (!user) return null
 
   const liked = getLiked().length
   const needsEmail = !hasRealEmail(user)
   const error = localError || authError
-  const exporting = Boolean(importProgress)
+  const orphanTotal = orphanCount ? orphanCount.audio + orphanCount.covers : 0
+  const hostDevice = devices.find((d) => d.isLibraryHost)
 
-  function openSheet(next: Sheet) {
-    if (!user) return
+  function openEdit() {
     clearError()
     setLocalError(null)
     setOkMsg(null)
-    setEmailField(needsEmail ? '' : user.email)
+    setDisplayName(user!.displayName)
+    setBio(user!.bio)
+    setEmailField(needsEmail ? '' : user!.email)
     setNewPassword('')
     setConfirmPassword('')
-    if (next === 'profile') {
-      setDisplayName(user.displayName)
-      setBio(user.bio)
-    }
-    setSheet(next)
+    setEditing(true)
   }
 
-  function closeSheet() {
-    if (sheet === 'transfer') {
-      wifiStopRef.current?.()
-      wifiStopRef.current = null
-      setWifiCode(null)
-      setWifiQr(null)
-      setWifiReceiveUrl(null)
-      setWifiStatus(null)
-      setWifiProgress(null)
-    }
-    setSheet(null)
+  function closeEdit() {
+    setEditing(false)
     setLocalError(null)
     clearError()
-  }
-
-  async function handleWifiSend() {
-    setLocalError(null)
-    setOkMsg(null)
-    if (!tracks.length) {
-      setLocalError('No hay canciones para enviar')
-      return
-    }
-    wifiStopRef.current?.()
-    setWifiQr(null)
-    setWifiReceiveUrl(null)
-    setBusy(true)
-    setWifiStatus('Preparando…')
-    try {
-      const session = await startWifiHost({
-        onCode: (code) => {
-          setWifiCode(code)
-          setBusy(false)
-          const url = buildReceiveUrl(code)
-          setWifiReceiveUrl(url)
-          void receiveQrDataUrl(code)
-            .then(setWifiQr)
-            .catch(() => setWifiQr(null))
-        },
-        onStatus: setWifiStatus,
-        onProgress: (done, total, name) => setWifiProgress({ done, total, name }),
-        onError: (msg) => {
-          setLocalError(msg)
-          setBusy(false)
-        },
-        onFinished: () => {
-          setOkMsg('Música enviada al móvil · ya está en su biblioteca MyVibe')
-          setWifiProgress(null)
-          setBusy(false)
-        },
-      })
-      wifiStopRef.current = session.stop
-    } catch (e) {
-      setBusy(false)
-      setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar el envío Wi‑Fi')
-    }
+    setNewPassword('')
+    setConfirmPassword('')
   }
 
   async function handleAvatarFile(file: File | undefined) {
@@ -158,67 +142,7 @@ export function ProfilePage() {
       await setAvatar(file)
       setOkMsg('Avatar actualizado')
     } catch {
-      // error en store
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleExportFolder() {
-    setLocalError(null)
-    setOkMsg(null)
-    if (!tracks.length) {
-      setLocalError('No hay canciones para transferir')
-      return
-    }
-    setBusy(true)
-    try {
-      const result = await exportLibraryFolder()
-      setOkMsg(
-        `Listo: ${result.count} MP3 en la carpeta “${result.folderHint}”. Cópiala al móvil (USB/Drive) y en Subir elige esa carpeta.`,
-      )
-      setSheet(null)
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      setLocalError(e instanceof Error ? e.message : 'No se pudo exportar a carpeta')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleExportPacks() {
-    setLocalError(null)
-    setOkMsg(null)
-    if (!tracks.length) {
-      setLocalError('No hay canciones para transferir')
-      return
-    }
-    setBusy(true)
-    try {
-      const result = await exportLibraryPacks()
-      setOkMsg(
-        `Descargados ${result.packs} ZIP pequeños (${result.tracks} canciones). En el móvil importa cada parte en Subir.`,
-      )
-      setSheet(null)
-    } catch (e) {
-      if (e instanceof DOMException && e.name === 'AbortError') return
-      setLocalError(e instanceof Error ? e.message : 'No se pudieron crear los paquetes')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  async function handleExportAccount() {
-    setLocalError(null)
-    setOkMsg(null)
-    setBusy(true)
-    try {
-      await exportAccount()
-      setOkMsg(
-        'Cuenta descargada. En el móvil: login → Importar cuenta (mismo correo y contraseña).',
-      )
-    } catch (e) {
-      setLocalError(e instanceof Error ? e.message : 'No se pudo exportar la cuenta')
+      // store
     } finally {
       setBusy(false)
     }
@@ -269,50 +193,375 @@ export function ProfilePage() {
       </div>
 
       <div className="profile-actions">
-        <button className="btn-outline" onClick={() => openSheet('profile')}>
+        <button type="button" className="btn-outline" onClick={openEdit}>
           <IconEdit size={18} /> Editar perfil
-        </button>
-        <button
-          className="btn-outline"
-          disabled={busy || exporting || !tracks.length}
-          onClick={() => openSheet('transfer')}
-        >
-          <IconDownload size={18} /> Pasar al móvil
-        </button>
-        <button
-          className="btn-outline"
-          disabled={busy}
-          onClick={() => void handleExportAccount()}
-        >
-          <IconDownload size={18} /> Exportar cuenta
-        </button>
-        {needsEmail ? (
-          <button className="btn-outline" onClick={() => openSheet('email')}>
-            Añadir correo
-          </button>
-        ) : (
-          <button className="btn-outline" onClick={() => openSheet('email')}>
-            Cambiar correo
-          </button>
-        )}
-        <button className="btn-outline" onClick={() => openSheet('password')}>
-          Cambiar contraseña
         </button>
       </div>
 
-      <section className="profile-storage">
-        <h2 className="profile-storage__title">Almacenamiento de este dispositivo</h2>
-        <p className="profile-storage__hint">
-          Libera espacio de MyVibe en este {isLibraryHostDevice() ? 'PC' : 'iPhone'}. Las copias
-          en Archivos/Descargas → MyVibe se borran aparte.
-          {orphanCount && orphanCount.audio + orphanCount.covers > 0
-            ? ` Hay ${orphanCount.audio + orphanCount.covers} restos sin usar.`
-            : ''}
-        </p>
-        <div className="profile-storage__actions">
+      {/* Estadísticas */}
+      <section className="profile-card">
+        <h2 className="profile-card__title">Tu escucha</h2>
+        <div className="profile-stats-grid">
+          <div>
+            <strong>{formatListenMinutes(stats.estimatedMinutes)}</strong>
+            <span>tiempo estimado</span>
+          </div>
+          <div>
+            <strong>{stats.totalPlays}</strong>
+            <span>reproducciones</span>
+          </div>
+          <div>
+            <strong>{stats.streakDays}</strong>
+            <span>días de racha</span>
+          </div>
+          <div>
+            <strong>{stats.uniqueTracksPlayed}</strong>
+            <span>canciones tocadas</span>
+          </div>
+        </div>
+        {stats.topArtists.length > 0 && (
+          <div className="profile-tops">
+            <h3>Top artistas</h3>
+            <ol>
+              {stats.topArtists.map((a) => (
+                <li key={a.name}>
+                  <span>{a.name}</span>
+                  <em>{a.plays}</em>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+        {stats.topTracks.length > 0 && (
+          <div className="profile-tops">
+            <h3>Top canciones</h3>
+            <ol>
+              {stats.topTracks.map((t) => (
+                <li key={t.id}>
+                  <span>
+                    {t.title}
+                    <small>{t.artist}</small>
+                  </span>
+                  <em>{t.plays}</em>
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+      </section>
+
+      {/* Sincronización */}
+      <section className="profile-card">
+        <div className="profile-card__head">
+          <h2 className="profile-card__title">Sincronización</h2>
           <button
             type="button"
-            className="btn-outline danger-outline profile-storage__btn"
+            className="chip chip-play"
+            disabled={syncing || !cloud}
+            onClick={() => {
+              setSyncing(true)
+              setLocalError(null)
+              void syncCloudCatalog()
+                .then(() => {
+                  setOkMsg('Catálogo actualizado')
+                  void refreshProfileExtras()
+                })
+                .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error al sincronizar'))
+                .finally(() => setSyncing(false))
+            }}
+          >
+            {syncing ? 'Actualizando…' : 'Actualizar ahora'}
+          </button>
+        </div>
+        {!cloud ? (
+          <p className="profile-card__hint">Supabase no configurado — todo es local en este dispositivo.</p>
+        ) : (
+          <>
+            <p className="profile-card__meta">
+              Última sync:{' '}
+              {lastSyncAt ? formatLastSeen(lastSyncAt) : 'aún no'}
+              {pcOnline != null ? ` · PC host ${pcOnline ? 'en línea' : 'offline'}` : ''}
+            </p>
+            {lastSyncMessage ? <p className="profile-card__hint">{lastSyncMessage}</p> : null}
+          </>
+        )}
+      </section>
+
+      {/* Biblioteca principal */}
+      <section className="profile-card">
+        <h2 className="profile-card__title">Biblioteca principal</h2>
+        <p className="profile-card__hint">
+          El PC host publica el catálogo y puede borrar en la nube. El móvil descarga; no debería
+          ser host.
+        </p>
+        <p className="profile-card__meta">
+          Ahora:{' '}
+          {hostDevice
+            ? `${hostDevice.label}${hostDevice.isThisDevice ? ' (este)' : ''}`
+            : isHost
+              ? 'Este dispositivo (PC)'
+              : 'Ninguno marcado · el móvil solo descarga'}
+        </p>
+        {canHost ? (
+          <div className="profile-card__row">
+            {isHost ? (
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true)
+                  void clearLibraryHostClaim()
+                    .then(() => {
+                      setOkMsg('Ya no eres la biblioteca principal')
+                      return refreshProfileExtras()
+                    })
+                    .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error'))
+                    .finally(() => setBusy(false))
+                }}
+              >
+                Dejar de ser host
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={busy}
+                onClick={() => {
+                  setBusy(true)
+                  void claimLibraryHost(user.id)
+                    .then(() => {
+                      setOkMsg('Este PC es la biblioteca principal')
+                      return refreshProfileExtras()
+                    })
+                    .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error'))
+                    .finally(() => setBusy(false))
+                }}
+              >
+                Marcar este PC como host
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="profile-card__meta">Este dispositivo es móvil/tablet: solo descarga.</p>
+        )}
+      </section>
+
+      {/* Dispositivos */}
+      <section className="profile-card">
+        <h2 className="profile-card__title">Dispositivos conectados</h2>
+        <ul className="profile-device-list">
+          {devices.map((d) => (
+            <li key={d.id} className={d.isThisDevice ? 'is-this' : ''}>
+              <div>
+                <strong>
+                  {d.label}
+                  {d.isThisDevice ? ' · Este' : ''}
+                  {d.isLibraryHost ? ' · Host' : ''}
+                </strong>
+                <span>
+                  {d.kind === 'pc' ? 'PC' : d.kind === 'tablet' ? 'Tablet' : 'Móvil'} ·{' '}
+                  {formatLastSeen(d.lastSeen)}
+                </span>
+              </div>
+              {!d.isThisDevice && cloud ? (
+                <button
+                  type="button"
+                  className="profile-danger-zone__link"
+                  disabled={busy}
+                  onClick={() => {
+                    if (!window.confirm(`¿Cerrar sesión en «${d.label}»?`)) return
+                    setBusy(true)
+                    void revokeDevice(user.id, d.id)
+                      .then(() => {
+                        setOkMsg('Sesión remota cerrada')
+                        return refreshProfileExtras()
+                      })
+                      .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error'))
+                      .finally(() => setBusy(false))
+                  }}
+                >
+                  Cerrar sesión
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        {!cloud && (
+          <p className="profile-card__hint">Con la nube verás todos los dispositivos de la cuenta.</p>
+        )}
+      </section>
+
+      {/* Círculo */}
+      <section className="profile-card">
+        <h2 className="profile-card__title">Círculo cercano</h2>
+        <p className="profile-card__hint">
+          No es una red abierta: solo gente que invites por código o correo. Ven “escuchando ahora”
+          y puedes compartir playlists (lista de temas, sin audio).
+        </p>
+        {cloud ? (
+          <>
+            <div className="profile-invite">
+              <span>Tu código</span>
+              <strong>{inviteCode || '…'}</strong>
+              <button
+                type="button"
+                className="btn-outline"
+                disabled={!inviteCode}
+                onClick={() => {
+                  void navigator.clipboard?.writeText(inviteCode).then(() => setOkMsg('Código copiado'))
+                }}
+              >
+                Copiar
+              </button>
+            </div>
+            <div className="profile-friend-add">
+              <input
+                value={friendInput}
+                onChange={(e) => setFriendInput(e.target.value)}
+                placeholder="Código o correo del amigo"
+                aria-label="Código o correo"
+              />
+              <button
+                type="button"
+                className="chip chip-play"
+                disabled={busy || !friendInput.trim()}
+                onClick={() => {
+                  const raw = friendInput.trim()
+                  setBusy(true)
+                  setLocalError(null)
+                  const run = raw.includes('@') ? addFriendByEmail(raw) : addFriendByCode(raw)
+                  void run
+                    .then((r) => {
+                      setOkMsg(`${r.displayName} está en tu círculo`)
+                      setFriendInput('')
+                      return refreshProfileExtras()
+                    })
+                    .catch((e) => setLocalError(e instanceof Error ? e.message : 'No se pudo añadir'))
+                    .finally(() => setBusy(false))
+                }}
+              >
+                Añadir
+              </button>
+            </div>
+            {friends.length === 0 ? (
+              <p className="profile-card__meta">Todavía no hay nadie en tu círculo.</p>
+            ) : (
+              <ul className="profile-friend-list">
+                {friends.map((f) => (
+                  <li key={f.id}>
+                    <div>
+                      <strong>{f.displayName}</strong>
+                      <span>
+                        {f.listening && Date.now() - f.listening.updatedAt < 30 * 60_000
+                          ? `Escuchando: ${f.listening.title} · ${f.listening.artist}`
+                          : 'Sin actividad reciente'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="profile-danger-zone__link"
+                      onClick={() => {
+                        void removeFriend(user.id, f.id).then(() => refreshProfileExtras())
+                      }}
+                    >
+                      Quitar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {friends.length > 0 && playlists.length > 0 && (
+              <div className="profile-share-playlist">
+                <h3>Compartir playlist</h3>
+                <select
+                  value={shareFriendId}
+                  onChange={(e) => setShareFriendId(e.target.value)}
+                  aria-label="Amigo"
+                >
+                  <option value="">Elige amigo</option>
+                  {friends.map((f) => (
+                    <option key={f.id} value={f.id}>
+                      {f.displayName}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={sharePlaylistId}
+                  onChange={(e) => setSharePlaylistId(e.target.value)}
+                  aria-label="Playlist"
+                >
+                  <option value="">Elige playlist</option>
+                  {playlists.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="btn-outline"
+                  disabled={busy || !shareFriendId || !sharePlaylistId}
+                  onClick={() => {
+                    const pl = playlists.find((p) => p.id === sharePlaylistId)
+                    if (!pl) return
+                    const titles = pl.trackIds
+                      .map((id) => tracks.find((t) => t.id === id)?.title)
+                      .filter((x): x is string => Boolean(x))
+                    setBusy(true)
+                    void sharePlaylistWithFriend({
+                      friendId: shareFriendId,
+                      playlistLocalId: pl.id,
+                      playlistName: pl.name,
+                      trackTitles: titles,
+                    })
+                      .then(() => {
+                        setOkMsg(`«${pl.name}» compartida`)
+                        setShareFriendId('')
+                        setSharePlaylistId('')
+                        return refreshProfileExtras()
+                      })
+                      .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error al compartir'))
+                      .finally(() => setBusy(false))
+                  }}
+                >
+                  Enviar
+                </button>
+              </div>
+            )}
+
+            {shared.length > 0 && (
+              <div className="profile-shared">
+                <h3>Compartidas</h3>
+                <ul>
+                  {shared.map((s) => (
+                    <li key={s.id}>
+                      <strong>{s.playlistName}</strong>
+                      <span>
+                        {s.fromMe ? 'Enviada' : 'Recibida'} · {s.trackTitles.length} temas
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        ) : (
+          <p className="profile-card__meta">Activa Supabase para el círculo entre dispositivos.</p>
+        )}
+      </section>
+
+      <details className="profile-danger-zone">
+        <summary>Espacio en este dispositivo</summary>
+        <p className="profile-danger-zone__hint">
+          Libera datos de MyVibe en este {canHost ? 'PC' : 'dispositivo'}.
+          {orphanTotal > 0 ? ` Hay ${orphanTotal} restos sin usar.` : ''}
+        </p>
+        <div className="profile-danger-zone__actions">
+          <button
+            type="button"
+            className="profile-danger-zone__link"
             disabled={busy}
             onClick={() => {
               const onPc = isLibraryHostDevice()
@@ -337,11 +586,6 @@ export function ProfilePage() {
                         .countOrphanStorage()
                         .then(setOrphanCount)
                         .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
-                      if (!onPc) {
-                        window.alert(
-                          'MyVibe ya está vacío en este iPhone.\n\nSi también guardaste copias en Archivos → Descargas → MyVibe, bórralas ahí para liberar ese espacio.',
-                        )
-                      }
                     })
                 })
                 .catch((e) => {
@@ -350,11 +594,11 @@ export function ProfilePage() {
                 .finally(() => setBusy(false))
             }}
           >
-            Borrar música de este dispositivo
+            Borrar música local
           </button>
           <button
             type="button"
-            className="btn-outline danger-outline profile-storage__btn"
+            className="profile-danger-zone__link"
             disabled={busy}
             onClick={() => {
               setBusy(true)
@@ -391,15 +635,14 @@ export function ProfilePage() {
                 .finally(() => setBusy(false))
             }}
           >
-            {orphanCount && orphanCount.audio + orphanCount.covers > 0
-              ? `Limpiar datos sin usar (${orphanCount.audio + orphanCount.covers})`
-              : 'Limpiar datos sin usar'}
+            {orphanTotal > 0 ? `Limpiar restos (${orphanTotal})` : 'Limpiar restos'}
           </button>
         </div>
-      </section>
+      </details>
 
       <div className="profile-actions">
         <button
+          type="button"
           className="btn-outline danger-outline"
           onClick={() => {
             logout()
@@ -410,138 +653,13 @@ export function ProfilePage() {
         </button>
       </div>
 
-      {exporting && (
-        <div className="import-progress">
-          <div className="import-progress__bar">
-            <div
-              style={{
-                width: `${
-                  importProgress!.total
-                    ? (importProgress!.done / importProgress!.total) * 100
-                    : 0
-                }%`,
-              }}
-            />
-          </div>
-          <p>
-            Preparando transferencia {importProgress!.done}/{importProgress!.total}
-            {importProgress!.name ? ` · ${importProgress!.name}` : ''}
-          </p>
-        </div>
-      )}
+      {okMsg && !editing && <p className="form-status">{okMsg}</p>}
+      {localError && !editing && <p className="form-error">{localError}</p>}
+      {authError && !editing && <p className="form-error">{authError}</p>}
 
-      {okMsg && !sheet && <p className="form-status">{okMsg}</p>}
-      {localError && !sheet && <p className="form-error">{localError}</p>}
-      {authError && !sheet && <p className="form-error">{authError}</p>}
-
-      <p className="profile-transfer-hint">
-        En el móvil: escanea el <strong>QR</strong> (cámara) y la música se guarda sola en la
-        biblioteca de MyVibe.
-      </p>
-
-      {sheet === 'transfer' && (
+      {editing && (
         <div className="sheet">
-          <button type="button" className="sheet-backdrop" onClick={closeSheet} />
-          <div className="sheet__panel">
-            <h3>Pasar música al móvil</h3>
-
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy || Boolean(wifiCode)}
-              style={{ width: '100%', marginBottom: 10 }}
-              onClick={() => void handleWifiSend()}
-            >
-              1. Enviar por QR / Wi‑Fi (recomendado)
-            </button>
-            <p className="profile-sheet-hint">
-              Genera un QR. En el móvil abre la cámara, escanea y MyVibe recibe y guarda las
-              canciones en su biblioteca.
-            </p>
-
-            {wifiCode && (
-              <div className="wifi-code-box">
-                <p>Escanea con la cámara del móvil</p>
-                {wifiQr ? (
-                  <img className="wifi-qr" src={wifiQr} alt={`QR código ${wifiCode}`} />
-                ) : (
-                  <p className="form-status">Generando QR…</p>
-                )}
-                <strong>{wifiCode}</strong>
-                <span className="wifi-code-alt">o escribe el código en /receive</span>
-                {isLocalhostHost() && (
-                  <p className="form-error" style={{ marginTop: 8 }}>
-                    Estás en localhost: el QR no servirá en el móvil. Abre MyVibe en el PC con tu IP
-                    de red (ej. http://192.168.x.x:5174) y vuelve a generar el envío.
-                  </p>
-                )}
-                {wifiReceiveUrl && !isLocalhostHost() && (
-                  <span className="wifi-url-hint">{wifiReceiveUrl}</span>
-                )}
-                {wifiStatus && <span>{wifiStatus}</span>}
-                {wifiProgress && (
-                  <span>
-                    {wifiProgress.done}/{wifiProgress.total}
-                    {wifiProgress.name ? ` · ${wifiProgress.name}` : ''}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="btn-outline"
-                  style={{ width: '100%', marginTop: 10 }}
-                  onClick={() => {
-                    wifiStopRef.current?.()
-                    wifiStopRef.current = null
-                    setWifiCode(null)
-                    setWifiQr(null)
-                    setWifiReceiveUrl(null)
-                    setWifiStatus(null)
-                    setWifiProgress(null)
-                  }}
-                >
-                  Cancelar envío
-                </button>
-              </div>
-            )}
-
-            <button
-              type="button"
-              className="btn-outline"
-              disabled={busy || exporting || Boolean(wifiCode)}
-              style={{ width: '100%', marginBottom: 10, marginTop: 8 }}
-              onClick={() => void handleExportFolder()}
-            >
-              2. Exportar a carpeta (PC)
-            </button>
-            <p className="profile-sheet-hint">Chrome/Edge · carpeta MyVibe-export · USB/Drive.</p>
-
-            <button
-              type="button"
-              className="btn-outline"
-              disabled={busy || exporting || Boolean(wifiCode)}
-              style={{ width: '100%', marginBottom: 10 }}
-              onClick={() => void handleExportPacks()}
-            >
-              3. ZIP pequeños
-            </button>
-
-            {(busy || exporting) && !wifiCode && (
-              <p className="form-status">
-                {importProgress
-                  ? `${importProgress.done}/${importProgress.total}${
-                      importProgress.name ? ` · ${importProgress.name}` : ''
-                    }`
-                  : 'Trabajando…'}
-              </p>
-            )}
-            {localError && <p className="form-error">{localError}</p>}
-          </div>
-        </div>
-      )}
-
-      {sheet === 'profile' && (
-        <div className="sheet">
-          <button type="button" className="sheet-backdrop" onClick={closeSheet} />
+          <button type="button" className="sheet-backdrop" onClick={closeEdit} />
           <div className="sheet__panel">
             <h3>Editar perfil</h3>
             <div className="profile-edit-avatar">
@@ -587,125 +705,77 @@ export function ProfilePage() {
                 placeholder="Cuéntanos algo"
               />
             </label>
+            {needsEmail && (
+              <label className="field">
+                Correo electrónico
+                <input
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmailField(e.target.value)}
+                  placeholder="tu@email.com"
+                />
+              </label>
+            )}
+            <div className="profile-edit-security">
+              <p className="profile-edit-security__title">Contraseña</p>
+              <label className="field">
+                Nueva contraseña
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="Déjalo vacío para no cambiarla"
+                />
+              </label>
+              <label className="field">
+                Repetir nueva contraseña
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                />
+              </label>
+            </div>
+            {error && <p className="form-error">{error}</p>}
             <button
               type="button"
               className="btn-primary"
               disabled={busy}
               onClick={async () => {
+                setLocalError(null)
+                clearError()
+                if (newPassword || confirmPassword) {
+                  if (newPassword !== confirmPassword) {
+                    setLocalError('Las contraseñas nuevas no coinciden')
+                    return
+                  }
+                }
                 setBusy(true)
                 try {
+                  if (needsEmail && email.trim()) {
+                    await setEmail(email)
+                  }
                   await updateProfile({
                     displayName: displayName.trim() || user.username,
                     bio: bio.trim(),
                     avatarHue: Math.floor(Math.random() * 360),
                   })
+                  if (newPassword) {
+                    await changePassword(newPassword)
+                  }
                   setOkMsg('Perfil actualizado')
-                  closeSheet()
+                  closeEdit()
+                } catch {
+                  // store
                 } finally {
                   setBusy(false)
                 }
               }}
             >
               Guardar
-            </button>
-          </div>
-        </div>
-      )}
-
-      {sheet === 'email' && (
-        <div className="sheet">
-          <button type="button" className="sheet-backdrop" onClick={closeSheet} />
-          <div className="sheet__panel">
-            <h3>{needsEmail ? 'Añadir correo' : 'Cambiar correo'}</h3>
-            <p className="profile-sheet-hint">
-              Lo usarás para iniciar sesión en este dispositivo.
-            </p>
-            <label className="field">
-              Correo electrónico
-              <input
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmailField(e.target.value)}
-                placeholder="tu@email.com"
-                autoFocus
-              />
-            </label>
-            {error && <p className="form-error">{error}</p>}
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy}
-              onClick={async () => {
-                setLocalError(null)
-                clearError()
-                setBusy(true)
-                try {
-                  await setEmail(email)
-                  setOkMsg('Correo guardado')
-                  closeSheet()
-                } catch {
-                  // error en store
-                } finally {
-                  setBusy(false)
-                }
-              }}
-            >
-              Guardar correo
-            </button>
-          </div>
-        </div>
-      )}
-
-      {sheet === 'password' && (
-        <div className="sheet">
-          <button type="button" className="sheet-backdrop" onClick={closeSheet} />
-          <div className="sheet__panel">
-            <h3>Cambiar contraseña</h3>
-            <label className="field">
-              Nueva contraseña
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                autoFocus
-              />
-            </label>
-            <label className="field">
-              Repetir nueva contraseña
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
-              />
-            </label>
-            {error && <p className="form-error">{error}</p>}
-            <button
-              type="button"
-              className="btn-primary"
-              disabled={busy}
-              onClick={async () => {
-                setLocalError(null)
-                clearError()
-                if (newPassword !== confirmPassword) {
-                  setLocalError('Las contraseñas nuevas no coinciden')
-                  return
-                }
-                setBusy(true)
-                try {
-                  await changePassword(newPassword)
-                  setOkMsg('Contraseña actualizada')
-                  closeSheet()
-                } catch {
-                  // error en store
-                } finally {
-                  setBusy(false)
-                }
-              }}
-            >
-              Guardar contraseña
             </button>
           </div>
         </div>
