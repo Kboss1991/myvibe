@@ -107,6 +107,86 @@ class AudioEngine {
   }
 
   /**
+   * Arranca el standby MIENTRAS el actual sigue sonando y lo promueve.
+   * Clave con pantalla apagada: no hay que hacer play() tras un silencio/`ended`.
+   */
+  overlapPromoteStandby(expectedTrackId?: string): boolean {
+    if (!this.standby || !this.standbyUrl) return false
+    if (
+      expectedTrackId &&
+      this.standbyTrackId &&
+      this.standbyTrackId !== expectedTrackId
+    ) {
+      return false
+    }
+    // Solo tiene sentido si el actual aún reproduce (privilegio activo)
+    if (this.audio.paused && !this.audio.ended) return false
+
+    const next = this.standby
+    const url = this.standbyUrl
+    this.standby = null
+    this.standbyUrl = null
+    this.standbyTrackId = null
+
+    next.muted = false
+    next.volume = this.volumeValue
+    try {
+      if (next.currentTime > 0.05) next.currentTime = 0
+    } catch {
+      /* ignore */
+    }
+
+    this.applyPlaybackSession()
+    try {
+      void next.play()
+    } catch {
+      // Restaurar standby para reintento
+      this.standby = next
+      this.standbyUrl = url
+      this.standbyTrackId = expectedTrackId ?? null
+      return false
+    }
+
+    const old = this.audio
+    try {
+      old.pause()
+    } catch {
+      /* ignore */
+    }
+    this.destroyHls()
+    if (this.sourceNode || this.ctx) {
+      this.disconnectGraphNodes()
+    }
+    this.live = false
+    this.liveStreamUrl = null
+    this.delayGraphActive = false
+
+    this.configureElement(next)
+    this.wireElement(next)
+    this.audio = next
+    this.objectUrl = url
+    this.mountIntoDom()
+
+    try {
+      old.removeAttribute('src')
+      old.remove()
+    } catch {
+      /* ignore */
+    }
+
+    if (next.paused) {
+      try {
+        void next.play()
+      } catch {
+        this.emit()
+        return false
+      }
+    }
+    this.emit()
+    return true
+  }
+
+  /**
    * Continuar reproducción tras `ended` en el MISMO <audio>.
    * Cambiar de elemento (standby) rompe el gesto/privilegio en iOS y Android.
    * Debe llamarse de forma síncrona desde el handler de ended, sin awaits previos.
