@@ -8,9 +8,10 @@ const MAX_RADIO_DELAY = 30
 class AudioEngine {
   private audio = new Audio()
   private listeners = new Set<Listener>()
+  private endedHandlers = new Set<() => void>()
+  /** Referencia al blob URL actual; NO se revoca aquí (lo gestiona library cache). */
   private objectUrl: string | null = null
   private hls: Hls | null = null
-  private mounted = false
   private live = false
 
   private ctx: AudioContext | null = null
@@ -21,27 +22,37 @@ class AudioEngine {
   private volumeValue = 1
 
   constructor() {
-    this.audio.preload = 'auto'
-    const media = this.audio as HTMLAudioElement & { playsInline?: boolean }
-    media.playsInline = true
-    this.audio.setAttribute('playsinline', 'true')
-    this.audio.setAttribute('webkit-playsinline', 'true')
-    this.audio.setAttribute('x-webkit-airplay', 'allow')
-    this.audio.setAttribute('aria-hidden', 'true')
-    this.audio.crossOrigin = 'anonymous'
-    this.audio.style.cssText =
-      'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px;bottom:0'
-
-    this.audio.addEventListener('timeupdate', () => this.emit())
-    this.audio.addEventListener('durationchange', () => this.emit())
-    this.audio.addEventListener('ended', () => this.emit())
-    this.audio.addEventListener('play', () => this.emit())
-    this.audio.addEventListener('pause', () => this.emit())
-    this.audio.addEventListener('volumechange', () => this.emit())
-    this.audio.addEventListener('error', () => this.emit())
-
+    this.configureElement(this.audio)
+    this.wireElement(this.audio)
     this.mountIntoDom()
     this.applyPlaybackSession()
+  }
+
+  private configureElement(el: HTMLAudioElement) {
+    el.preload = 'auto'
+    const media = el as HTMLAudioElement & { playsInline?: boolean }
+    media.playsInline = true
+    el.setAttribute('playsinline', 'true')
+    el.setAttribute('webkit-playsinline', 'true')
+    el.setAttribute('x-webkit-airplay', 'allow')
+    el.setAttribute('aria-hidden', 'true')
+    el.crossOrigin = 'anonymous'
+    // Visible 1×1: algunos navegadores matan el audio si es 0×0 / visibility:hidden
+    el.style.cssText =
+      'position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1'
+  }
+
+  private wireElement(el: HTMLAudioElement) {
+    el.addEventListener('timeupdate', () => this.emit())
+    el.addEventListener('durationchange', () => this.emit())
+    el.addEventListener('ended', () => {
+      this.emit()
+      for (const h of this.endedHandlers) h()
+    })
+    el.addEventListener('play', () => this.emit())
+    el.addEventListener('pause', () => this.emit())
+    el.addEventListener('volumechange', () => this.emit())
+    el.addEventListener('error', () => this.emit())
   }
 
   get isLive() {
@@ -70,14 +81,12 @@ class AudioEngine {
   }
 
   private mountIntoDom() {
-    if (this.mounted || typeof document === 'undefined') return
+    if (typeof document === 'undefined') return
     const attach = () => {
-      if (this.mounted) return
       if (!document.body) return
       if (!this.audio.isConnected) {
         document.body.appendChild(this.audio)
       }
-      this.mounted = true
     }
     if (document.body) attach()
     else document.addEventListener('DOMContentLoaded', attach, { once: true })
@@ -120,7 +129,9 @@ class AudioEngine {
   /** Enruta el <audio> por Web Audio para poder aplicar delay (sync TV). */
   private ensureAudioGraph() {
     if (this.sourceNode) return
-    const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    const Ctx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     this.ctx = new Ctx()
     this.sourceNode = this.ctx.createMediaElementSource(this.audio)
     this.delayNode = this.ctx.createDelay(MAX_RADIO_DELAY)
@@ -130,8 +141,71 @@ class AudioEngine {
     this.sourceNode.connect(this.delayNode)
     this.delayNode.connect(this.gainNode)
     this.gainNode.connect(this.ctx.destination)
-    // El volumen lo controla el GainNode
     this.audio.volume = 1
+  }
+
+  private disconnectGraphNodes() {
+    try {
+      this.sourceNode?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.delayNode?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.gainNode?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    this.sourceNode = null
+    this.delayNode = null
+    this.gainNode = null
+    if (this.ctx) {
+      void this.ctx.close().catch(() => undefined)
+      this.ctx = null
+    }
+  }
+
+  /**
+   * Tras usar radio (Web Audio), hay que sustituir el <audio>:
+   * createMediaElementSource solo se puede llamar una vez por elemento,
+   * y el grafo deja el audio mudo si el contexto se suspende (bloqueo).
+   */
+  private replaceAudioElement() {
+    const old = this.audio
+    const wasMuted = old.muted
+    const vol = this.volumeValue
+    try {
+      old.pause()
+    } catch {
+      /* ignore */
+    }
+    this.destroyHls()
+    this.disconnectGraphNodes()
+
+    const next = new Audio()
+    this.configureElement(next)
+    this.wireElement(next)
+    next.muted = wasMuted
+    next.volume = vol
+    this.audio = next
+    this.objectUrl = null
+    this.mountIntoDom()
+    try {
+      old.removeAttribute('src')
+      old.remove()
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Sale del grafo Web Audio al volver a música/podcast. */
+  private ensureElementAudioRoute() {
+    if (!this.sourceNode && !this.ctx) return
+    this.replaceAudioElement()
   }
 
   private async resumeContext() {
@@ -183,14 +257,35 @@ class AudioEngine {
     }
   }
 
-  private clearSource() {
-    this.destroyHls()
-    if (this.objectUrl) {
-      URL.revokeObjectURL(this.objectUrl)
-      this.objectUrl = null
-    }
-    this.audio.removeAttribute('src')
-    this.audio.load()
+  private waitElementReady(timeoutMs: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        this.audio.removeEventListener('loadeddata', onReady)
+        this.audio.removeEventListener('canplay', onReady)
+        this.audio.removeEventListener('error', onError)
+        window.clearTimeout(timer)
+      }
+      const onReady = () => {
+        cleanup()
+        resolve()
+      }
+      const onError = () => {
+        cleanup()
+        reject(new Error(this.audio.error?.message || 'No se pudo cargar el audio'))
+      }
+      const timer = window.setTimeout(() => {
+        cleanup()
+        if (this.audio.readyState >= 1 || this.live) resolve()
+        else reject(new Error('Tiempo de carga de audio agotado'))
+      }, timeoutMs)
+      this.audio.addEventListener('loadeddata', onReady)
+      this.audio.addEventListener('canplay', onReady)
+      this.audio.addEventListener('error', onError)
+      if (this.audio.readyState >= 2) {
+        cleanup()
+        resolve()
+      }
+    })
   }
 
   async load(
@@ -200,23 +295,27 @@ class AudioEngine {
   ): Promise<void> {
     this.mountIntoDom()
     this.applyPlaybackSession()
-    this.clearSource()
-    this.live = Boolean(options?.live)
+    this.destroyHls()
+
+    const nextLive = Boolean(options?.live)
+    if (!nextLive) {
+      // Música: ruta directa del <audio>, sin grafo (evita silencio en bloqueo)
+      this.ensureElementAudioRoute()
+    }
+
+    this.live = nextLive
+    // No revocar blob URLs: library.ts los cachea
+    this.objectUrl = options?.isObjectUrl ? url : null
 
     if (options?.isObjectUrl) {
-      this.objectUrl = url
-      // blob: no usa CORS; quitar crossOrigin evita fallos en canciones locales
       this.audio.removeAttribute('crossorigin')
     } else {
       this.audio.crossOrigin = 'anonymous'
     }
 
-    // Delay solo en directo; canciones sin retardo
     if (this.live) {
       this.ensureAudioGraph()
       this.applyDelayToGraph()
-    } else if (this.delayNode) {
-      this.delayNode.delayTime.value = 0
     }
 
     const useHls = isHlsUrl(url) && !this.audio.canPlayType('application/vnd.apple.mpegurl')
@@ -255,44 +354,23 @@ class AudioEngine {
         }, 10000)
       })
     } else {
+      // Soft-swap: cambiar src sin vaciar antes (mantiene mejor la sesión en bloqueo)
       this.audio.src = url
-      this.audio.load()
     }
 
     if (!useHls || this.audio.canPlayType('application/vnd.apple.mpegurl')) {
-      await new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          this.audio.removeEventListener('loadeddata', onReady)
-          this.audio.removeEventListener('canplay', onReady)
-          this.audio.removeEventListener('error', onError)
-          window.clearTimeout(timer)
-        }
-        const onReady = () => {
-          cleanup()
-          resolve()
-        }
-        const onError = () => {
-          cleanup()
-          reject(new Error(this.audio.error?.message || 'No se pudo cargar el audio'))
-        }
-        const timer = window.setTimeout(() => {
-          cleanup()
-          if (this.audio.readyState >= 1 || this.live) resolve()
-          else reject(new Error('Tiempo de carga de audio agotado'))
-        }, this.live ? 20000 : 12000)
-        this.audio.addEventListener('loadeddata', onReady)
-        this.audio.addEventListener('canplay', onReady)
-        this.audio.addEventListener('error', onError)
-        if (this.audio.readyState >= 2) {
-          cleanup()
-          resolve()
-        }
-      })
+      await this.waitElementReady(this.live ? 20000 : 8000)
     }
 
     if (!this.live && resumeAt > 0) {
-      this.audio.currentTime = resumeAt
+      try {
+        this.audio.currentTime = resumeAt
+      } catch {
+        /* ignore */
+      }
     }
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
     this.emit()
   }
 
@@ -310,6 +388,9 @@ class AudioEngine {
     this.mountIntoDom()
     this.applyPlaybackSession()
     await this.resumeContext()
+    if (this.sourceNode && !this.live) {
+      this.ensureElementAudioRoute()
+    }
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
   }
@@ -322,7 +403,10 @@ class AudioEngine {
     this.mountIntoDom()
     this.applyPlaybackSession()
     await this.resumeContext()
-    const src = this.audio.getAttribute('src') || this.audio.currentSrc
+    if (this.sourceNode && !this.live) {
+      this.ensureElementAudioRoute()
+    }
+    const src = this.audio.getAttribute('src') || this.audio.currentSrc || this.objectUrl
     if (!src || src.startsWith('data:')) return false
 
     const t =
@@ -330,37 +414,15 @@ class AudioEngine {
         ? resumeAt
         : this.audio.currentTime || 0
 
-    try {
-      this.audio.pause()
-    } catch {
-      /* ignore */
-    }
-
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
     this.audio.src = src
-    this.audio.load()
 
-    await new Promise<void>((resolve) => {
-      const cleanup = () => {
-        this.audio.removeEventListener('loadeddata', onReady)
-        this.audio.removeEventListener('canplay', onReady)
-        this.audio.removeEventListener('error', onReady)
-        window.clearTimeout(timer)
-      }
-      const onReady = () => {
-        cleanup()
-        resolve()
-      }
-      const timer = window.setTimeout(onReady, 5000)
-      this.audio.addEventListener('loadeddata', onReady)
-      this.audio.addEventListener('canplay', onReady)
-      this.audio.addEventListener('error', onReady)
-      if (this.audio.readyState >= 2) {
-        cleanup()
-        resolve()
-      }
-    })
+    try {
+      await this.waitElementReady(5000)
+    } catch {
+      /* intentar play igual */
+    }
 
     if (t > 0.25 && !this.live) {
       try {
@@ -377,15 +439,24 @@ class AudioEngine {
     this.mountIntoDom()
     this.applyPlaybackSession()
     await this.resumeContext()
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
     try {
       await this.audio.play()
       this.emit()
-      return true
+      return !this.audio.paused
     } catch (err) {
       const name = err instanceof DOMException ? err.name : ''
-      if (name === 'NotAllowedError' || name === 'AbortError') {
-        this.emit()
-        return false
+      if (name === 'AbortError') {
+        // Cambio de src concurrente: reintentar una vez
+        try {
+          await this.audio.play()
+          this.emit()
+          return !this.audio.paused
+        } catch {
+          this.emit()
+          return false
+        }
       }
       this.emit()
       return false
@@ -461,9 +532,8 @@ class AudioEngine {
   }
 
   onEnded(handler: () => void) {
-    const fn = () => handler()
-    this.audio.addEventListener('ended', fn)
-    return () => this.audio.removeEventListener('ended', fn)
+    this.endedHandlers.add(handler)
+    return () => this.endedHandlers.delete(handler)
   }
 }
 

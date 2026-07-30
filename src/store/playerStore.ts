@@ -61,6 +61,10 @@ interface PlayerState {
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 let endedUnsub: (() => void) | null = null
 let engineUnsub: (() => void) | null = null
+let trackAdvanceLockUntil = 0
+let prefetchedNextId: string | null = null
+/** Si el avance automático no pudo hacer play (bloqueo), reintentar al volver. */
+let pendingBackgroundPlay = false
 
 function persistSoon(partial: Partial<{
   currentTrackId: string | null
@@ -85,7 +89,6 @@ async function loadAndMaybePlay(
 ) {
   let url = await getAudioObjectUrl(trackId)
   if (!url) {
-    // Solo marcar remota si realmente no hay blob
     try {
       await db.tracks.update(trackId, { hasLocalAudio: false })
     } catch {
@@ -94,24 +97,33 @@ async function loadAndMaybePlay(
     return false
   }
 
-  const coverUrl = await getCoverObjectUrl(trackId)
-  set({ coverUrl, currentTrackId: trackId, currentRadioId: null })
+  // Portada en paralelo: no retrasar el audio (crítico al pasar de pista en bloqueo)
+  set({ currentTrackId: trackId, currentRadioId: null })
+  void getCoverObjectUrl(trackId).then((coverUrl) => {
+    if (usePlayerStore.getState().currentTrackId === trackId) {
+      set({ coverUrl })
+    }
+  })
+
   try {
     await audioEngine.loadObjectUrl(url, resumeAt)
   } catch {
-    // Fallo al cargar: probar copia alternativa antes de rendirse
     const retried = await retryAlternateAudioSource(trackId, resumeAt)
     if (!retried) return false
   }
 
   if (shouldPlay) {
     audioEngine.applyPlaybackSession()
-    await audioEngine.play()
+    let ok = await audioEngine.play()
+    if ((!ok || audioEngine.paused) && !audioEngine.element.error) {
+      // Reintento corto (AbortError / carrera al cambiar src)
+      await new Promise((r) => window.setTimeout(r, 40))
+      ok = await audioEngine.play()
+    }
     if (audioEngine.element.error || audioEngine.paused) {
-      // Reintentar con la otra copia (IDB ↔ OPFS) si el decode falló
       if (audioEngine.element.error) {
-        const ok = await retryAlternateAudioSource(trackId, resumeAt)
-        if (ok) await audioEngine.play()
+        const alt = await retryAlternateAudioSource(trackId, resumeAt)
+        if (alt) ok = await audioEngine.play()
       }
 
       if (audioEngine.element.error) {
@@ -128,9 +140,19 @@ async function loadAndMaybePlay(
         }
         set({ isPlaying: false })
         setMediaPlaybackState(false)
+        pendingBackgroundPlay = false
         return false
       }
+
+      if (audioEngine.paused) {
+        // En bloqueo el play del siguiente track a veces falla: marcar reintento
+        pendingBackgroundPlay = true
+        set({ isPlaying: true })
+        setMediaPlaybackState(true)
+        return true
+      }
     }
+    pendingBackgroundPlay = false
     set({ isPlaying: !audioEngine.paused })
     setMediaPlaybackState(!audioEngine.paused)
     if (!audioEngine.paused) {
@@ -138,6 +160,7 @@ async function loadAndMaybePlay(
       await persistRecent(trackId)
     }
   } else {
+    pendingBackgroundPlay = false
     set({ isPlaying: false })
     setMediaPlaybackState(false)
   }
@@ -235,6 +258,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     if (!endedUnsub) {
       endedUnsub = audioEngine.onEnded(() => {
+        const now = Date.now()
+        if (now < trackAdvanceLockUntil) return
+        trackAdvanceLockUntil = now + 500
         void get().next()
       })
     }
@@ -251,12 +277,28 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({
       position,
       duration,
-      isPlaying: playing,
+      isPlaying: pendingBackgroundPlay ? true : playing,
       volume: audioEngine.volume,
       muted: audioEngine.muted,
     })
-    setMediaPositionState(position, duration, playing)
+    setMediaPositionState(position, duration, pendingBackgroundPlay ? true : playing)
     persistSoon({ position })
+
+    // Prefetch del siguiente blob para que el cambio de pista en bloqueo sea inmediato
+    const { queue, index, currentTrackId, currentRadioId } = get()
+    if (
+      !currentRadioId &&
+      currentTrackId &&
+      duration > 20 &&
+      position > 0 &&
+      duration - position < 18
+    ) {
+      const nextId = queue[index + 1] ?? (get().repeat === 'all' ? queue[0] : null)
+      if (nextId && nextId !== prefetchedNextId) {
+        prefetchedNextId = nextId
+        void getAudioObjectUrl(nextId)
+      }
+    }
   },
 
   getCurrentTrack: (tracks) => {
@@ -375,6 +417,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   pause: () => {
+    pendingBackgroundPlay = false
     audioEngine.pause()
     set({ isPlaying: false })
     setMediaPlaybackState(false)
@@ -447,12 +490,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     if (nextIndex >= queue.length) {
       if (repeat === 'all') nextIndex = 0
       else {
+        pendingBackgroundPlay = false
         get().pause()
         audioEngine.seek(0)
         return
       }
     }
+    trackAdvanceLockUntil = Date.now() + 500
     const trackId = queue[nextIndex]
+    if (!trackId) return
+    prefetchedNextId = null
     set({ index: nextIndex, currentTrackId: trackId })
     persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
@@ -619,6 +666,12 @@ export async function bindMediaSession(tracks: Track[]) {
         void usePlayerStore.getState().previous(),
       )
       navigator.mediaSession.setActionHandler('nexttrack', () => void usePlayerStore.getState().next())
+      try {
+        navigator.mediaSession.setActionHandler('seekbackward', null)
+        navigator.mediaSession.setActionHandler('seekforward', null)
+      } catch {
+        /* ignore */
+      }
     }
     return
   }

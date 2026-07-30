@@ -162,20 +162,20 @@ export async function updateMediaSession(
     handlers.nexttrack()
   })
 
+  // Música: NO registrar seek ±10/15 — en Android/coche sustituyen siguiente/anterior.
+  // Solo scrub con seekto si el SO lo ofrece.
   try {
-    navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-      const offset = details.seekOffset ?? 10
-      const pos = handlers.getPosition?.() ?? 0
-      handlers.seekto?.(Math.max(0, pos - offset))
-    })
-    navigator.mediaSession.setActionHandler('seekforward', (details) => {
-      const offset = details.seekOffset ?? 10
-      const pos = handlers.getPosition?.() ?? 0
-      handlers.seekto?.(pos + offset)
-    })
-    navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (typeof details.seekTime === 'number') handlers.seekto?.(details.seekTime)
-    })
+    navigator.mediaSession.setActionHandler('seekbackward', null)
+    navigator.mediaSession.setActionHandler('seekforward', null)
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (handlers.seekto) {
+      navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (typeof details.seekTime === 'number') handlers.seekto?.(details.seekTime)
+      })
+    }
   } catch {
     // some handlers unsupported on older browsers
   }

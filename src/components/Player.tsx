@@ -47,8 +47,9 @@ export function PlayerBar() {
       if (document.visibilityState === 'visible') {
         void audioEngine.ensureAudible()
         void bindMediaSession(tracks)
-        if (usePlayerStore.getState().isPlaying && audioEngine.paused) {
-          void usePlayerStore.getState().play()
+        const st = usePlayerStore.getState()
+        if (st.isPlaying && audioEngine.paused) {
+          void st.play()
         }
       } else {
         void bindMediaSession(tracks)
