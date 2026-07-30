@@ -14,8 +14,9 @@ import { IconClose, IconPause, IconPlay, IconPlus, IconRadio, IconSearch, IconTr
 import './pages.css'
 
 function formatRadioDelay(sec: number) {
-  if (sec <= 0) return '0 s'
-  return `${sec.toLocaleString('es-ES', { maximumFractionDigits: 1 })} s`
+  const n = Number(sec)
+  if (!Number.isFinite(n) || n <= 0) return '0 s'
+  return `${n.toLocaleString('es-ES', { maximumFractionDigits: 1 })} s`
 }
 
 function useMyRadios(): RadioStation[] {
@@ -42,6 +43,11 @@ export function RadiosPage() {
   const [results, setResults] = useState<RadioStation[]>([])
   const [searching, setSearching] = useState(false)
   const [searchError, setSearchError] = useState<string | null>(null)
+
+  // Forzar lectura estable tras la primera siembra (sin mutar en getSnapshot)
+  useEffect(() => {
+    listMyRadios()
+  }, [])
 
   const q = query.trim()
   const hasQuery = q.length >= 2

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { Component, useEffect, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AppIcon } from './components/AppIcon'
 import { BrandWordmark } from './components/BrandWordmark'
@@ -24,6 +24,39 @@ import { useAuthStore } from './store/authStore'
 import { useLibraryStore } from './store/libraryStore'
 import { usePlayerStore } from './store/playerStore'
 import './App.css'
+
+class RouteErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="page" style={{ padding: 24 }}>
+          <h1>Algo ha fallado</h1>
+          <p className="page-header__sub" style={{ marginTop: 8 }}>
+            {this.state.error.message}
+          </p>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ marginTop: 16 }}
+            onClick={() => this.setState({ error: null })}
+          >
+            Reintentar
+          </button>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
 
 export default function App() {
   const hydrateAuth = useAuthStore((s) => s.hydrate)
@@ -155,19 +188,21 @@ export default function App() {
       <Sidebar />
       <div className="app-column">
         <main className="app-main">
-          <Routes>
-            <Route path="/" element={<HomePage />} />
-            <Route path="/search" element={<SearchPage />} />
-            <Route path="/library" element={<LibraryPage />} />
-            <Route path="/radios" element={<RadiosPage />} />
-            <Route path="/podcasts" element={<PodcastsPage />} />
-            <Route path="/liked" element={<LikedPage />} />
-            <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
-            <Route path="/upload" element={<UploadPage />} />
-            <Route path="/profile" element={<ProfilePage />} />
-            <Route path="/receive" element={<ReceivePage />} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <RouteErrorBoundary>
+            <Routes>
+              <Route path="/" element={<HomePage />} />
+              <Route path="/search" element={<SearchPage />} />
+              <Route path="/library" element={<LibraryPage />} />
+              <Route path="/radios" element={<RadiosPage />} />
+              <Route path="/podcasts" element={<PodcastsPage />} />
+              <Route path="/liked" element={<LikedPage />} />
+              <Route path="/playlist/:id" element={<PlaylistDetailPage />} />
+              <Route path="/upload" element={<UploadPage />} />
+              <Route path="/profile" element={<ProfilePage />} />
+              <Route path="/receive" element={<ReceivePage />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </RouteErrorBoundary>
         </main>
 
         <div className="app-dock">

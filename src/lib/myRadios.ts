@@ -51,12 +51,18 @@ function write(stations: RadioStation[]) {
   emit()
 }
 
-/** Primera visita: si no hay clave, siembra el catálogo local. `[]` del usuario no se vuelve a sembrar. */
+/** Primera visita: si no hay clave, siembra el catálogo local. `[]` del usuario no se vuelve a sembrar.
+ * Importante: no emitir listeners aquí — puede llamarse desde getSnapshot de useSyncExternalStore.
+ */
 function ensureSeeded(): RadioStation[] {
   const existing = readRaw()
   if (existing != null) return existing
   const seeded = RADIO_SEED_STATIONS.map((s) => ({ ...s }))
-  write(seeded)
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded))
+  } catch {
+    // ignore quota
+  }
   return seeded
 }
 
