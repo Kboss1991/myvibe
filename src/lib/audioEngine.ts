@@ -227,12 +227,12 @@ class AudioEngine {
 
   /**
    * Retraso de la radio (0–30 s) para sincronizar con la tele.
-   * - Si el grafo ya está activo: solo cambia el DelayNode (no recarga → no se pilla).
-   * - Al activar/desactivar: una sola recarga con timeout corto; si falla, sigue el audio sin delay.
+   * @param opts.reload Si false, nunca recarga el stream (solo DelayNode / valor).
    */
-  setRadioDelay(seconds: number) {
+  setRadioDelay(seconds: number, opts?: { reload?: boolean }) {
     const next = Math.max(0, Math.min(MAX_RADIO_DELAY, seconds))
     const prev = this.radioDelaySec
+    const allowReload = opts?.reload !== false
     this.radioDelaySec = next
     try {
       localStorage.setItem('myvibe_radio_delay', String(this.radioDelaySec))
@@ -245,7 +245,7 @@ class AudioEngine {
       return
     }
 
-    // Ya hay grafo: solo ajustar el valor (el slider no debe recargar el stream)
+    // Grafo ya activo: solo cambiar el DelayNode
     if (this.delayGraphActive && this.delayNode && next > 0) {
       this.applyDelayToGraph()
       void this.resumeContext()
@@ -253,6 +253,13 @@ class AudioEngine {
       return
     }
 
+    // Sin recarga (p. ej. al pulsar play tras pausa): no tocar el stream
+    if (!allowReload) {
+      if (prev !== next) this.emit()
+      return
+    }
+
+    // Solo el slider/usuario puede intentar activar el grafo (una vez)
     if (next > 0 && !this.delayGraphActive) {
       void this.applyDelayMode(true)
     } else if (next <= 0 && this.delayGraphActive) {
@@ -464,18 +471,16 @@ class AudioEngine {
 
   async loadLive(url: string): Promise<void> {
     this.liveStreamUrl = url
-    this.loadSavedRadioDelay()
-    const preferredDelay = this.radioDelaySec
-    // Siempre sintonizar primero sin grafo (estable). El delay se aplica después.
+    // Nunca aplicar delay al sintonizar: provoca recargas/CORS y un bucle play/stop.
     this.radioDelaySec = 0
     this.delayGraphActive = false
-    await this.load(url, 0, { live: true })
-    this.radioDelaySec = preferredDelay
-    this.emit()
-    if (preferredDelay > 0) {
-      // Intento en segundo plano; si CORS falla, applyDelayMode restaura el audio
-      void this.applyDelayMode(true)
+    try {
+      localStorage.setItem('myvibe_radio_delay', '0')
+    } catch {
+      /* ignore */
     }
+    await this.load(url, 0, { live: true })
+    this.emit()
   }
 
   /** Reanuda contexto Web Audio + sesión de reproducción (al desbloquear). */

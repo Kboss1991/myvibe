@@ -420,6 +420,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     podcastEpisodeQueue = []
     pendingBackgroundPlay = false
+    if (radioDelayTimer) {
+      clearTimeout(radioDelayTimer)
+      radioDelayTimer = null
+    }
     set({
       currentRadioId: station.id,
       currentTrackId: null,
@@ -431,6 +435,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       position: 0,
       duration: 0,
       radioPauseStartedAt: null,
+      radioDelay: 0,
       isPlaying: true,
     })
     setMediaPlaybackState(true)
@@ -440,14 +445,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       await audioEngine.loadLive(station.streamUrl)
       if (get().currentRadioId !== station.id) return
       audioEngine.applyPlaybackSession()
-      let ok = await audioEngine.play()
-      if ((!ok || audioEngine.paused) && get().currentRadioId === station.id) {
-        await new Promise((r) => window.setTimeout(r, 120))
-        ok = await audioEngine.play()
-      }
+      const ok = await audioEngine.play()
       if (get().currentRadioId !== station.id) return
-      const playing = !audioEngine.paused
-      set({ isPlaying: playing, radioPauseStartedAt: null })
+      const playing = ok && !audioEngine.paused
+      set({ isPlaying: playing, radioPauseStartedAt: null, radioDelay: audioEngine.radioDelay })
       setMediaPlaybackState(playing)
       void updateRadioMediaSession(station, {
         play: () => void usePlayerStore.getState().play(),
@@ -455,17 +456,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         previoustrack: () => void usePlayerStore.getState().previous(),
         nexttrack: () => void usePlayerStore.getState().next(),
       })
-      // Si el stream se cae al segundo (CORS/stall), un reintento corto
-      window.setTimeout(() => {
-        if (get().currentRadioId !== station.id) return
-        if (get().isPlaying && audioEngine.paused) {
-          void audioEngine.play().then((again) => {
-            if (get().currentRadioId !== station.id) return
-            set({ isPlaying: again && !audioEngine.paused })
-            setMediaPlaybackState(again && !audioEngine.paused)
-          })
-        }
-      }, 600)
     } catch (e) {
       console.warn('Radio', e)
       if (get().currentRadioId === station.id) {
@@ -637,26 +627,30 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const station = getRadioStation(currentRadioId)
       if (!station) return
 
+      // Tras pausa: acumular delay solo en el valor (UI), sin recargar el stream
       if (radioPauseStartedAt != null) {
         const added = (performance.now() - radioPauseStartedAt) / 1000
         const next = roundRadioDelayMs(
           Math.min(audioEngine.maxRadioDelay, radioDelay + added),
         )
-        audioEngine.setRadioDelay(next)
+        audioEngine.setRadioDelay(next, { reload: false })
         set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
       }
 
-      // Si el stream se cortó, volver a cargar
-      if (!audioEngine.element.src && !audioEngine.isLive) {
+      const src = audioEngine.element.getAttribute('src') || audioEngine.element.currentSrc
+      if (!src || !audioEngine.isLive) {
         await get().playRadio(currentRadioId)
         return
       }
+
       audioEngine.applyPlaybackSession()
-      await audioEngine.ensureAudible()
-      const locked =
-        typeof document !== 'undefined' && document.visibilityState === 'hidden'
-      let ok = locked ? await audioEngine.hardResume() : await audioEngine.play()
+      // Radio en directo: play simple (hardResume/recargas provocan el bucle stop/play)
+      let ok = await audioEngine.play()
       if (!ok || audioEngine.paused) {
+        await new Promise((r) => window.setTimeout(r, 80))
+        ok = await audioEngine.play()
+      }
+      if ((!ok || audioEngine.paused) && get().currentRadioId === currentRadioId) {
         await get().playRadio(currentRadioId)
         return
       }
@@ -968,9 +962,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     // UI al instante
     set({ radioDelay: rounded, radioPauseStartedAt: null })
     if (radioDelayTimer) clearTimeout(radioDelayTimer)
-    // Debounce: el slider no debe relanzar el stream en cada tick
+    // Debounce del slider; reload solo aquí (gesto explícito del usuario)
     radioDelayTimer = setTimeout(() => {
-      audioEngine.setRadioDelay(rounded)
+      audioEngine.setRadioDelay(rounded, { reload: true })
       set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
     }, 280)
   },
