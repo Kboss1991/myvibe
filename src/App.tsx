@@ -71,6 +71,15 @@ export default function App() {
   const location = useLocation()
   const isReceive = location.pathname.startsWith('/receive')
   const hasPlayer = Boolean(currentTrackId || currentRadioId || currentPodcastEpisodeId)
+  const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
+  const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
+
+  // Al cambiar de pestaña, cerrar hojas a pantalla completa (si no, tapan Radios/etc.)
+  useEffect(() => {
+    setNowPlayingOpen(false)
+    setQueueOpen(false)
+    document.body.classList.remove('sheet-open')
+  }, [location.pathname, setNowPlayingOpen, setQueueOpen])
 
   useEffect(() => {
     void hydrateAuth()
