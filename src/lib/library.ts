@@ -104,6 +104,11 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
   return url
 }
 
+/** Cache hit síncrono (para encadenar play tras `ended` sin await). */
+export function peekAudioObjectUrl(id: string): string | null {
+  return objectUrlCache.get(`audio:${id}`) ?? null
+}
+
 export async function getCoverObjectUrl(id: string): Promise<string | null> {
   const cached = objectUrlCache.get(`cover:${id}`)
   if (cached) return cached

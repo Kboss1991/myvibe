@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
-import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime } from '../lib/library'
+import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
 import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
@@ -63,7 +63,7 @@ interface PlayerState {
   toggle: () => Promise<void>
   pause: () => void
   play: () => Promise<void>
-  next: () => Promise<void>
+  next: (opts?: { fromEnded?: boolean }) => Promise<void>
   previous: () => Promise<void>
   seek: (time: number) => void
   skipForward: (seconds?: number) => void
@@ -199,6 +199,17 @@ async function loadAndMaybePlay(
       // Reintento corto (AbortError / carrera al cambiar src)
       await new Promise((r) => window.setTimeout(r, 40))
       ok = await audioEngine.play()
+    }
+    // En primer plano: más reintentos (el auto-next no tiene gesto)
+    if ((!ok || audioEngine.paused) && !audioEngine.element.error) {
+      const visible =
+        typeof document === 'undefined' || document.visibilityState === 'visible'
+      if (visible) {
+        for (let i = 0; i < 4 && (audioEngine.paused || !ok); i++) {
+          await new Promise((r) => window.setTimeout(r, 80 + i * 60))
+          ok = await audioEngine.play()
+        }
+      }
     }
     if (audioEngine.element.error || audioEngine.paused) {
       if (audioEngine.element.error) {
@@ -347,8 +358,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         if (get().currentPodcastEpisodeId) {
           persistPodcastProgressNow(set, get, true)
         }
-        trackAdvanceLockUntil = now + 500
-        void get().next()
+        trackAdvanceLockUntil = now + 800
+        // Llamada directa: el play del siguiente debe seguir al `ended` sin delays
+        void get().next({ fromEnded: true })
       })
     }
 
@@ -388,7 +400,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     }
 
-    // Prefetch del siguiente blob para que el cambio de pista en bloqueo sea inmediato
+    // Prefetch del siguiente blob + standby element para auto-next sin gesto
     const { queue, index, currentTrackId, currentRadioId, currentPodcastEpisodeId } = get()
     if (
       !currentRadioId &&
@@ -396,12 +408,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId &&
       duration > 20 &&
       position > 0 &&
-      duration - position < 18
+      duration - position < 45
     ) {
       const nextId = queue[index + 1] ?? (get().repeat === 'all' ? queue[0] : null)
       if (nextId && nextId !== prefetchedNextId) {
         prefetchedNextId = nextId
-        void getAudioObjectUrl(nextId)
+        void getAudioObjectUrl(nextId).then((url) => {
+          if (url && usePlayerStore.getState().currentTrackId === currentTrackId) {
+            audioEngine.prepareStandby(url, nextId)
+          }
+        })
+      } else if (nextId) {
+        const url = peekAudioObjectUrl(nextId)
+        if (url) audioEngine.prepareStandby(url, nextId)
       }
     }
   },
@@ -527,6 +546,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   playTrack: async (trackId, queue) => {
+    audioEngine.clearStandby()
+    prefetchedNextId = null
     const q = queue ?? get().queue
     const nextQueue = q.includes(trackId) ? q : [...q, trackId]
     const index = Math.max(0, nextQueue.indexOf(trackId))
@@ -556,6 +577,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   playTracks: async (trackIds, startId, options) => {
     if (!trackIds.length) return
+    audioEngine.clearStandby()
+    prefetchedNextId = null
     const forceShuffle = options?.shuffle
     const shuffleOn = forceShuffle === true ? true : forceShuffle === false ? false : get().shuffle
     let queue = [...trackIds]
@@ -715,7 +738,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     setMediaPlaybackState(true)
   },
 
-  next: async () => {
+  next: async (opts) => {
+    const fromEnded = Boolean(opts?.fromEnded)
     if (get().currentRadioId) {
       const list = listMyRadios()
       if (!list.length) return
@@ -756,12 +780,97 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         return
       }
     }
-    trackAdvanceLockUntil = Date.now() + 500
+    trackAdvanceLockUntil = Date.now() + 800
     const trackId = queue[nextIndex]
     if (!trackId) return
     prefetchedNextId = null
-    set({ index: nextIndex, currentTrackId: trackId })
+    if (!fromEnded) audioEngine.clearStandby()
+
+    // Tras ended: promover standby YA (mismo turno, sin await) — clave iOS/Android
+    if (fromEnded) {
+      const standbyUrl = peekAudioObjectUrl(trackId)
+      if (standbyUrl) audioEngine.prepareStandby(standbyUrl, trackId)
+      const promoted = audioEngine.promoteStandbyAndPlay(trackId)
+      if (promoted) {
+        set({
+          index: nextIndex,
+          currentTrackId: trackId,
+          currentRadioId: null,
+          currentPodcastEpisodeId: null,
+          isPlaying: true,
+        })
+        persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
+        setMediaPlaybackState(true)
+        pendingBackgroundPlay = false
+        void getCoverObjectUrl(trackId).then((coverUrl) => {
+          if (usePlayerStore.getState().currentTrackId === trackId) {
+            set({ coverUrl })
+          }
+        })
+        void recordPlay(trackId)
+        void persistRecent(trackId)
+        void db.tracks.get(trackId).then((track) => {
+          if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
+          updateMediaSession(track, usePlayerStore.getState().coverUrl)
+        })
+        // Si el play del standby falló en silencio, reintentar
+        window.setTimeout(() => {
+          if (
+            usePlayerStore.getState().currentTrackId === trackId &&
+            audioEngine.paused &&
+            !audioEngine.element.error
+          ) {
+            void audioEngine.play().then((ok) => {
+              if (!ok) {
+                pendingBackgroundPlay = true
+                set({ isPlaying: true })
+              }
+            })
+          }
+        }, 80)
+        return
+      }
+    }
+
+    set({
+      index: nextIndex,
+      currentTrackId: trackId,
+      currentRadioId: null,
+      currentPodcastEpisodeId: null,
+    })
     persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
+    void getCoverObjectUrl(trackId).then((coverUrl) => {
+      if (usePlayerStore.getState().currentTrackId === trackId) {
+        set({ coverUrl })
+      }
+    })
+
+    // Tras ended sin standby: swap+play inmediato con URL en cache
+    if (fromEnded) {
+      let url = peekAudioObjectUrl(trackId)
+      if (!url) {
+        url = await Promise.race([
+          getAudioObjectUrl(trackId),
+          new Promise<null>((r) => window.setTimeout(() => r(null), 120)),
+        ])
+      }
+      if (url) {
+        const ok = await audioEngine.swapAndPlay(url, 0)
+        if (ok) {
+          pendingBackgroundPlay = false
+          set({ isPlaying: true })
+          setMediaPlaybackState(true)
+          void recordPlay(trackId)
+          void persistRecent(trackId)
+          void db.tracks.get(trackId).then((track) => {
+            if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
+            updateMediaSession(track, usePlayerStore.getState().coverUrl)
+          })
+          return
+        }
+      }
+    }
+
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
     if (!ok) {
       // Evitar quedarse en silencio en una pista rota
@@ -781,6 +890,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   previous: async () => {
+    audioEngine.clearStandby()
+    prefetchedNextId = null
     if (get().currentRadioId) {
       const list = listMyRadios()
       if (!list.length) return

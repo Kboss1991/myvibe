@@ -25,6 +25,10 @@ class AudioEngine {
   private delayApplyToken = 0
   /** true si el grafo de delay está activo de verdad */
   private delayGraphActive = false
+  /** Siguiente pista precargada (gapless / auto-next sin gesto) */
+  private standby: HTMLAudioElement | null = null
+  private standbyUrl: string | null = null
+  private standbyTrackId: string | null = null
 
   constructor() {
     this.configureElement(this.audio)
@@ -92,9 +96,111 @@ class AudioEngine {
       if (!this.audio.isConnected) {
         document.body.appendChild(this.audio)
       }
+      if (this.standby && !this.standby.isConnected) {
+        document.body.appendChild(this.standby)
+      }
     }
     if (document.body) attach()
     else document.addEventListener('DOMContentLoaded', attach, { once: true })
+  }
+
+  /** Precarga la siguiente pista en un segundo elemento (listo para play al `ended`). */
+  prepareStandby(url: string, trackId?: string) {
+    if (!url) return
+    if (
+      this.standbyUrl === url &&
+      this.standby &&
+      this.standby.readyState >= 2 &&
+      (!trackId || this.standbyTrackId === trackId)
+    ) {
+      return
+    }
+    if (!this.standby) {
+      this.standby = new Audio()
+      this.configureElement(this.standby)
+      this.standby.removeAttribute('crossorigin')
+    }
+    this.standbyUrl = url
+    this.standbyTrackId = trackId ?? null
+    this.standby.muted = false
+    this.standby.volume = this.volumeValue
+    if (this.standby.src !== url) {
+      this.standby.src = url
+      this.standby.load()
+    }
+    this.mountIntoDom()
+  }
+
+  clearStandby() {
+    if (this.standby) {
+      try {
+        this.standby.pause()
+        this.standby.removeAttribute('src')
+        this.standby.load()
+        this.standby.remove()
+      } catch {
+        /* ignore */
+      }
+    }
+    this.standby = null
+    this.standbyUrl = null
+    this.standbyTrackId = null
+  }
+
+  /**
+   * Promueve el standby a elemento activo y hace play() síncrono.
+   * Debe llamarse desde el handler de `ended` (continuidad de reproducción).
+   */
+  promoteStandbyAndPlay(expectedTrackId?: string): boolean {
+    if (!this.standby || !this.standbyUrl) return false
+    if (
+      expectedTrackId &&
+      this.standbyTrackId &&
+      this.standbyTrackId !== expectedTrackId
+    ) {
+      this.clearStandby()
+      return false
+    }
+    const next = this.standby
+    const url = this.standbyUrl
+    this.standby = null
+    this.standbyUrl = null
+    this.standbyTrackId = null
+
+    const old = this.audio
+    try {
+      old.pause()
+    } catch {
+      /* ignore */
+    }
+    this.destroyHls()
+    this.disconnectGraphNodes()
+    this.live = false
+    this.liveStreamUrl = null
+    this.delayGraphActive = false
+
+    this.configureElement(next)
+    this.wireElement(next)
+    next.muted = false
+    next.volume = this.volumeValue
+    this.audio = next
+    this.objectUrl = url
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+
+    try {
+      old.removeAttribute('src')
+      old.remove()
+    } catch {
+      /* ignore */
+    }
+
+    // play() en el mismo turno que ended — sin await
+    void this.resumeContext()
+    const p = this.audio.play()
+    void p.then(() => this.emit()).catch(() => this.emit())
+    this.emit()
+    return true
   }
 
   subscribe(listener: Listener): () => void {
@@ -467,6 +573,67 @@ class AudioEngine {
 
   async loadObjectUrl(url: string, resumeAt = 0): Promise<void> {
     await this.load(url, resumeAt, { isObjectUrl: true, live: false })
+  }
+
+  /**
+   * Cambio de pista encadenado al evento `ended`.
+   * No espera canplay: hay que llamar play() en el mismo turno (o casi)
+   * para que el navegador permita continuar sin gesto del usuario.
+   */
+  async swapAndPlay(url: string, resumeAt = 0): Promise<boolean> {
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+    this.destroyHls()
+    this.live = false
+    this.liveStreamUrl = null
+    this.delayGraphActive = false
+    if (this.sourceNode || this.ctx) {
+      this.replaceAudioElement()
+    }
+    this.objectUrl = url
+    this.audio.removeAttribute('crossorigin')
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
+    this.audio.src = url
+
+    // play() sin await de canplay — continuidad tras ended
+    try {
+      void this.resumeContext()
+      const playPromise = this.audio.play()
+      if (resumeAt > 0.25) {
+        const seek = () => {
+          try {
+            this.audio.currentTime = resumeAt
+          } catch {
+            /* ignore */
+          }
+        }
+        if (this.audio.readyState >= 1) seek()
+        else this.audio.addEventListener('loadedmetadata', seek, { once: true })
+      }
+      await playPromise
+      this.emit()
+      if (!this.audio.paused) return true
+    } catch {
+      /* fallback abajo */
+    }
+
+    try {
+      await this.waitElementReady(4000)
+      if (resumeAt > 0.25) {
+        try {
+          this.audio.currentTime = resumeAt
+        } catch {
+          /* ignore */
+        }
+      }
+      await this.audio.play()
+      this.emit()
+      return !this.audio.paused
+    } catch {
+      this.emit()
+      return false
+    }
   }
 
   async loadLive(url: string): Promise<void> {
