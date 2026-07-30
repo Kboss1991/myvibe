@@ -391,8 +391,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         return
       }
       audioEngine.applyPlaybackSession()
-      const ok = await audioEngine.play()
-      if (!ok) {
+      await audioEngine.ensureAudible()
+      const locked =
+        typeof document !== 'undefined' && document.visibilityState === 'hidden'
+      let ok = locked ? await audioEngine.hardResume() : await audioEngine.play()
+      if (!ok || audioEngine.paused) {
         await get().playRadio(currentRadioId)
         return
       }
@@ -406,9 +409,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     if (!currentTrackId) return
     audioEngine.applyPlaybackSession()
-    await audioEngine.play()
-    set({ isPlaying: !audioEngine.paused })
-    setMediaPlaybackState(!audioEngine.paused)
+    await audioEngine.ensureAudible()
+    const resumeAt =
+      Number.isFinite(audioEngine.currentTime) && audioEngine.currentTime > 0
+        ? audioEngine.currentTime
+        : get().position
+    const locked =
+      typeof document !== 'undefined' && document.visibilityState === 'hidden'
+
+    // En bloqueo, tras pause el elemento suele quedar mudo: reenganchar fuente
+    let ok = locked ? await audioEngine.hardResume(resumeAt) : await audioEngine.play()
+    if (!ok || audioEngine.paused) {
+      ok = await audioEngine.hardResume(resumeAt)
+    }
+    if (!ok || audioEngine.paused) {
+      await loadAndMaybePlay(currentTrackId, resumeAt, true, set)
+      return
+    }
+    set({ isPlaying: true })
+    setMediaPlaybackState(true)
   },
 
   next: async () => {

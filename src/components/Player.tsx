@@ -45,8 +45,11 @@ export function PlayerBar() {
   useEffect(() => {
     const onVis = () => {
       if (document.visibilityState === 'visible') {
-        audioEngine.applyPlaybackSession()
+        void audioEngine.ensureAudible()
         void bindMediaSession(tracks)
+        if (usePlayerStore.getState().isPlaying && audioEngine.paused) {
+          void usePlayerStore.getState().play()
+        }
       } else {
         void bindMediaSession(tracks)
       }

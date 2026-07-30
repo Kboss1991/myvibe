@@ -305,6 +305,74 @@ class AudioEngine {
     await this.load(url, 0, { live: true })
   }
 
+  /** Reanuda contexto Web Audio + sesión de reproducción (al desbloquear). */
+  async ensureAudible(): Promise<void> {
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+    await this.resumeContext()
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
+  }
+
+  /**
+   * Tras pause en pantalla de bloqueo / BT, play() a veces “arranca” sin sonido.
+   * Recarga el mismo src y reanuda en la posición.
+   */
+  async hardResume(resumeAt?: number): Promise<boolean> {
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+    await this.resumeContext()
+    const src = this.audio.getAttribute('src') || this.audio.currentSrc
+    if (!src || src.startsWith('data:')) return false
+
+    const t =
+      typeof resumeAt === 'number' && Number.isFinite(resumeAt) && resumeAt > 0
+        ? resumeAt
+        : this.audio.currentTime || 0
+
+    try {
+      this.audio.pause()
+    } catch {
+      /* ignore */
+    }
+
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
+    this.audio.src = src
+    this.audio.load()
+
+    await new Promise<void>((resolve) => {
+      const cleanup = () => {
+        this.audio.removeEventListener('loadeddata', onReady)
+        this.audio.removeEventListener('canplay', onReady)
+        this.audio.removeEventListener('error', onReady)
+        window.clearTimeout(timer)
+      }
+      const onReady = () => {
+        cleanup()
+        resolve()
+      }
+      const timer = window.setTimeout(onReady, 5000)
+      this.audio.addEventListener('loadeddata', onReady)
+      this.audio.addEventListener('canplay', onReady)
+      this.audio.addEventListener('error', onReady)
+      if (this.audio.readyState >= 2) {
+        cleanup()
+        resolve()
+      }
+    })
+
+    if (t > 0.25 && !this.live) {
+      try {
+        this.audio.currentTime = t
+      } catch {
+        /* ignore */
+      }
+    }
+
+    return this.play()
+  }
+
   async play(): Promise<boolean> {
     this.mountIntoDom()
     this.applyPlaybackSession()
