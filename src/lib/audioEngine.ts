@@ -55,8 +55,10 @@ class AudioEngine {
     el.addEventListener('timeupdate', () => this.emit())
     el.addEventListener('durationchange', () => this.emit())
     el.addEventListener('ended', () => {
-      this.emit()
+      // Primero avanzar de pista (play en el mismo elemento), luego emitir estado.
+      // Si emit va antes, la UI marca pause y se pierde la continuidad de reproducción.
       for (const h of this.endedHandlers) h()
+      this.emit()
     })
     el.addEventListener('play', () => this.emit())
     el.addEventListener('pause', () => this.emit())
@@ -102,6 +104,45 @@ class AudioEngine {
     }
     if (document.body) attach()
     else document.addEventListener('DOMContentLoaded', attach, { once: true })
+  }
+
+  /**
+   * Continuar reproducción tras `ended` en el MISMO <audio>.
+   * Cambiar de elemento (standby) rompe el gesto/privilegio en iOS y Android.
+   * Debe llamarse de forma síncrona desde el handler de ended, sin awaits previos.
+   */
+  chainPlay(url: string): boolean {
+    if (!url) return false
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+    this.destroyHls()
+    this.live = false
+    this.liveStreamUrl = null
+    this.delayGraphActive = false
+    // Si el elemento estuvo en Web Audio, ya no suena por speakers tras disconnect:
+    // hay que sustituirlo (pierde continuidad, pero evita silencio total).
+    if (this.sourceNode || this.ctx) {
+      this.replaceAudioElement()
+    }
+    this.objectUrl = url
+    this.audio.removeAttribute('crossorigin')
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
+    // NO pause(), NO load() — solo src + play en el mismo turno que `ended`
+    try {
+      this.audio.src = url
+    } catch {
+      return false
+    }
+    try {
+      const p = this.audio.play()
+      void p.catch(() => {
+        this.emit()
+      })
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** Precarga la siguiente pista en un segundo elemento (listo para play al `ended`). */

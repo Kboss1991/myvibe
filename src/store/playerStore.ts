@@ -98,6 +98,42 @@ let podcastPlayEpoch = 0
 let lastPodcastProgressSave = 0
 let radioDelayTimer: ReturnType<typeof setTimeout> | null = null
 
+function resolveNextLibraryTrack(state: {
+  queue: string[]
+  index: number
+  currentTrackId: string | null
+  repeat: RepeatMode
+}): { trackId: string; nextIndex: number } | null {
+  const { queue, repeat, currentTrackId } = state
+  if (!queue.length) return null
+  let index = state.index
+  if (currentTrackId && queue[index] !== currentTrackId) {
+    const found = queue.indexOf(currentTrackId)
+    if (found >= 0) index = found
+  }
+  let nextIndex = index + 1
+  if (nextIndex >= queue.length) {
+    if (repeat === 'all') nextIndex = 0
+    else return null
+  }
+  const trackId = queue[nextIndex]
+  if (!trackId) return null
+  return { trackId, nextIndex }
+}
+
+function prefetchNextForCurrent(
+  get: () => PlayerState,
+) {
+  const { queue, index, currentTrackId, currentRadioId, currentPodcastEpisodeId, repeat } =
+    get()
+  if (currentRadioId || currentPodcastEpisodeId || !currentTrackId) return
+  const nextId = queue[index + 1] ?? (repeat === 'all' ? queue[0] : null)
+  if (!nextId || nextId === currentTrackId) return
+  if (nextId === prefetchedNextId && peekAudioObjectUrl(nextId)) return
+  prefetchedNextId = nextId
+  void getAudioObjectUrl(nextId)
+}
+
 function bumpPodcastProgressTick(
   set: (partial: Partial<PlayerState>) => void,
   get: () => PlayerState,
@@ -249,6 +285,7 @@ async function loadAndMaybePlay(
     if (!audioEngine.paused) {
       await recordPlay(trackId)
       await persistRecent(trackId)
+      prefetchNextForCurrent(usePlayerStore.getState)
     }
   } else {
     pendingBackgroundPlay = false
@@ -355,11 +392,76 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         const now = Date.now()
         if (now < trackAdvanceLockUntil) return
         if (get().currentRadioId || audioEngine.isLive) return
+
+        // Podcasts: cola de episodios (puede ser async)
         if (get().currentPodcastEpisodeId) {
           persistPodcastProgressNow(set, get, true)
+          trackAdvanceLockUntil = now + 800
+          void get().next({ fromEnded: true })
+          return
         }
-        trackAdvanceLockUntil = now + 800
-        // Llamada directa: el play del siguiente debe seguir al `ended` sin delays
+
+        // Música: encadenar en el MISMO <audio> de forma síncrona
+        const resolved = resolveNextLibraryTrack(get())
+        if (!resolved) {
+          pendingBackgroundPlay = false
+          trackAdvanceLockUntil = now + 800
+          get().pause()
+          audioEngine.seek(0)
+          return
+        }
+
+        const { trackId, nextIndex } = resolved
+        const url = peekAudioObjectUrl(trackId)
+        trackAdvanceLockUntil = now + 1200
+        prefetchedNextId = null
+
+        if (url && audioEngine.chainPlay(url)) {
+          set({
+            index: nextIndex,
+            currentTrackId: trackId,
+            currentRadioId: null,
+            currentPodcastEpisodeId: null,
+            isPlaying: true,
+            position: 0,
+          })
+          persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
+          setMediaPlaybackState(true)
+          pendingBackgroundPlay = false
+          void getCoverObjectUrl(trackId).then((coverUrl) => {
+            if (usePlayerStore.getState().currentTrackId === trackId) {
+              set({ coverUrl })
+            }
+          })
+          void recordPlay(trackId)
+          void persistRecent(trackId)
+          prefetchNextForCurrent(get)
+          // Reintento si play() acabó rechazado (AbortError / buffer)
+          window.setTimeout(() => {
+            if (usePlayerStore.getState().currentTrackId !== trackId) return
+            if (!audioEngine.paused) {
+              prefetchNextForCurrent(get)
+              return
+            }
+            if (audioEngine.element.error) {
+              void loadAndMaybePlay(trackId, 0, true, set)
+              return
+            }
+            void audioEngine.play().then((ok) => {
+              if (!ok || audioEngine.paused) {
+                pendingBackgroundPlay = true
+                set({ isPlaying: true })
+                setMediaPlaybackState(true)
+                void loadAndMaybePlay(trackId, 0, true, set)
+              } else {
+                prefetchNextForCurrent(get)
+              }
+            })
+          }, 60)
+          return
+        }
+
+        // Sin URL en cache: path async (puede fallar en bloqueo)
         void get().next({ fromEnded: true })
       })
     }
@@ -400,28 +502,56 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     }
 
-    // Prefetch del siguiente blob + standby element para auto-next sin gesto
-    const { queue, index, currentTrackId, currentRadioId, currentPodcastEpisodeId } = get()
+    // Prefetch del siguiente blob pronto (necesita estar en cache al llegar al ended)
     if (
-      !currentRadioId &&
-      !currentPodcastEpisodeId &&
-      currentTrackId &&
-      duration > 20 &&
-      position > 0 &&
-      duration - position < 45
+      !get().currentRadioId &&
+      !get().currentPodcastEpisodeId &&
+      get().currentTrackId &&
+      duration > 5 &&
+      position > 1
     ) {
-      const nextId = queue[index + 1] ?? (get().repeat === 'all' ? queue[0] : null)
-      if (nextId && nextId !== prefetchedNextId) {
-        prefetchedNextId = nextId
-        void getAudioObjectUrl(nextId).then((url) => {
-          if (url && usePlayerStore.getState().currentTrackId === currentTrackId) {
-            audioEngine.prepareStandby(url, nextId)
-          }
-        })
-      } else if (nextId) {
-        const url = peekAudioObjectUrl(nextId)
-        if (url) audioEngine.prepareStandby(url, nextId)
+      prefetchNextForCurrent(get)
+    }
+
+    // Watchdog: si el elemento quedó en `ended` sin avanzar (bugs de blob en móvil)
+    if (
+      audioEngine.element.ended &&
+      !get().currentRadioId &&
+      !audioEngine.isLive &&
+      !get().currentPodcastEpisodeId &&
+      get().currentTrackId &&
+      Date.now() >= trackAdvanceLockUntil
+    ) {
+      trackAdvanceLockUntil = Date.now() + 1200
+      const resolved = resolveNextLibraryTrack(get())
+      if (resolved) {
+        const url = peekAudioObjectUrl(resolved.trackId)
+        if (url && audioEngine.chainPlay(url)) {
+          set({
+            index: resolved.nextIndex,
+            currentTrackId: resolved.trackId,
+            isPlaying: true,
+            position: 0,
+          })
+          persistSoon({
+            index: resolved.nextIndex,
+            currentTrackId: resolved.trackId,
+            position: 0,
+          })
+          setMediaPlaybackState(true)
+          pendingBackgroundPlay = false
+          void getCoverObjectUrl(resolved.trackId).then((coverUrl) => {
+            if (usePlayerStore.getState().currentTrackId === resolved.trackId) {
+              set({ coverUrl })
+            }
+          })
+          void recordPlay(resolved.trackId)
+          void persistRecent(resolved.trackId)
+          prefetchNextForCurrent(get)
+          return
+        }
       }
+      void get().next({ fromEnded: true })
     }
   },
 
@@ -767,37 +897,38 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
       return
     }
-    const { queue, index, repeat } = get()
+    const { queue, index, repeat, currentTrackId } = get()
     if (!queue.length) return
 
-    let nextIndex = index + 1
-    if (nextIndex >= queue.length) {
-      if (repeat === 'all') nextIndex = 0
-      else {
-        pendingBackgroundPlay = false
-        get().pause()
-        audioEngine.seek(0)
-        return
-      }
+    const resolved = resolveNextLibraryTrack({ queue, index, currentTrackId, repeat })
+    if (!resolved) {
+      pendingBackgroundPlay = false
+      get().pause()
+      audioEngine.seek(0)
+      return
     }
-    trackAdvanceLockUntil = Date.now() + 800
-    const trackId = queue[nextIndex]
-    if (!trackId) return
+    const { trackId, nextIndex } = resolved
+    trackAdvanceLockUntil = Date.now() + 1200
     prefetchedNextId = null
     if (!fromEnded) audioEngine.clearStandby()
 
-    // Tras ended: promover standby YA (mismo turno, sin await) — clave iOS/Android
+    // Tras ended: mismo <audio>, src + play síncrono
     if (fromEnded) {
-      const standbyUrl = peekAudioObjectUrl(trackId)
-      if (standbyUrl) audioEngine.prepareStandby(standbyUrl, trackId)
-      const promoted = audioEngine.promoteStandbyAndPlay(trackId)
-      if (promoted) {
+      let url = peekAudioObjectUrl(trackId)
+      if (!url) {
+        url = await Promise.race([
+          getAudioObjectUrl(trackId),
+          new Promise<null>((r) => window.setTimeout(() => r(null), 80)),
+        ])
+      }
+      if (url && audioEngine.chainPlay(url)) {
         set({
           index: nextIndex,
           currentTrackId: trackId,
           currentRadioId: null,
           currentPodcastEpisodeId: null,
           isPlaying: true,
+          position: 0,
         })
         persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
         setMediaPlaybackState(true)
@@ -809,24 +940,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         })
         void recordPlay(trackId)
         void persistRecent(trackId)
-        void db.tracks.get(trackId).then((track) => {
-          if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
-          updateMediaSession(track, usePlayerStore.getState().coverUrl)
-        })
-        // Si el play del standby falló en silencio, reintentar
+        prefetchNextForCurrent(get)
         window.setTimeout(() => {
-          if (
-            usePlayerStore.getState().currentTrackId === trackId &&
-            audioEngine.paused &&
-            !audioEngine.element.error
-          ) {
-            void audioEngine.play().then((ok) => {
-              if (!ok) {
-                pendingBackgroundPlay = true
-                set({ isPlaying: true })
-              }
-            })
-          }
+          if (usePlayerStore.getState().currentTrackId !== trackId) return
+          if (!audioEngine.paused) return
+          pendingBackgroundPlay = true
+          void loadAndMaybePlay(trackId, 0, true, set)
         }, 80)
         return
       }
@@ -845,45 +964,26 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
     })
 
-    // Tras ended sin standby: swap+play inmediato con URL en cache
-    if (fromEnded) {
-      let url = peekAudioObjectUrl(trackId)
-      if (!url) {
-        url = await Promise.race([
-          getAudioObjectUrl(trackId),
-          new Promise<null>((r) => window.setTimeout(() => r(null), 120)),
-        ])
-      }
-      if (url) {
-        const ok = await audioEngine.swapAndPlay(url, 0)
-        if (ok) {
-          pendingBackgroundPlay = false
-          set({ isPlaying: true })
-          setMediaPlaybackState(true)
-          void recordPlay(trackId)
-          void persistRecent(trackId)
-          void db.tracks.get(trackId).then((track) => {
-            if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
-            updateMediaSession(track, usePlayerStore.getState().coverUrl)
-          })
-          return
-        }
-      }
-    }
-
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
+    if (ok) prefetchNextForCurrent(get)
     if (!ok) {
       // Evitar quedarse en silencio en una pista rota
       for (let i = nextIndex + 1; i < queue.length; i++) {
         const id = queue[i]!
         set({ index: i, currentTrackId: id })
-        if (await loadAndMaybePlay(id, 0, true, set)) return
+        if (await loadAndMaybePlay(id, 0, true, set)) {
+          prefetchNextForCurrent(get)
+          return
+        }
       }
       if (repeat === 'all') {
         for (let i = 0; i < nextIndex; i++) {
           const id = queue[i]!
           set({ index: i, currentTrackId: id })
-          if (await loadAndMaybePlay(id, 0, true, set)) return
+          if (await loadAndMaybePlay(id, 0, true, set)) {
+            prefetchNextForCurrent(get)
+            return
+          }
         }
       }
     }
