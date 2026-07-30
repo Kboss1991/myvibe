@@ -225,6 +225,7 @@ class AudioEngine {
    * Solo afecta a streams en directo.
    */
   setRadioDelay(seconds: number) {
+    const prev = this.radioDelaySec
     this.radioDelaySec = Math.max(0, Math.min(MAX_RADIO_DELAY, seconds))
     try {
       localStorage.setItem('myvibe_radio_delay', String(this.radioDelaySec))
@@ -232,11 +233,26 @@ class AudioEngine {
       // ignore
     }
     if (this.live) {
-      this.ensureAudioGraph()
-      this.applyDelayToGraph()
-      void this.resumeContext()
+      const wantGraph = this.radioDelaySec > 0
+      const hadGraph = Boolean(this.sourceNode)
+      if (wantGraph && !hadGraph) {
+        // Activar retraso: hace falta CORS + grafo; recargar la misma URL
+        const src = this.audio.currentSrc || this.audio.getAttribute('src')
+        if (src) {
+          void this.load(src, 0, { live: true }).then(() => this.play())
+        }
+      } else if (!wantGraph && hadGraph) {
+        const src = this.audio.currentSrc || this.audio.getAttribute('src')
+        if (src) {
+          void this.load(src, 0, { live: true }).then(() => this.play())
+        }
+      } else if (wantGraph) {
+        this.ensureAudioGraph()
+        this.applyDelayToGraph()
+        void this.resumeContext()
+      }
     }
-    this.emit()
+    if (prev !== this.radioDelaySec) this.emit()
   }
 
   loadSavedRadioDelay() {
@@ -298,22 +314,27 @@ class AudioEngine {
     this.destroyHls()
 
     const nextLive = Boolean(options?.live)
-    if (!nextLive) {
-      // Música: ruta directa del <audio>, sin grafo (evita silencio en bloqueo)
-      this.ensureElementAudioRoute()
+    // Retraso TV necesita Web Audio (+ CORS). Muchas emisoras (RAC1/StreamTheWorld)
+    // fallan con crossOrigin y se paran al instante: sin retraso → <audio> directo.
+    const needsDelayGraph = nextLive && this.radioDelaySec > 0
+
+    if (!nextLive || !needsDelayGraph) {
+      if (this.sourceNode || this.ctx) {
+        this.replaceAudioElement()
+      }
     }
 
     this.live = nextLive
     // No revocar blob URLs: library.ts los cachea
     this.objectUrl = options?.isObjectUrl ? url : null
 
-    if (options?.isObjectUrl || options?.skipCors) {
+    if (options?.isObjectUrl || options?.skipCors || (nextLive && !needsDelayGraph)) {
       this.audio.removeAttribute('crossorigin')
     } else {
       this.audio.crossOrigin = 'anonymous'
     }
 
-    if (this.live) {
+    if (needsDelayGraph) {
       this.ensureAudioGraph()
       this.applyDelayToGraph()
     }
@@ -354,8 +375,8 @@ class AudioEngine {
         }, 10000)
       })
     } else {
-      // Soft-swap: cambiar src sin vaciar antes (mantiene mejor la sesión en bloqueo)
       this.audio.src = url
+      this.audio.load()
     }
 
     if (!useHls || this.audio.canPlayType('application/vnd.apple.mpegurl')) {
@@ -380,7 +401,24 @@ class AudioEngine {
 
   async loadLive(url: string): Promise<void> {
     this.loadSavedRadioDelay()
-    await this.load(url, 0, { live: true })
+    try {
+      await this.load(url, 0, { live: true })
+    } catch (err) {
+      // Si el retraso TV (CORS) tumba el stream, reintentar en directo puro
+      if (this.radioDelaySec > 0) {
+        const keep = this.radioDelaySec
+        this.radioDelaySec = 0
+        try {
+          await this.load(url, 0, { live: true })
+          this.radioDelaySec = keep
+          this.emit()
+          return
+        } catch {
+          this.radioDelaySec = keep
+        }
+      }
+      throw err
+    }
   }
 
   /** Reanuda contexto Web Audio + sesión de reproducción (al desbloquear). */

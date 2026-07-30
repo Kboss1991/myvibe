@@ -418,6 +418,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       persistPodcastProgressNow(set, get)
     }
     podcastEpisodeQueue = []
+    pendingBackgroundPlay = false
     set({
       currentRadioId: station.id,
       currentTrackId: null,
@@ -429,24 +430,47 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       position: 0,
       duration: 0,
       radioPauseStartedAt: null,
+      isPlaying: true,
     })
+    setMediaPlaybackState(true)
     try {
       const { reportStationClick } = await import('../lib/radioBrowser')
       reportStationClick(station.id)
       await audioEngine.loadLive(station.streamUrl)
+      if (get().currentRadioId !== station.id) return
       audioEngine.applyPlaybackSession()
-      await audioEngine.play()
-      set({ isPlaying: !audioEngine.paused })
-      setMediaPlaybackState(!audioEngine.paused)
+      let ok = await audioEngine.play()
+      if ((!ok || audioEngine.paused) && get().currentRadioId === station.id) {
+        await new Promise((r) => window.setTimeout(r, 120))
+        ok = await audioEngine.play()
+      }
+      if (get().currentRadioId !== station.id) return
+      const playing = !audioEngine.paused
+      set({ isPlaying: playing, radioPauseStartedAt: null })
+      setMediaPlaybackState(playing)
       void updateRadioMediaSession(station, {
         play: () => void usePlayerStore.getState().play(),
         pause: () => usePlayerStore.getState().pause(),
         previoustrack: () => void usePlayerStore.getState().previous(),
         nexttrack: () => void usePlayerStore.getState().next(),
       })
+      // Si el stream se cae al segundo (CORS/stall), un reintento corto
+      window.setTimeout(() => {
+        if (get().currentRadioId !== station.id) return
+        if (get().isPlaying && audioEngine.paused) {
+          void audioEngine.play().then((again) => {
+            if (get().currentRadioId !== station.id) return
+            set({ isPlaying: again && !audioEngine.paused })
+            setMediaPlaybackState(again && !audioEngine.paused)
+          })
+        }
+      }, 600)
     } catch (e) {
       console.warn('Radio', e)
-      set({ isPlaying: false, currentRadioId: null })
+      if (get().currentRadioId === station.id) {
+        set({ isPlaying: false, currentRadioId: null })
+        setMediaPlaybackState(false)
+      }
       alert(`No se pudo sintonizar ${station.name}. Prueba otra emisora.`)
     }
   },

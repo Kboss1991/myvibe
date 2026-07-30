@@ -13,6 +13,8 @@ import { usePlayerStore } from '../store/playerStore'
 import { IconClose, IconPause, IconPlay, IconPlus, IconRadio, IconSearch, IconTrash } from '../components/Icons'
 import './pages.css'
 
+let lastRadioSelectAt = 0
+
 function formatRadioDelay(sec: number) {
   const n = Number(sec)
   if (!Number.isFinite(n) || n <= 0) return '0 s'
@@ -96,6 +98,10 @@ export function RadiosPage() {
   }, [myRadios])
 
   const onSelect = (id: string) => {
+    // Evitar doble toque (touch+click) que pausa justo al sintonizar
+    const now = Date.now()
+    if (now - lastRadioSelectAt < 450) return
+    lastRadioSelectAt = now
     if (currentRadioId === id) void toggle()
     else void playRadio(id)
   }
