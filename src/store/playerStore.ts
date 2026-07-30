@@ -96,6 +96,7 @@ let pendingBackgroundPlay = false
 let podcastEpisodeQueue: string[] = []
 let podcastPlayEpoch = 0
 let lastPodcastProgressSave = 0
+let radioDelayTimer: ReturnType<typeof setTimeout> | null = null
 
 function bumpPodcastProgressTick(
   set: (partial: Partial<PlayerState>) => void,
@@ -963,8 +964,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   setRadioDelay: (seconds) => {
-    audioEngine.setRadioDelay(roundRadioDelayMs(seconds))
-    set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
+    const rounded = roundRadioDelayMs(seconds)
+    // UI al instante
+    set({ radioDelay: rounded, radioPauseStartedAt: null })
+    if (radioDelayTimer) clearTimeout(radioDelayTimer)
+    // Debounce: el slider no debe relanzar el stream en cada tick
+    radioDelayTimer = setTimeout(() => {
+      audioEngine.setRadioDelay(rounded)
+      set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
+    }, 280)
   },
 }))
 

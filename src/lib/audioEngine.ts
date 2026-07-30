@@ -20,6 +20,11 @@ class AudioEngine {
   private gainNode: GainNode | null = null
   private radioDelaySec = 0
   private volumeValue = 1
+  /** URL original del directo (para recargar al activar/desactivar delay). */
+  private liveStreamUrl: string | null = null
+  private delayApplyToken = 0
+  /** true si el grafo de delay está activo de verdad */
+  private delayGraphActive = false
 
   constructor() {
     this.configureElement(this.audio)
@@ -222,37 +227,84 @@ class AudioEngine {
 
   /**
    * Retraso de la radio (0–30 s) para sincronizar con la tele.
-   * Solo afecta a streams en directo.
+   * - Si el grafo ya está activo: solo cambia el DelayNode (no recarga → no se pilla).
+   * - Al activar/desactivar: una sola recarga con timeout corto; si falla, sigue el audio sin delay.
    */
   setRadioDelay(seconds: number) {
+    const next = Math.max(0, Math.min(MAX_RADIO_DELAY, seconds))
     const prev = this.radioDelaySec
-    this.radioDelaySec = Math.max(0, Math.min(MAX_RADIO_DELAY, seconds))
+    this.radioDelaySec = next
     try {
       localStorage.setItem('myvibe_radio_delay', String(this.radioDelaySec))
     } catch {
       // ignore
     }
-    if (this.live) {
-      const wantGraph = this.radioDelaySec > 0
-      const hadGraph = Boolean(this.sourceNode)
-      if (wantGraph && !hadGraph) {
-        // Activar retraso: hace falta CORS + grafo; recargar la misma URL
-        const src = this.audio.currentSrc || this.audio.getAttribute('src')
-        if (src) {
-          void this.load(src, 0, { live: true }).then(() => this.play())
-        }
-      } else if (!wantGraph && hadGraph) {
-        const src = this.audio.currentSrc || this.audio.getAttribute('src')
-        if (src) {
-          void this.load(src, 0, { live: true }).then(() => this.play())
-        }
-      } else if (wantGraph) {
-        this.ensureAudioGraph()
-        this.applyDelayToGraph()
-        void this.resumeContext()
-      }
+
+    if (!this.live) {
+      if (prev !== next) this.emit()
+      return
     }
-    if (prev !== this.radioDelaySec) this.emit()
+
+    // Ya hay grafo: solo ajustar el valor (el slider no debe recargar el stream)
+    if (this.delayGraphActive && this.delayNode && next > 0) {
+      this.applyDelayToGraph()
+      void this.resumeContext()
+      if (prev !== next) this.emit()
+      return
+    }
+
+    if (next > 0 && !this.delayGraphActive) {
+      void this.applyDelayMode(true)
+    } else if (next <= 0 && this.delayGraphActive) {
+      void this.applyDelayMode(false)
+    }
+
+    if (prev !== next) this.emit()
+  }
+
+  /** Activa o desactiva el grafo de delay sin dejar el audio muerto. */
+  private async applyDelayMode(enable: boolean) {
+    const url = this.liveStreamUrl
+    if (!url || !this.live) return
+    const token = ++this.delayApplyToken
+    const wasPlaying = !this.audio.paused
+
+    if (enable) {
+      this.radioDelaySec = Math.max(this.radioDelaySec, 0.5)
+    } else {
+      this.radioDelaySec = 0
+    }
+
+    try {
+      await this.load(url, 0, { live: true })
+      if (token !== this.delayApplyToken) return
+      if (wasPlaying) {
+        const ok = await this.play()
+        if (token !== this.delayApplyToken) return
+        if (!ok || this.audio.paused) throw new Error('play failed')
+      }
+      this.delayGraphActive = enable && Boolean(this.sourceNode)
+      // Si pedimos delay pero no hay grafo (CORS), volver a directo
+      if (enable && !this.delayGraphActive) throw new Error('no delay graph')
+    } catch {
+      if (token !== this.delayApplyToken) return
+      // Restaurar audio directo para no quedarse pillado/mudo
+      this.radioDelaySec = 0
+      this.delayGraphActive = false
+      try {
+        localStorage.setItem('myvibe_radio_delay', '0')
+      } catch {
+        /* ignore */
+      }
+      try {
+        await this.load(url, 0, { live: true })
+        if (token !== this.delayApplyToken) return
+        if (wasPlaying) await this.play()
+      } catch {
+        /* ignore */
+      }
+      this.emit()
+    }
   }
 
   loadSavedRadioDelay() {
@@ -337,6 +389,15 @@ class AudioEngine {
     if (needsDelayGraph) {
       this.ensureAudioGraph()
       this.applyDelayToGraph()
+      this.delayGraphActive = Boolean(this.sourceNode)
+    } else {
+      this.delayGraphActive = false
+    }
+
+    if (nextLive) {
+      this.liveStreamUrl = url
+    } else {
+      this.liveStreamUrl = null
     }
 
     const useHls = isHlsUrl(url) && !this.audio.canPlayType('application/vnd.apple.mpegurl')
@@ -372,7 +433,7 @@ class AudioEngine {
             hls.off(Hls.Events.ERROR, onError)
             resolve()
           }
-        }, 10000)
+        }, 8000)
       })
     } else {
       this.audio.src = url
@@ -380,7 +441,9 @@ class AudioEngine {
     }
 
     if (!useHls || this.audio.canPlayType('application/vnd.apple.mpegurl')) {
-      await this.waitElementReady(this.live ? 20000 : 8000)
+      // Timeout corto con delay/CORS: si no, se queda pillado 20s
+      const readyMs = this.live && needsDelayGraph ? 6000 : this.live ? 12000 : 8000
+      await this.waitElementReady(readyMs)
     }
 
     if (!this.live && resumeAt > 0) {
@@ -400,24 +463,18 @@ class AudioEngine {
   }
 
   async loadLive(url: string): Promise<void> {
+    this.liveStreamUrl = url
     this.loadSavedRadioDelay()
-    try {
-      await this.load(url, 0, { live: true })
-    } catch (err) {
-      // Si el retraso TV (CORS) tumba el stream, reintentar en directo puro
-      if (this.radioDelaySec > 0) {
-        const keep = this.radioDelaySec
-        this.radioDelaySec = 0
-        try {
-          await this.load(url, 0, { live: true })
-          this.radioDelaySec = keep
-          this.emit()
-          return
-        } catch {
-          this.radioDelaySec = keep
-        }
-      }
-      throw err
+    const preferredDelay = this.radioDelaySec
+    // Siempre sintonizar primero sin grafo (estable). El delay se aplica después.
+    this.radioDelaySec = 0
+    this.delayGraphActive = false
+    await this.load(url, 0, { live: true })
+    this.radioDelaySec = preferredDelay
+    this.emit()
+    if (preferredDelay > 0) {
+      // Intento en segundo plano; si CORS falla, applyDelayMode restaura el audio
+      void this.applyDelayMode(true)
     }
   }
 
