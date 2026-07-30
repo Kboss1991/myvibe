@@ -916,6 +916,27 @@
   box-shadow: none;
 }
 
+.home-cover-card__art--podcast img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.home-cover-card__podcast-fallback {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-muted);
+  background: linear-gradient(145deg, #2a2a2a, #1a1a1a);
+}
+
+.home-podcast-hint {
+  margin: 0;
+  padding: 0 2px 8px;
+}
+
 .home-cover-card strong {
   display: block;
   font-size: 0.95rem;

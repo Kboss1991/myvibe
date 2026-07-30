@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CoverArt } from '../components/CoverArt'
 import { UserAvatar } from '../components/UserAvatar'
-import { IconHeart } from '../components/Icons'
+import { IconHeart, IconPodcast } from '../components/Icons'
+import {
+  fetchLatestFromMyPodcasts,
+  type LatestPodcastItem,
+} from '../lib/podcastRss'
+import { formatEpisodeDate, getMyPodcasts } from '../lib/podcasts'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
@@ -22,10 +27,14 @@ export function HomePage() {
   const getRecent = useLibraryStore((s) => s.getRecent)
   const getLiked = useLibraryStore((s) => s.getLiked)
   const playTracks = usePlayerStore((s) => s.playTracks)
+  const playPodcastEpisode = usePlayerStore((s) => s.playPodcastEpisode)
   const recent = getRecent()
   const liked = getLiked()
   const latest = tracks.slice(0, 12)
   const [greet, setGreet] = useState(() => greetingForHour(new Date().getHours()))
+  const myPodcasts = getMyPodcasts()
+  const [podcastNews, setPodcastNews] = useState<LatestPodcastItem[]>([])
+  const [podcastNewsLoading, setPodcastNewsLoading] = useState(false)
 
   useEffect(() => {
     const tick = () => setGreet(greetingForHour(new Date().getHours()))
@@ -33,6 +42,30 @@ export function HomePage() {
     const id = window.setInterval(tick, 60_000)
     return () => window.clearInterval(id)
   }, [])
+
+  useEffect(() => {
+    if (!myPodcasts.length) {
+      setPodcastNews([])
+      return
+    }
+    let cancelled = false
+    setPodcastNewsLoading(true)
+    void fetchLatestFromMyPodcasts(myPodcasts, 12)
+      .then((items) => {
+        if (!cancelled) setPodcastNews(items)
+      })
+      .catch(() => {
+        if (!cancelled) setPodcastNews([])
+      })
+      .finally(() => {
+        if (!cancelled) setPodcastNewsLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // Recargar cuando cambia cuántos podcasts tienes guardados
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myPodcasts.length])
 
   return (
     <div className="page home-page">
@@ -84,6 +117,61 @@ export function HomePage() {
           </div>
         )}
       </header>
+
+      {myPodcasts.length > 0 && (
+        <section className="section">
+          <div className="section__head">
+            <h2>Lo nuevo en tus podcasts</h2>
+            <Link to="/podcasts">Mostrar todos</Link>
+          </div>
+          {podcastNewsLoading && podcastNews.length === 0 ? (
+            <p className="empty-state__hint home-podcast-hint">Buscando episodios nuevos…</p>
+          ) : podcastNews.length === 0 ? (
+            <p className="empty-state__hint home-podcast-hint">
+              No se pudieron cargar episodios ahora. Ábrelos en Podcasts.
+            </p>
+          ) : (
+            <div className="h-scroll home-cover-row">
+              {podcastNews.map(({ episode, show }) => {
+                const art = episode.artworkUrl || show.artworkUrl
+                const date = formatEpisodeDate(episode.pubDate)
+                return (
+                  <button
+                    key={episode.id}
+                    type="button"
+                    className="home-cover-card"
+                    onClick={() =>
+                      void playPodcastEpisode(
+                        episode,
+                        show,
+                        podcastNews
+                          .filter((x) => x.show.id === show.id)
+                          .map((x) => x.episode),
+                      )
+                    }
+                    aria-label={`Reproducir ${episode.title}`}
+                  >
+                    <span className="home-cover-card__art home-cover-card__art--podcast">
+                      {art ? (
+                        <img src={art} alt="" loading="lazy" referrerPolicy="no-referrer" />
+                      ) : (
+                        <span className="home-cover-card__podcast-fallback">
+                          <IconPodcast size={40} />
+                        </span>
+                      )}
+                    </span>
+                    <strong>{episode.title}</strong>
+                    <span>
+                      {show.name}
+                      {date ? ` · ${date}` : ''}
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      )}
 
       {recent.length > 0 && (
         <section className="section">

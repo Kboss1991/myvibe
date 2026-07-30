@@ -162,3 +162,80 @@ export async function fetchPodcastEpisodes(show: PodcastShow): Promise<PodcastEp
   if (rss.length) return rss
   return parseAtomEntries(doc, show)
 }
+
+export type LatestPodcastItem = {
+  episode: PodcastEpisode
+  show: PodcastShow
+}
+
+const HOME_LATEST_CACHE_KEY = 'myvibe_home_podcast_latest'
+const HOME_LATEST_TTL_MS = 12 * 60 * 1000
+
+function pubTime(isoOrRss: string): number {
+  const t = Date.parse(isoOrRss)
+  return Number.isFinite(t) ? t : 0
+}
+
+/**
+ * Episodios más nuevos de los podcasts guardados (1–2 por show), ordenados por fecha.
+ * Cache corto en sessionStorage para no martillar feeds en cada visita a Inicio.
+ */
+export async function fetchLatestFromMyPodcasts(
+  shows: PodcastShow[],
+  limit = 12,
+): Promise<LatestPodcastItem[]> {
+  if (!shows.length) return []
+
+  try {
+    const raw = sessionStorage.getItem(HOME_LATEST_CACHE_KEY)
+    if (raw) {
+      const cached = JSON.parse(raw) as {
+        at: number
+        showIds: string[]
+        items: LatestPodcastItem[]
+      }
+      const ids = shows.map((s) => s.id).join(',')
+      if (
+        cached &&
+        Array.isArray(cached.items) &&
+        cached.showIds?.join(',') === ids &&
+        Date.now() - cached.at < HOME_LATEST_TTL_MS
+      ) {
+        return cached.items.slice(0, limit)
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+
+  const perShow = Math.max(1, Math.ceil(limit / Math.max(1, shows.length)))
+  const settled = await Promise.allSettled(
+    shows.map(async (show) => {
+      const eps = await fetchPodcastEpisodes(show)
+      return eps.slice(0, Math.min(3, perShow + 1)).map((episode) => ({ episode, show }))
+    }),
+  )
+
+  const merged: LatestPodcastItem[] = []
+  for (const r of settled) {
+    if (r.status === 'fulfilled') merged.push(...r.value)
+  }
+
+  merged.sort((a, b) => pubTime(b.episode.pubDate) - pubTime(a.episode.pubDate))
+  const items = merged.slice(0, limit)
+
+  try {
+    sessionStorage.setItem(
+      HOME_LATEST_CACHE_KEY,
+      JSON.stringify({
+        at: Date.now(),
+        showIds: shows.map((s) => s.id),
+        items,
+      }),
+    )
+  } catch {
+    /* ignore */
+  }
+
+  return items
+}
