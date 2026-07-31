@@ -9,6 +9,10 @@ class AudioEngine {
   private audio = new Audio()
   private listeners = new Set<Listener>()
   private endedHandlers = new Set<() => void>()
+  /** Pausa no pedida por nosotros (llamada, Siri, otra app) */
+  private interruptionHandlers = new Set<() => void>()
+  /** true justo al llamar pause() programático — evita falsas interrupciones */
+  private intentionalPause = false
   /** Referencia al blob URL actual; NO se revoca aquí (lo gestiona library cache). */
   private objectUrl: string | null = null
   private hls: Hls | null = null
@@ -61,9 +65,23 @@ class AudioEngine {
       this.emit()
     })
     el.addEventListener('play', () => this.emit())
-    el.addEventListener('pause', () => this.emit())
+    el.addEventListener('pause', () => {
+      // Antes del emit: isPlaying aún refleja que sonábamos
+      if (!this.intentionalPause) {
+        for (const h of this.interruptionHandlers) h()
+      }
+      this.emit()
+    })
     el.addEventListener('volumechange', () => this.emit())
     el.addEventListener('error', () => this.emit())
+  }
+
+  /** Marca la siguiente pause() del elemento como intencional (no interrupción). */
+  markIntentionalPause() {
+    this.intentionalPause = true
+    window.setTimeout(() => {
+      this.intentionalPause = false
+    }, 0)
   }
 
   get isLive() {
@@ -149,6 +167,7 @@ class AudioEngine {
 
     const old = this.audio
     try {
+      this.markIntentionalPause()
       old.pause()
     } catch {
       /* ignore */
@@ -290,6 +309,7 @@ class AudioEngine {
 
     const old = this.audio
     try {
+      this.markIntentionalPause()
       old.pause()
     } catch {
       /* ignore */
@@ -411,6 +431,7 @@ class AudioEngine {
     const wasMuted = old.muted
     const vol = this.volumeValue
     try {
+      this.markIntentionalPause()
       old.pause()
     } catch {
       /* ignore */
@@ -852,6 +873,7 @@ class AudioEngine {
   }
 
   pause() {
+    this.markIntentionalPause()
     this.audio.pause()
     this.emit()
   }
@@ -922,6 +944,12 @@ class AudioEngine {
   onEnded(handler: () => void) {
     this.endedHandlers.add(handler)
     return () => this.endedHandlers.delete(handler)
+  }
+
+  /** Pausa externa (llamada, otra app, cambio de ruta BT). */
+  onInterruption(handler: () => void) {
+    this.interruptionHandlers.add(handler)
+    return () => this.interruptionHandlers.delete(handler)
   }
 }
 

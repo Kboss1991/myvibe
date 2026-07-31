@@ -5,7 +5,7 @@ import { formatRadioDelay, getRadioStation } from '../lib/radios'
 import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
 import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
 import { useLibraryStore } from '../store/libraryStore'
-import { bindMediaSession, usePlayerStore } from '../store/playerStore'
+import { bindMediaSession, resumeAfterInterruption, usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
 import {
   IconHeart,
@@ -68,23 +68,24 @@ export function PlayerBar() {
   }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl])
 
   useEffect(() => {
+    const onResume = () => {
+      resumeAfterInterruption()
+    }
     const onVis = () => {
-      if (document.visibilityState === 'visible') {
-        audioEngine.applyPlaybackSession()
-        void audioEngine.ensureAudible()
-        void bindMediaSession(tracks)
-        const playing = usePlayerStore.getState().isPlaying
-        if (playing && audioEngine.paused) {
-          void usePlayerStore.getState().play()
-        } else if (playing) {
-          void audioEngine.play()
-        }
-      } else {
-        void bindMediaSession(tracks)
-      }
+      if (document.visibilityState === 'visible') onResume()
+      else void bindMediaSession(tracks)
     }
     document.addEventListener('visibilitychange', onVis)
-    return () => document.removeEventListener('visibilitychange', onVis)
+    window.addEventListener('pageshow', onResume)
+    window.addEventListener('focus', onResume)
+    // iOS a veces dispara esto al colgar / recuperar audio
+    document.addEventListener('resume', onResume as EventListener)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('pageshow', onResume)
+      window.removeEventListener('focus', onResume)
+      document.removeEventListener('resume', onResume as EventListener)
+    }
   }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl])
 
   // Si queda un sheet/overlay colgado, quitarlo al sintonizar radio

@@ -88,10 +88,14 @@ interface PlayerState {
 let persistTimer: ReturnType<typeof setTimeout> | null = null
 let endedUnsub: (() => void) | null = null
 let engineUnsub: (() => void) | null = null
+let interruptionUnsub: (() => void) | null = null
 let trackAdvanceLockUntil = 0
 let prefetchedNextId: string | null = null
 /** Si el avance automático no pudo hacer play (bloqueo), reintentar al volver. */
 let pendingBackgroundPlay = false
+/** Tras llamada / interrupción del sistema: reintentar play y reclamar Now Playing. */
+let interruptionResumeTimer: ReturnType<typeof setInterval> | null = null
+let interruptionResumeUntil = 0
 /** Cola de episodios del show abierto (ids). */
 let podcastEpisodeQueue: string[] = []
 let podcastPlayEpoch = 0
@@ -289,6 +293,60 @@ function stopNearEndPoller() {
   if (nearEndPollTimer == null) return
   window.clearInterval(nearEndPollTimer)
   nearEndPollTimer = null
+}
+
+function stopInterruptionResumeWatcher() {
+  if (interruptionResumeTimer != null) {
+    window.clearInterval(interruptionResumeTimer)
+    interruptionResumeTimer = null
+  }
+  interruptionResumeUntil = 0
+}
+
+function startInterruptionResumeWatcher() {
+  interruptionResumeUntil = Date.now() + 120_000
+  if (interruptionResumeTimer != null) return
+  interruptionResumeTimer = window.setInterval(() => {
+    if (Date.now() > interruptionResumeUntil) {
+      stopInterruptionResumeWatcher()
+      return
+    }
+    const state = usePlayerStore.getState()
+    if (!pendingBackgroundPlay && !state.isPlaying) {
+      stopInterruptionResumeWatcher()
+      return
+    }
+    // Reclamar Now Playing para que el play del coche no abra Podcasts
+    audioEngine.applyPlaybackSession()
+    void bindMediaSession([])
+    if (!audioEngine.paused) {
+      pendingBackgroundPlay = false
+      stopInterruptionResumeWatcher()
+      setMediaPlaybackState(true)
+      return
+    }
+    void state.play()
+  }, 1500)
+}
+
+/** Reanudar tras llamada / volver al coche / desbloquear. */
+export function resumeAfterInterruption() {
+  const state = usePlayerStore.getState()
+  if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
+    return
+  }
+  audioEngine.applyPlaybackSession()
+  void bindMediaSession([])
+  if (pendingBackgroundPlay || (state.isPlaying && audioEngine.paused)) {
+    void state.play()
+  } else if (state.isPlaying) {
+    void audioEngine.ensureAudible()
+    void audioEngine.play()
+  } else {
+    // Seguir apareciendo en Now Playing aunque estemos en pause (evita que gane Podcasts)
+    void bindMediaSession([])
+    setMediaPlaybackState(false)
+  }
 }
 
 function bumpPodcastProgressTick(
@@ -562,6 +620,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       })
     }
 
+    if (!interruptionUnsub) {
+      interruptionUnsub = audioEngine.onInterruption(() => {
+        // Llamada / Siri / otra app: no marcar pause de usuario
+        if (!get().currentTrackId && !get().currentRadioId && !get().currentPodcastEpisodeId) {
+          return
+        }
+        // Si ya estábamos en pause intencional, isPlaying es false y no hay pending
+        if (!get().isPlaying && !pendingBackgroundPlay) return
+
+        pendingBackgroundPlay = true
+        set({ isPlaying: true })
+        // Mantener metadatos en Now Playing (si se pierden, el coche abre Podcasts)
+        audioEngine.applyPlaybackSession()
+        void bindMediaSession([])
+        setMediaPlaybackState(false)
+        startInterruptionResumeWatcher()
+      })
+    }
+
     if (snap.currentTrackId && snap.queue.length) {
       await loadAndMaybePlay(snap.currentTrackId, snap.position, false, set)
     }
@@ -569,6 +646,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   syncFromEngine: () => {
     const playing = !audioEngine.paused
+    if (playing && pendingBackgroundPlay) {
+      pendingBackgroundPlay = false
+      stopInterruptionResumeWatcher()
+    }
     const live = Boolean(get().currentRadioId) || audioEngine.isLive
     if (live) {
       stopNearEndPoller()
@@ -821,6 +902,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       persistPodcastProgressNow(set, get)
     }
     pendingBackgroundPlay = false
+    stopInterruptionResumeWatcher()
     audioEngine.pause()
     set({
       isPlaying: false,
@@ -841,6 +923,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioPauseStartedAt,
       radioDelay,
     } = get()
+    audioEngine.applyPlaybackSession()
+    void bindMediaSession([])
     if (currentRadioId) {
       const station = getRadioStation(currentRadioId)
       if (!station) return
@@ -1252,7 +1336,10 @@ export async function bindMediaSession(tracks: Track[]) {
     const station = getRadioStation(state.currentRadioId)
     if (station) {
       await updateRadioMediaSession(station, {
-        play: () => void usePlayerStore.getState().play(),
+        play: () => {
+          pendingBackgroundPlay = true
+          void usePlayerStore.getState().play()
+        },
         pause: () => usePlayerStore.getState().pause(),
         previoustrack: () => void usePlayerStore.getState().previous(),
         nexttrack: () => void usePlayerStore.getState().next(),
@@ -1280,9 +1367,17 @@ export async function bindMediaSession(tracks: Track[]) {
     }
     return
   }
-  const track = tracks.find((t) => t.id === state.currentTrackId) ?? null
+  let track = tracks.find((t) => t.id === state.currentTrackId) ?? null
+  // Reclamar Now Playing tras llamada sin depender del array en memoria
+  if (!track && state.currentTrackId) {
+    track = (await db.tracks.get(state.currentTrackId)) ?? null
+  }
   await updateMediaSession(track, state.coverUrl, {
-    play: () => void usePlayerStore.getState().play(),
+    play: () => {
+      // Play del coche / bloqueo: forzar reanudación tras interrupción
+      pendingBackgroundPlay = true
+      void usePlayerStore.getState().play()
+    },
     pause: () => usePlayerStore.getState().pause(),
     previoustrack: () => void usePlayerStore.getState().previous(),
     nexttrack: () => void usePlayerStore.getState().next(),
