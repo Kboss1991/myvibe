@@ -746,7 +746,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       set({ isPlaying: playing, radioPauseStartedAt: null, radioDelay: audioEngine.radioDelay })
       setMediaPlaybackState(playing)
       void updateRadioMediaSession(station, {
-        play: () => void usePlayerStore.getState().play(),
+        play: () => {
+          pendingBackgroundPlay = true
+          void usePlayerStore.getState().play()
+        },
         pause: () => usePlayerStore.getState().pause(),
         previoustrack: () => void usePlayerStore.getState().previous(),
         nexttrack: () => void usePlayerStore.getState().next(),
@@ -802,7 +805,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         podcastSyntheticTrack(episode, show),
         episode.artworkUrl || show.artworkUrl,
         {
-          play: () => void usePlayerStore.getState().play(),
+          play: () => {
+            pendingBackgroundPlay = true
+            void usePlayerStore.getState().play()
+          },
           pause: () => usePlayerStore.getState().pause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
@@ -1355,7 +1361,10 @@ export async function bindMediaSession(tracks: Track[]) {
         podcastSyntheticTrack(ep, show),
         ep.artworkUrl || show.artworkUrl || state.coverUrl,
         {
-          play: () => void usePlayerStore.getState().play(),
+          play: () => {
+            pendingBackgroundPlay = true
+            void usePlayerStore.getState().play()
+          },
           pause: () => usePlayerStore.getState().pause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
