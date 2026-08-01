@@ -1,6 +1,6 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 import { audioEngine } from '../lib/audioEngine'
-import { formatTime } from '../lib/mediaSession'
+import { formatTime, refreshMediaPlaybackState } from '../lib/mediaSession'
 import { formatRadioDelay, getRadioStation } from '../lib/radios'
 import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
 import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
@@ -72,8 +72,14 @@ export function PlayerBar() {
       resumeAfterInterruption()
     }
     const onVis = () => {
-      if (document.visibilityState === 'visible') onResume()
-      else void bindMediaSession(tracks)
+      if (document.visibilityState === 'visible') {
+        onResume()
+        return
+      }
+      // Al bloquear: reafirmar metadatos y el botón Pause si sigue sonando
+      void bindMediaSession(tracks).then(() => {
+        refreshMediaPlaybackState(!audioEngine.paused || isPlaying)
+      })
     }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('pageshow', onResume)
@@ -86,7 +92,7 @@ export function PlayerBar() {
       window.removeEventListener('focus', onResume)
       document.removeEventListener('resume', onResume as EventListener)
     }
-  }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl])
+  }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl, isPlaying])
 
   // Si queda un sheet/overlay colgado, quitarlo al sintonizar radio
   useEffect(() => {

@@ -253,12 +253,33 @@ export async function updateRadioMediaSession(
 
 export function setMediaPlaybackState(playing: boolean) {
   if (!('mediaSession' in navigator)) return
-  navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+  try {
+    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+  } catch {
+    // ignore
+  }
+}
+
+/**
+ * Tras actualizar metadatos, iOS a veces resetea el botón a Play.
+ * Volver a aplicar el estado real del audio.
+ */
+export function refreshMediaPlaybackState(playing: boolean) {
+  setMediaPlaybackState(playing)
+  // Segunda pasada: Safari/iOS a veces ignora el primer write tras MediaMetadata
+  try {
+    window.setTimeout(() => setMediaPlaybackState(playing), 0)
+    window.setTimeout(() => setMediaPlaybackState(playing), 120)
+  } catch {
+    // ignore
+  }
 }
 
 /** Progreso en pantalla de bloqueo / Centro de control. */
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
   if (!('mediaSession' in navigator)) return
+  // Siempre el botón play/pause, aunque duration aún no esté lista
+  setMediaPlaybackState(playing)
   if (!Number.isFinite(duration) || duration <= 0) return
   const pos = Math.max(0, Math.min(position, duration))
   try {
@@ -270,5 +291,4 @@ export function setMediaPositionState(position: number, duration: number, playin
   } catch {
     // Safari a veces falla si position > duration momentáneamente
   }
-  setMediaPlaybackState(playing)
 }

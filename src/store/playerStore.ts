@@ -3,7 +3,7 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
@@ -194,7 +194,7 @@ async function refreshMediaSessionForTrackId(trackId: string) {
     getPosition: () => usePlayerStore.getState().position,
     seekSkip: false,
   })
-  setMediaPlaybackState(true)
+  refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
 }
 
 /**
@@ -737,8 +737,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         set({ isPlaying: true })
         // Mantener metadatos en Now Playing (si se pierden, el coche abre Podcasts)
         audioEngine.applyPlaybackSession()
-        void bindMediaSession([])
-        setMediaPlaybackState(false)
+        void bindMediaSession([]).then(() => {
+          // No forzar paused: al bloquear, iOS dispara pause espurio y el botón
+          // quedaba en Play. Si el audio sigue, mostrar Pause; si paró (llamada), Play.
+          refreshMediaPlaybackState(!audioEngine.paused)
+        })
         startInterruptionResumeWatcher()
       })
     }
@@ -1506,6 +1509,7 @@ export async function bindMediaSession(tracks: Track[]) {
         nexttrack: () => void usePlayerStore.getState().next(),
       })
     }
+    refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
     return
   }
   if (state.currentPodcastEpisodeId) {
@@ -1529,6 +1533,7 @@ export async function bindMediaSession(tracks: Track[]) {
         },
       )
     }
+    refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
     return
   }
   let track = tracks.find((t) => t.id === state.currentTrackId) ?? null
@@ -1549,4 +1554,6 @@ export async function bindMediaSession(tracks: Track[]) {
     getPosition: () => usePlayerStore.getState().position,
     seekSkip: false,
   })
+  // Tras MediaMetadata, iOS resetea el botón — reafirmar play/pause real
+  refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
 }
