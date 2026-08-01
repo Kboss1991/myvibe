@@ -177,6 +177,13 @@
   color: var(--accent, #f5a623);
 }
 
+.sp-actions .sp-pill--icon {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
+}
+
 .sp-actions__more {
   display: inline-flex;
   align-items: center;

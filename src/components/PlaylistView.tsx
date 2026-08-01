@@ -271,8 +271,10 @@ export function PlaylistView({
         )}
         <button
           type="button"
-          className="sp-pill"
+          className="sp-pill sp-pill--icon"
           disabled={!tracks.length}
+          aria-label="Orden aleatorio"
+          title="Orden aleatorio"
           onClick={() =>
             void playTracks(
               tracks.map((t) => t.id),
@@ -281,7 +283,7 @@ export function PlaylistView({
             )
           }
         >
-          <IconShuffle size={16} /> Orden aleatorio
+          <IconShuffle size={18} />
         </button>
         <button
           type="button"
