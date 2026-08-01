@@ -151,10 +151,12 @@
 
 .sp-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 8px;
-  padding: 4px 16px 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 12px 14px;
 }
 
 .sp-actions .sp-pill {
@@ -167,6 +169,7 @@
   color: #fff;
   font-size: 0.8rem;
   font-weight: 600;
+  flex: 0 0 auto;
 }
 
 .sp-actions .sp-pill.is-on {
@@ -191,6 +194,7 @@
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  margin-left: auto;
 }
 
 .sp-edit-hint {
@@ -286,28 +290,29 @@
 }
 
 .sp-table-wrap {
-  padding: 0 12px 24px;
+  padding: 0 8px 24px;
 }
 
 @media (min-width: 900px) {
   .sp-table-wrap {
-    padding: 0 24px 32px;
+    padding: 0 16px 32px;
   }
 }
 
 .sp-table-head,
 .sp-row {
   display: grid;
-  grid-template-columns: 40px minmax(160px, 2fr) minmax(0, 1.2fr) minmax(0, 1fr) 64px 36px;
+  grid-template-columns: 40px minmax(160px, 2fr) minmax(0, 1.2fr) minmax(0, 1fr) 72px 36px;
   gap: 12px;
   align-items: center;
-  padding: 0 8px;
+  padding: 0 8px 0 4px;
 }
 
 @media (max-width: 800px) {
   .sp-table-head,
   .sp-row {
-    grid-template-columns: 36px minmax(0, 1fr) 52px 96px;
+    grid-template-columns: 36px minmax(0, 1fr) 56px 36px;
+    padding: 0 10px 0 4px;
   }
   .col-album,
   .col-date {
@@ -315,7 +320,7 @@
   }
   .sp-playlist:not(.is-editing) .sp-table-head,
   .sp-playlist:not(.is-editing) .sp-row {
-    grid-template-columns: 36px minmax(0, 1fr) 52px 36px;
+    grid-template-columns: 36px minmax(0, 1fr) 56px 8px;
   }
 }
 
@@ -407,6 +412,19 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.col-time {
+  text-align: right;
+  justify-self: end;
+  padding-right: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-table-head .col-time {
+  display: flex;
+  justify-content: flex-end;
+  padding-right: 10px;
 }
 
 .sp-row__edit-actions {
