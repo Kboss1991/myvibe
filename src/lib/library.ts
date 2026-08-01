@@ -13,6 +13,7 @@ import type { OnlineTrackInfo } from './enrich'
 import { isAppleMobile } from './folderImport'
 import { deleteBinary, readBinary, writeBinary, clearOpfsFolder, listOpfsIds } from './opfs'
 import { groupDuplicateTracks, pickCanonicalTrack, tracksLookSame, findBestTrackMatch } from './trackDedupe'
+import { pickDefaultThemeColor } from './playlistThemes'
 import type { Playlist, Track } from '../types'
 
 function pickBestBlob(...blobs: Array<Blob | null | undefined>): Blob | null {
@@ -1041,6 +1042,7 @@ export async function createPlaylist(name: string): Promise<Playlist> {
     description: '',
     trackIds: [],
     hasCover: false,
+    themeColor: pickDefaultThemeColor(),
     createdAt: Date.now(),
     updatedAt: Date.now(),
   }
@@ -1054,7 +1056,7 @@ export async function renamePlaylist(id: string, name: string): Promise<void> {
 
 export async function updatePlaylistInfo(
   id: string,
-  patch: Partial<Pick<Playlist, 'name' | 'description'>>,
+  patch: Partial<Pick<Playlist, 'name' | 'description' | 'themeColor'>>,
 ): Promise<void> {
   await db.playlists.update(id, { ...patch, updatedAt: Date.now() })
 }

@@ -540,8 +540,18 @@ type CloudPlaylistRow = {
   description: string
   track_ids: string[] | unknown
   has_cover: boolean
+  theme_color?: string | null
   created_at: string
   updated_at: string
+}
+
+/** Si Supabase aún no tiene la columna theme_color, no la enviamos. */
+let playlistThemeColumnOk: boolean | null = null
+
+function isMissingThemeColorColumn(message: string): boolean {
+  return /theme_color|column .* does not exist|Could not find.*theme_color/i.test(
+    message,
+  )
 }
 
 function playlistIdsKey(userId: string) {
@@ -1023,6 +1033,10 @@ export async function pushLibraryPlaylists(
       return pickCloudLocalIdForTrack(track, cloud, localIds)
     })
     const updatedAt = force ? now : p.updatedAt || p.createdAt || now
+    const theme =
+      typeof p.themeColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(p.themeColor.trim())
+        ? p.themeColor.trim().toLowerCase()
+        : null
     return {
       user_id: userId,
       local_id: p.id,
@@ -1030,6 +1044,7 @@ export async function pushLibraryPlaylists(
       description: p.description || '',
       track_ids,
       has_cover: Boolean(p.hasCover),
+      ...(playlistThemeColumnOk !== false && theme ? { theme_color: theme } : {}),
       created_at: new Date(p.createdAt || Date.now()).toISOString(),
       updated_at: new Date(updatedAt).toISOString(),
       localTs: updatedAt,
@@ -1069,10 +1084,24 @@ export async function pushLibraryPlaylists(
 
   const chunk = 40
   for (let i = 0; i < rows.length; i += chunk) {
-    const slice = rows.slice(i, i + chunk)
-    const { error } = await supabase.from('library_playlists').upsert(slice, {
+    let slice = rows.slice(i, i + chunk)
+    let { error } = await supabase.from('library_playlists').upsert(slice, {
       onConflict: 'user_id,local_id',
     })
+    if (error && isMissingThemeColorColumn(error.message)) {
+      playlistThemeColumnOk = false
+      slice = slice.map((row) => {
+        const { theme_color: _omit, ...rest } = row as typeof row & {
+          theme_color?: string
+        }
+        return rest
+      })
+      ;({ error } = await supabase.from('library_playlists').upsert(slice, {
+        onConflict: 'user_id,local_id',
+      }))
+    } else if (!error && playlistThemeColumnOk === null) {
+      playlistThemeColumnOk = true
+    }
     if (error) {
       if (/relation|does not exist|schema cache/i.test(error.message)) {
         throw new Error(
@@ -1123,11 +1152,41 @@ export async function removeCloudPlaylist(
 export async function pullLibraryPlaylists(userId: string): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
   const supabase = getSupabase()
-  const [{ data, error }, cloud, locals] = await Promise.all([
-    supabase
+  const selectWithTheme =
+    'local_id,name,description,track_ids,has_cover,theme_color,created_at,updated_at'
+  const selectBase =
+    'local_id,name,description,track_ids,has_cover,created_at,updated_at'
+
+  let data: unknown[] | null = null
+  let error: { message: string } | null = null
+  if (playlistThemeColumnOk !== false) {
+    const res = await supabase
       .from('library_playlists')
-      .select('local_id,name,description,track_ids,has_cover,created_at,updated_at')
-      .eq('user_id', userId),
+      .select(selectWithTheme)
+      .eq('user_id', userId)
+    data = res.data
+    error = res.error
+    if (error && isMissingThemeColorColumn(error.message)) {
+      playlistThemeColumnOk = false
+      const retry = await supabase
+        .from('library_playlists')
+        .select(selectBase)
+        .eq('user_id', userId)
+      data = retry.data
+      error = retry.error
+    } else if (!error) {
+      playlistThemeColumnOk = true
+    }
+  } else {
+    const res = await supabase
+      .from('library_playlists')
+      .select(selectBase)
+      .eq('user_id', userId)
+    data = res.data
+    error = res.error
+  }
+
+  const [cloud, locals] = await Promise.all([
     fetchCloudTrackLite(userId),
     db.tracks.toArray(),
   ])
@@ -1170,6 +1229,11 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
       resolvedIds.push(id)
     }
 
+    const themeRaw =
+      typeof row.theme_color === 'string' ? row.theme_color.trim() : ''
+    const themeColor =
+      /^#[0-9a-fA-F]{6}$/.test(themeRaw) ? themeRaw.toLowerCase() : undefined
+
     if (!existing) {
       const wantCover = Boolean(row.has_cover)
       let hasCover = false
@@ -1182,6 +1246,7 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
         description: row.description || '',
         trackIds: resolvedIds,
         hasCover,
+        ...(themeColor ? { themeColor } : {}),
         createdAt: Date.parse(row.created_at) || Date.now(),
         updatedAt: remoteTs || Date.now(),
       })
@@ -1206,6 +1271,7 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
       description: row.description ?? existing.description,
       trackIds: resolvedIds,
       hasCover,
+      ...(themeColor ? { themeColor } : {}),
       updatedAt: remoteTs || existing.updatedAt,
     })
     applied += 1

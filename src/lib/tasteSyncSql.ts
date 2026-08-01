@@ -44,10 +44,14 @@ create table if not exists public.library_playlists (
   description text not null default '',
   track_ids jsonb not null default '[]'::jsonb,
   has_cover boolean not null default false,
+  theme_color text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   primary key (user_id, local_id)
 );
+
+alter table public.library_playlists
+  add column if not exists theme_color text;
 
 create index if not exists library_playlists_user_idx on public.library_playlists (user_id);
 

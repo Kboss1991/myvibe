@@ -222,7 +222,7 @@ interface LibraryState {
   renamePlaylist: (id: string, name: string) => Promise<void>
   updatePlaylistInfo: (
     id: string,
-    patch: Partial<Pick<Playlist, 'name' | 'description'>>,
+    patch: Partial<Pick<Playlist, 'name' | 'description' | 'themeColor'>>,
   ) => Promise<void>
   setPlaylistCover: (id: string, file: File) => Promise<void>
   deletePlaylist: (id: string) => Promise<void>

@@ -1,6 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import type { Track } from '../types'
 import { formatTime } from '../lib/mediaSession'
+import {
+  DEFAULT_PLAYLIST_THEME,
+  PLAYLIST_THEME_COLORS,
+  normalizeThemeColor,
+} from '../lib/playlistThemes'
 import { useAuthStore } from '../store/authStore'
 import { usePlayerStore } from '../store/playerStore'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
@@ -48,9 +53,15 @@ type Props = {
   coverId?: string | null
   /** Fuerza recarga de la portada (p. ej. updatedAt) */
   coverRefreshKey?: number | string | null
+  /** Color de fondo del hero (#rrggbb) */
+  themeColor?: string | null
   playlistId?: string
   likedStyle?: boolean
-  onEditInfo?: (name: string, description: string) => Promise<void>
+  onEditInfo?: (
+    name: string,
+    description: string,
+    themeColor?: string,
+  ) => Promise<void>
   onPickCover?: (file: File) => Promise<void>
   onDelete?: () => void
   onAddTracks?: (trackIds: string[]) => Promise<void>
@@ -68,6 +79,7 @@ export function PlaylistView({
   hasCover,
   coverId,
   coverRefreshKey,
+  themeColor,
   playlistId,
   likedStyle,
   onEditInfo,
@@ -97,8 +109,14 @@ export function PlaylistView({
   const [dragId, setDragId] = useState<string | null>(null)
   const [editName, setEditName] = useState(title)
   const [editDesc, setEditDesc] = useState(description)
+  const [editTheme, setEditTheme] = useState(
+    () => normalizeThemeColor(themeColor) || DEFAULT_PLAYLIST_THEME,
+  )
   const [cropSource, setCropSource] = useState<{ blob: Blob; name: string } | null>(null)
   const coverInputRef = useRef<HTMLInputElement>(null)
+
+  const activeTheme =
+    normalizeThemeColor(editOpen ? editTheme : themeColor) || DEFAULT_PLAYLIST_THEME
 
   const totalDuration = tracks.reduce((s, t) => s + (t.duration || 0), 0)
   const hours = Math.floor(totalDuration / 3600)
@@ -193,7 +211,12 @@ export function PlaylistView({
   return (
     <div
       className={`sp-playlist ${likedStyle ? 'sp-playlist--liked' : ''} ${collapsed ? 'is-scrolled' : ''} ${editMode ? 'is-editing' : ''}`}
-      style={{ ['--sticky-p' as string]: String(progress) }}
+      style={{
+        ['--sticky-p' as string]: String(progress),
+        ...(!likedStyle
+          ? { ['--playlist-theme' as string]: activeTheme }
+          : {}),
+      }}
     >
       <div className="sp-hero-fade">
         <header className="sp-hero">
@@ -345,6 +368,9 @@ export function PlaylistView({
                     onClick={() => {
                       setEditName(title)
                       setEditDesc(description)
+                      setEditTheme(
+                        normalizeThemeColor(themeColor) || DEFAULT_PLAYLIST_THEME,
+                      )
                       setEditOpen(true)
                       setMoreOpen(false)
                     }}
@@ -560,13 +586,46 @@ export function PlaylistView({
                 placeholder="Añade una descripción opcional"
               />
             </label>
+            <div className="field sp-theme-field">
+              Color de fondo
+              <div className="sp-theme-swatches" role="listbox" aria-label="Color de fondo">
+                {PLAYLIST_THEME_COLORS.map((color) => {
+                  const on = editTheme.toLowerCase() === color.toLowerCase()
+                  return (
+                    <button
+                      key={color}
+                      type="button"
+                      role="option"
+                      aria-selected={on}
+                      className={`sp-theme-swatch ${on ? 'is-on' : ''}`}
+                      style={{ background: color }}
+                      title={color}
+                      onClick={() => setEditTheme(color)}
+                    />
+                  )
+                })}
+              </div>
+              <label className="sp-theme-custom">
+                <input
+                  type="color"
+                  value={editTheme}
+                  onChange={(e) => {
+                    const next = normalizeThemeColor(e.target.value)
+                    if (next) setEditTheme(next)
+                  }}
+                />
+                <span>Personalizado</span>
+              </label>
+            </div>
             <button
               type="button"
               className="btn-primary"
               onClick={() => {
-                void onEditInfo(editName.trim() || title, editDesc.trim()).then(
-                  () => setEditOpen(false),
-                )
+                void onEditInfo(
+                  editName.trim() || title,
+                  editDesc.trim(),
+                  editTheme,
+                ).then(() => setEditOpen(false))
               }}
             >
               Guardar

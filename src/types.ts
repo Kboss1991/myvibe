@@ -38,6 +38,8 @@ export interface Playlist {
   description: string
   trackIds: string[]
   hasCover: boolean
+  /** Color de fondo del hero (#rrggbb). */
+  themeColor?: string
   createdAt: number
   updatedAt: number
 }

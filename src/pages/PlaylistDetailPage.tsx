@@ -44,9 +44,14 @@ export function PlaylistDetailPage() {
         hasCover={playlist.hasCover}
         coverId={playlist.hasCover ? playlistCoverId(playlist.id) : null}
         coverRefreshKey={playlist.updatedAt}
+        themeColor={playlist.themeColor}
         playlistId={playlist.id}
-        onEditInfo={async (name, description) => {
-          await updatePlaylistInfo(playlist.id, { name, description })
+        onEditInfo={async (name, description, themeColor) => {
+          await updatePlaylistInfo(playlist.id, {
+            name,
+            description,
+            ...(themeColor ? { themeColor } : {}),
+          })
         }}
         onPickCover={async (file) => {
           await setPlaylistCover(playlist.id, file)
