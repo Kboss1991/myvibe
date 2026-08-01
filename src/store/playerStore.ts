@@ -618,6 +618,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       volume: snap.volume,
       hydrated: true,
     })
+    persistSoon({ shuffle: true })
 
     if (!engineUnsub) {
       engineUnsub = audioEngine.subscribe(() => get().syncFromEngine())
@@ -856,8 +857,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     let nextQueue = q.includes(trackId) ? [...q] : [...q, trackId]
     let index = Math.max(0, nextQueue.indexOf(trackId))
     const originalQueue = [...nextQueue]
-    const shuffleOn = get().shuffle
+    const shuffleOn = get().shuffle !== false
     if (shuffleOn) {
+      // Mantener la canción elegida la primera; el resto aleatorio
       nextQueue = shuffleArray(nextQueue, index >= 0 ? index : undefined)
       index = 0
     }
@@ -870,13 +872,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     persistSoon({
       queue: nextQueue,
       index,
-      currentTrackId: trackId,
+      currentTrackId: nextQueue[index] ?? trackId,
       shuffle: shuffleOn,
       position: 0,
     })
-    const ok = await loadAndMaybePlay(trackId, 0, true, set)
+    const playId = nextQueue[index] ?? trackId
+    const ok = await loadAndMaybePlay(playId, 0, true, set)
     if (!ok) {
-      // Saltar a la siguiente con audio real
       for (let i = index + 1; i < nextQueue.length; i++) {
         const nextId = nextQueue[i]!
         set({ index: i, currentTrackId: nextId })
@@ -890,13 +892,21 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     audioEngine.clearStandby()
     prefetchedNextId = null
     const forceShuffle = options?.shuffle
-    const shuffleOn = forceShuffle === true ? true : forceShuffle === false ? false : get().shuffle
+    const shuffleOn =
+      forceShuffle === true
+        ? true
+        : forceShuffle === false
+          ? false
+          : get().shuffle !== false
     let queue = [...trackIds]
     let index = startId ? Math.max(0, queue.indexOf(startId)) : 0
     if (index < 0) index = 0
     const originalQueue = [...queue]
     if (shuffleOn) {
-      queue = shuffleArray(queue, index >= 0 ? index : undefined)
+      // Play general (sin canción concreta): mezcla TODO, incluida la primera.
+      // Si el usuario eligió una pista, esa queda la primera.
+      const stay = startId ? index : undefined
+      queue = shuffleArray(queue, stay)
       index = 0
     }
     set({
@@ -1252,15 +1262,22 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const { shuffle, queue, originalQueue, currentTrackId } = get()
     if (!shuffle) {
       const base = originalQueue.length ? originalQueue : queue
-      const currentIndex = Math.max(0, base.indexOf(currentTrackId ?? ''))
-      const shuffled = shuffleArray(base, currentIndex >= 0 ? currentIndex : undefined)
+      const currentIndex = currentTrackId ? base.indexOf(currentTrackId) : -1
+      const shuffled = shuffleArray(
+        base,
+        currentIndex >= 0 ? currentIndex : undefined,
+      )
       set({
         shuffle: true,
         originalQueue: base,
         queue: shuffled,
-        index: 0,
+        index: currentIndex >= 0 ? 0 : get().index,
       })
-      persistSoon({ shuffle: true, queue: shuffled, index: 0 })
+      persistSoon({
+        shuffle: true,
+        queue: shuffled,
+        index: currentIndex >= 0 ? 0 : get().index,
+      })
     } else {
       const base = originalQueue.length ? originalQueue : queue
       const idx = Math.max(0, base.indexOf(currentTrackId ?? ''))

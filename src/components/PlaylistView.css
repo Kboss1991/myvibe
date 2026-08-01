@@ -172,22 +172,21 @@
   flex: 0 0 auto;
 }
 
-.sp-actions .sp-pill.is-on {
-  border-color: var(--accent, #f5a623);
-  color: var(--accent, #f5a623);
-}
-
 .sp-actions .sp-pill--icon {
   width: 36px;
   height: 36px;
   padding: 0;
   justify-content: center;
   color: #b3b3b3;
+  border-color: #727272;
 }
 
+/* Más específico que .sp-pill / .sp-pill--icon para que el amarillo se vea */
+.sp-actions .sp-pill.is-on,
 .sp-actions .sp-pill--icon.is-on {
-  color: var(--accent, #f5a623);
-  border-color: var(--accent, #f5a623);
+  color: #f5a623;
+  border-color: #f5a623;
+  background: rgba(245, 166, 35, 0.16);
 }
 
 .sp-actions__more {
