@@ -17,6 +17,8 @@ import {
   removeCloudTracks,
   subscribeLibraryTaste,
   syncLibraryTaste,
+  checkTasteTablesReady,
+  TASTE_SQL_HINT,
 } from '../lib/cloudLibrary'
 import { isLibraryHostDevice } from '../lib/devices'
 import { downloadTracksFromPc } from '../lib/libraryHost'
@@ -497,6 +499,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     let deduped = 0
     let pruned = 0
     try {
+      const tasteReady = await checkTasteTablesReady()
       // Quita duplicados locales antes de subir, limpia la nube, baja catálogo y vuelve a fusionar
       deduped += await library.dedupeLibraryTracks()
       pushed = await pushLibraryMetadata(userId)
@@ -504,16 +507,20 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       pulled = await pullLibraryCatalog(userId)
       deduped += await library.dedupeLibraryTracks()
       let taste = { likesIn: 0, likesOut: 0, playlistsIn: 0, playlistsOut: 0 }
-      let tasteError: string | null = null
-      try {
-        taste = await syncLibraryTaste(userId)
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : 'Error sync perfil'
-        console.warn('Sync me gusta/playlists', e)
-        tasteError =
-          /relation|does not exist|schema cache|library_likes|library_playlists/i.test(msg)
-            ? ' · Falta ejecutar library.sql / taste-sync.sql en Supabase'
-            : ` · Perfil: ${msg}`
+      let tasteError: string | null = tasteReady.ok ? null : tasteReady.message
+      if (tasteReady.ok) {
+        try {
+          taste = await syncLibraryTaste(userId)
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Error sync perfil'
+          console.warn('Sync me gusta/playlists', e)
+          tasteError =
+            /relation|does not exist|schema cache|library_likes|library_playlists|PGRST205/i.test(
+              msg,
+            )
+              ? TASTE_SQL_HINT
+              : msg
+        }
       }
       const cloudCount = await getCloudCatalogCount(userId)
       const peer = await getDevicePeer(userId)
@@ -521,29 +528,29 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       const localCount = get().tracks.filter((t) => t.hasLocalAudio !== false).length
       const likedCount = get().tracks.filter((t) => t.liked).length
       const playlistCount = get().playlists.length
+      const message =
+        (tasteError ? `⚠ ${tasteError}` : '') +
+        (tasteError ? ' · ' : '') +
+        `Local: ${localCount} · Nube: ${cloudCount}` +
+        ` · Me gusta: ${likedCount} · Listas: ${playlistCount}` +
+        (pushed ? ` · Subidas ahora: ${pushed}` : '') +
+        (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
+        (taste.likesIn || taste.playlistsIn
+          ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`
+          : '') +
+        (taste.likesOut || taste.playlistsOut
+          ? ` · Perfil ↑ likes ${taste.likesOut} / listas ${taste.playlistsOut}`
+          : '') +
+        (deduped ? ` · Duplicados quitados: ${deduped}` : '') +
+        (pruned ? ` · Nube limpia: −${pruned}` : '')
       set({
         pcOnline: Boolean(peer && age < 3 * 60 * 1000),
         lastSyncAt: Date.now(),
-        lastSyncMessage:
-          `Local: ${localCount} · Nube: ${cloudCount}` +
-          ` · Me gusta: ${likedCount} · Listas: ${playlistCount}` +
-          (pushed ? ` · Subidas ahora: ${pushed}` : '') +
-          (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
-          (taste.likesIn || taste.playlistsIn
-            ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`
-            : '') +
-          (taste.likesOut || taste.playlistsOut
-            ? ` · Perfil ↑ likes ${taste.likesOut} / listas ${taste.playlistsOut}`
-            : '') +
-          (tasteError || '') +
-          (deduped ? ` · Duplicados quitados: ${deduped}` : '') +
-          (pruned ? ` · Nube limpia: −${pruned}` : '') +
-          (localCount === 0 && cloudCount === 0
-            ? ' · Biblioteca vacía (PC y nube)'
-            : localCount === 0 && cloudCount > 0
-              ? ' · En el PC pulsa Actualizar para vaciar la nube, o importa música'
-              : ''),
+        lastSyncMessage: message,
       })
+      if (tasteError) {
+        throw new Error(tasteError)
+      }
       return { pushed, pulled }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Error de sincronización'

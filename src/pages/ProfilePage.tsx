@@ -27,8 +27,23 @@ import {
   type SharedPlaylistCard,
 } from '../lib/friends'
 import { computeListenStats, formatListenMinutes } from '../lib/listenStats'
+import { checkTasteTablesReady, TASTE_SQL_HINT } from '../lib/cloudLibrary'
+import { TASTE_SYNC_SQL } from '../lib/tasteSyncSql'
 import './pages.css'
 import '../components/TrackList.css'
+
+function supabaseSqlEditorUrl(): string | null {
+  const raw = import.meta.env.VITE_SUPABASE_URL as string | undefined
+  if (!raw) return null
+  try {
+    const host = new URL(raw).hostname // xxx.supabase.co
+    const ref = host.split('.')[0]
+    if (!ref) return null
+    return `https://supabase.com/dashboard/project/${ref}/sql/new`
+  } catch {
+    return null
+  }
+}
 
 export function ProfilePage() {
   const user = useAuthStore((s) => s.user)
@@ -69,25 +84,37 @@ export function ProfilePage() {
   const [shareFriendId, setShareFriendId] = useState('')
   const [sharePlaylistId, setSharePlaylistId] = useState('')
   const [syncing, setSyncing] = useState(false)
+  const [tasteReady, setTasteReady] = useState<boolean | null>(null)
 
   const stats = useMemo(() => computeListenStats(tracks), [tracks])
   const isHost = isLibraryHostDevice()
   const canHost = isLibraryHostCapable()
   const cloud = isCloudAuthEnabled()
+  const sqlEditorUrl = supabaseSqlEditorUrl()
 
   async function refreshProfileExtras() {
     if (!user) return
     try {
-      const [devs, code, circle, shares] = await Promise.all([
+      const [devs, code, circle, shares, taste] = await Promise.all([
         listDevices(user.id),
         ensureInviteCode(user.id).catch(() => ''),
         listCircle(user.id).catch(() => [] as CircleFriend[]),
         listSharedPlaylists(user.id).catch(() => [] as SharedPlaylistCard[]),
+        checkTasteTablesReady().catch(() => ({
+          ok: false,
+          likes: false,
+          playlists: false,
+          message: TASTE_SQL_HINT,
+        })),
       ])
       setDevices(devs)
       setInviteCode(code)
       setFriends(circle)
       setShared(shares)
+      setTasteReady(taste.ok)
+      if (!taste.ok && taste.message) {
+        setLocalError(taste.message)
+      }
     } catch (e) {
       console.warn('Perfil extras', e)
     }
@@ -261,12 +288,20 @@ export function ProfilePage() {
             onClick={() => {
               setSyncing(true)
               setLocalError(null)
+              setOkMsg(null)
               void syncCloudCatalog()
                 .then(() => {
-                  setOkMsg('Catálogo actualizado')
+                  setOkMsg('Me gusta, playlists y catálogo sincronizados')
+                  setTasteReady(true)
                   void refreshProfileExtras()
                 })
-                .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error al sincronizar'))
+                .catch((e) => {
+                  const msg = e instanceof Error ? e.message : 'Error al sincronizar'
+                  setLocalError(msg)
+                  if (/library_likes|library_playlists|taste-sync|Faltan las tablas/i.test(msg)) {
+                    setTasteReady(false)
+                  }
+                })
                 .finally(() => setSyncing(false))
             }}
           >
@@ -277,14 +312,52 @@ export function ProfilePage() {
           <p className="profile-card__hint">Supabase no configurado — todo es local en este dispositivo.</p>
         ) : (
           <>
-            <p className="profile-card__hint">
-              Me gusta y playlists se guardan solos en tu cuenta al tocarlos (PC y móvil).
-              «Actualizar» solo fuerza el catálogo de canciones.
-            </p>
+            {tasteReady === false ? (
+              <div className="profile-card__alert" role="alert">
+                <p>
+                  <strong>Me gusta y playlists no pueden sincronizarse:</strong> faltan tablas en
+                  Supabase.
+                </p>
+                <ol>
+                  <li>
+                    Abre el{' '}
+                    {sqlEditorUrl ? (
+                      <a href={sqlEditorUrl} target="_blank" rel="noreferrer">
+                        SQL Editor de Supabase
+                      </a>
+                    ) : (
+                      'SQL Editor de Supabase'
+                    )}
+                  </li>
+                  <li>
+                    Pega el SQL de me gusta/playlists y pulsa <strong>Run</strong>
+                  </li>
+                  <li>Vuelve aquí y pulsa «Actualizar ahora»</li>
+                </ol>
+                <button
+                  type="button"
+                  className="chip"
+                  style={{ marginTop: 10 }}
+                  onClick={() => {
+                    void navigator.clipboard
+                      ?.writeText(TASTE_SYNC_SQL)
+                      .then(() => setOkMsg('SQL copiado. Pégalo en Supabase → Run'))
+                      .catch(() => setLocalError('No se pudo copiar; abre supabase/taste-sync.sql'))
+                  }}
+                >
+                  Copiar SQL
+                </button>
+              </div>
+            ) : (
+              <p className="profile-card__hint">
+                Me gusta y playlists se guardan solos en tu cuenta al tocarlos (PC y móvil).
+              </p>
+            )}
             <p className="profile-card__meta">
               Última sync:{' '}
               {lastSyncAt ? formatLastSeen(lastSyncAt) : 'aún no'}
               {pcOnline != null ? ` · PC host ${pcOnline ? 'en línea' : 'offline'}` : ''}
+              {tasteReady === true ? ' · Perfil OK' : tasteReady === false ? ' · Perfil incompleto' : ''}
             </p>
             {lastSyncMessage ? <p className="profile-card__hint">{lastSyncMessage}</p> : null}
           </>

@@ -477,6 +477,58 @@ export async function getCloudCatalogCount(userId: string): Promise<number> {
   return count ?? 0
 }
 
+/** Mensaje cuando faltan las tablas de me gusta / playlists en Supabase. */
+export const TASTE_SQL_HINT =
+  'Faltan las tablas library_likes y library_playlists en Supabase. Abre SQL Editor, pega el archivo supabase/taste-sync.sql y ejecútalo. Luego vuelve a sincronizar.'
+
+/**
+ * Comprueba si me gusta / playlists pueden sincronizarse.
+ * (En tu proyecto a menudo existe library_tracks pero aún no estas tablas.)
+ */
+export async function checkTasteTablesReady(): Promise<{
+  ok: boolean
+  likes: boolean
+  playlists: boolean
+  message: string | null
+}> {
+  if (!isCloudAuthEnabled()) {
+    return { ok: false, likes: false, playlists: false, message: 'Supabase no configurado' }
+  }
+  const supabase = getSupabase()
+  const [likesRes, playlistsRes] = await Promise.all([
+    supabase.from('library_likes').select('local_id').limit(1),
+    supabase.from('library_playlists').select('local_id').limit(1),
+  ])
+  const missing = (err: { message?: string; code?: string } | null) => {
+    if (!err) return false
+    const m = `${err.code || ''} ${err.message || ''}`
+    return /PGRST205|42P01|does not exist|schema cache|Could not find the table/i.test(m)
+  }
+  const likesOk = !missing(likesRes.error)
+  const playlistsOk = !missing(playlistsRes.error)
+  // Otros errores (RLS/JWT) no cuentan como tabla ausente
+  if (likesRes.error && !missing(likesRes.error)) {
+    return {
+      ok: false,
+      likes: false,
+      playlists: playlistsOk,
+      message: likesRes.error.message,
+    }
+  }
+  if (playlistsRes.error && !missing(playlistsRes.error)) {
+    return {
+      ok: false,
+      likes: likesOk,
+      playlists: false,
+      message: playlistsRes.error.message,
+    }
+  }
+  if (!likesOk || !playlistsOk) {
+    return { ok: false, likes: likesOk, playlists: playlistsOk, message: TASTE_SQL_HINT }
+  }
+  return { ok: true, likes: true, playlists: true, message: null }
+}
+
 type CloudPlaylistRow = {
   local_id: string
   name: string
