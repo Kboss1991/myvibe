@@ -85,7 +85,7 @@ interface PlayerState {
   getCurrentPodcastShow: () => PodcastShow | null
 }
 
-let persistTimer: ReturnType<typeof setTimeout> | null = null
+let persistTimer: number | null = null
 let endedUnsub: (() => void) | null = null
 let engineUnsub: (() => void) | null = null
 let interruptionUnsub: (() => void) | null = null
@@ -100,7 +100,7 @@ let interruptionResumeUntil = 0
 let podcastEpisodeQueue: string[] = []
 let podcastPlayEpoch = 0
 let lastPodcastProgressSave = 0
-let radioDelayTimer: ReturnType<typeof setTimeout> | null = null
+let radioDelayTimer: number | null = null
 let nearEndPollTimer: number | null = null
 let lastNearEndTickAt = 0
 
