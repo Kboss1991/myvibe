@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
 import { TrackColumnsHead } from '../components/TrackColumnsHead'
 import { CoverArt } from '../components/CoverArt'
+import { PlaylistBuilderSheet } from '../components/PlaylistBuilderSheet'
 import {
   IconPlus,
   IconPlay,
@@ -25,12 +26,10 @@ type Tab = 'songs' | 'playlists' | 'artists' | 'albums' | 'genres'
 export function LibraryPage() {
   const [tab, setTab] = useState<Tab>('songs')
   const [creating, setCreating] = useState(false)
-  const [name, setName] = useState('')
   const [genreFilter, setGenreFilter] = useState<string | null>(null)
   const [selectMode, setSelectMode] = useState(false)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
-  const createPlaylist = useLibraryStore((s) => s.createPlaylist)
   const deletePlaylist = useLibraryStore((s) => s.deletePlaylist)
   const enrichMissingCovers = useLibraryStore((s) => s.enrichMissingCovers)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
@@ -411,33 +410,7 @@ export function LibraryPage() {
       )}
 
       {creating && (
-        <div className="sheet">
-          <button type="button" className="sheet-backdrop" onClick={() => setCreating(false)} />
-          <div className="sheet__panel">
-            <h3>Nueva playlist</h3>
-            <label className="field">
-              Nombre
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Mi playlist"
-                autoFocus
-              />
-            </label>
-            <button
-              type="button"
-              className="btn-primary"
-              onClick={async () => {
-                await createPlaylist(name || 'Nueva playlist')
-                setName('')
-                setCreating(false)
-                setTab('playlists')
-              }}
-            >
-              Crear
-            </button>
-          </div>
-        </div>
+        <PlaylistBuilderSheet playlistId={null} onClose={() => setCreating(false)} />
       )}
     </div>
   )

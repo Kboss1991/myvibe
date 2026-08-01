@@ -350,10 +350,17 @@
 
 .bulk-bar {
   position: sticky;
-  bottom: 8px;
-  z-index: 40;
+  bottom: calc(12px + var(--safe-bottom, 0px));
+  z-index: 50;
   margin-top: 12px;
   padding-bottom: 4px;
+}
+
+@media (max-width: 899px) {
+  .bulk-bar {
+    /* Encima del mini reproductor + nav */
+    bottom: calc(var(--player-h, 96px) + var(--nav-h, 56px) + 8px);
+  }
 }
 
 .bulk-bar__inner {

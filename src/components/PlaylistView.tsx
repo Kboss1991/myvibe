@@ -7,6 +7,7 @@ import { usePlayerStore } from '../store/playerStore'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { CoverArt } from './CoverArt'
 import { CoverCropSheet } from './CoverCropSheet'
+import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
 import { UserAvatar } from './UserAvatar'
 import {
   IconPlay,
@@ -99,6 +100,7 @@ export function PlaylistView({
   const [sortOpen, setSortOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
+  const [builderOpen, setBuilderOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [editName, setEditName] = useState(title)
   const [editDesc, setEditDesc] = useState(description)
@@ -479,6 +481,11 @@ export function PlaylistView({
       </div>
 
       <div className="sp-secondary">
+        {onAddTracks && playlistId && (
+          <button type="button" className="sp-pill" onClick={() => setBuilderOpen(true)}>
+            <IconEdit size={16} /> Editar lista
+          </button>
+        )}
         {onAddTracks && (
           <button type="button" className="sp-pill" onClick={() => setAddOpen(true)}>
             <IconPlus size={16} /> Añadir
@@ -574,6 +581,10 @@ export function PlaylistView({
           </ul>
         )}
       </div>
+
+      {builderOpen && playlistId && onAddTracks && (
+        <PlaylistBuilderSheet playlistId={playlistId} onClose={() => setBuilderOpen(false)} />
+      )}
 
       {editOpen && onEditInfo && (
         <div className="sheet">

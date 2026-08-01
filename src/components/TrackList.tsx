@@ -604,7 +604,7 @@ export function TrackList({
               disabled={bulkBusy}
               onClick={() => setPlaylistPickIds([...selected])}
             >
-              <IconPlus size={18} /> Playlist
+              <IconPlus size={18} /> Añadir a lista
             </button>
             <button
               type="button"
@@ -896,10 +896,12 @@ export function TrackList({
           <div className="sheet__panel">
             <h3>
               Añadir {playlistPickIds.length} canción
-              {playlistPickIds.length === 1 ? '' : 'es'} a playlist
+              {playlistPickIds.length === 1 ? '' : 'es'} a una lista
             </h3>
             {playlists.length === 0 ? (
-              <p className="empty-state__hint">Crea una playlist en Tu biblioteca</p>
+              <p className="empty-state__hint">
+                Aún no tienes listas. Crea una con el + en Tu biblioteca.
+              </p>
             ) : (
               playlists.map((p) => (
                 <button
@@ -913,7 +915,10 @@ export function TrackList({
                     })
                   }}
                 >
-                  {p.name}
+                  <span>{p.name}</span>
+                  <span style={{ color: '#b3b3b3', marginLeft: 'auto', fontSize: '0.8rem' }}>
+                    {p.trackIds.length}
+                  </span>
                 </button>
               ))
             )}

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, NavLink } from 'react-router-dom'
 import {
   IconHeart,
@@ -12,6 +13,7 @@ import {
 import { AppIcon } from './AppIcon'
 import { BrandWordmark } from './BrandWordmark'
 import { CoverArt } from './CoverArt'
+import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
 import { UserAvatar } from './UserAvatar'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
@@ -30,8 +32,8 @@ export function Sidebar() {
   const user = useAuthStore((s) => s.user)
   const playlists = useLibraryStore((s) => s.playlists)
   const getLiked = useLibraryStore((s) => s.getLiked)
-  const createPlaylist = useLibraryStore((s) => s.createPlaylist)
   const liked = getLiked()
+  const [creating, setCreating] = useState(false)
 
   return (
     <aside className="sidebar">
@@ -62,10 +64,7 @@ export function Sidebar() {
             className="sidebar__add"
             aria-label="Nueva playlist"
             title="Crear playlist"
-            onClick={() => {
-              const name = prompt('Nombre de la playlist')
-              if (name?.trim()) void createPlaylist(name.trim())
-            }}
+            onClick={() => setCreating(true)}
           >
             <IconPlus size={18} />
           </button>
@@ -129,6 +128,10 @@ export function Sidebar() {
           <small>Perfil</small>
         </span>
       </NavLink>
+
+      {creating && (
+        <PlaylistBuilderSheet playlistId={null} onClose={() => setCreating(false)} />
+      )}
     </aside>
   )
 }
