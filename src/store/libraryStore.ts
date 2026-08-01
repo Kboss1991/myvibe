@@ -9,11 +9,13 @@ import {
   getDevicePeer,
   pruneCloudDuplicateTracks,
   pullLibraryCatalog,
+  pullLibraryTaste,
   pushLibraryMetadata,
   pushLibraryLikes,
   pushLibraryPlaylists,
   removeCloudPlaylist,
   removeCloudTracks,
+  subscribeLibraryTaste,
   syncLibraryTaste,
 } from '../lib/cloudLibrary'
 import { isLibraryHostDevice } from '../lib/devices'
@@ -21,18 +23,48 @@ import { downloadTracksFromPc } from '../lib/libraryHost'
 import { useAuthStore } from './authStore'
 
 let tasteSyncTimer: number | null = null
+let tastePullTimer: number | null = null
+let tasteRealtimeStop: (() => void) | null = null
 
-function scheduleTasteSync() {
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (e) {
+      last = e
+      await new Promise((r) => window.setTimeout(r, 350 * (i + 1)))
+    }
+  }
+  throw last
+}
+
+/** Tras una acción local: fusionar con la nube en breve (sin botón). */
+function scheduleTasteSync(delayMs = 450) {
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
   if (tasteSyncTimer != null) window.clearTimeout(tasteSyncTimer)
   tasteSyncTimer = window.setTimeout(() => {
     tasteSyncTimer = null
-    void syncLibraryTaste(userId).catch((e) => {
+    void withRetry(() => syncLibraryTaste(userId)).catch((e) => {
       console.warn('Sync me gusta/playlists', e)
     })
-  }, 800)
+  }, delayMs)
+}
+
+/** Solo bajar (p. ej. cambio remoto en tiempo real). */
+function scheduleTastePull(delayMs = 200) {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  if (tastePullTimer != null) window.clearTimeout(tastePullTimer)
+  tastePullTimer = window.setTimeout(() => {
+    tastePullTimer = null
+    void withRetry(() => pullLibraryTaste(userId)).catch((e) => {
+      console.warn('Pull me gusta/playlists', e)
+    })
+  }, delayMs)
 }
 
 async function pushLikeNow(trackId: string) {
@@ -40,10 +72,10 @@ async function pushLikeNow(trackId: string) {
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
   try {
-    await pushLibraryLikes(userId, trackId)
+    await withRetry(() => pushLibraryLikes(userId, trackId))
   } catch (e) {
     console.warn('Push like', e)
-    scheduleTasteSync()
+    scheduleTasteSync(600)
   }
 }
 
@@ -52,10 +84,43 @@ async function pushPlaylistNow(playlistId?: string) {
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
   try {
-    await pushLibraryPlaylists(userId, playlistId)
+    await withRetry(() => pushLibraryPlaylists(userId, playlistId))
   } catch (e) {
     console.warn('Push playlist', e)
-    scheduleTasteSync()
+    scheduleTasteSync(600)
+  }
+}
+
+async function deletePlaylistNow(playlistId: string) {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  try {
+    await withRetry(() => removeCloudPlaylist(userId, playlistId))
+  } catch (e) {
+    console.warn('Delete cloud playlist', e)
+    scheduleTasteSync(600)
+  }
+}
+
+/** Arranca sync automático de me gusta/listas (realtime + pull periódico). */
+export function startLibraryTasteAutoSync(userId: string): () => void {
+  if (!isCloudAuthEnabled()) return () => undefined
+  tasteRealtimeStop?.()
+  tasteRealtimeStop = subscribeLibraryTaste(userId, () => scheduleTastePull(150))
+
+  // Por si Realtime no está activo en el proyecto
+  const poll = window.setInterval(() => scheduleTastePull(0), 12_000)
+  scheduleTastePull(0)
+
+  return () => {
+    tasteRealtimeStop?.()
+    tasteRealtimeStop = null
+    window.clearInterval(poll)
+    if (tastePullTimer != null) {
+      window.clearTimeout(tastePullTimer)
+      tastePullTimer = null
+    }
   }
 }
 
@@ -582,47 +647,52 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
   toggleLike: async (id) => {
     await library.toggleLike(id)
-    void pushLikeNow(id)
+    await pushLikeNow(id)
   },
   setLiked: async (ids, liked) => {
     await library.setTracksLiked(ids, liked)
-    scheduleTasteSync()
+    const userId = useAuthStore.getState().user?.id
+    if (userId && isCloudAuthEnabled()) {
+      try {
+        await withRetry(() => pushLibraryLikes(userId))
+      } catch (e) {
+        console.warn('Push likes', e)
+        scheduleTasteSync(400)
+      }
+    }
   },
   createPlaylist: async (name) => {
     const p = await library.createPlaylist(name)
-    void pushPlaylistNow(p.id)
+    await pushPlaylistNow(p.id)
     return p
   },
   renamePlaylist: async (id, name) => {
     await library.renamePlaylist(id, name)
-    void pushPlaylistNow(id)
+    await pushPlaylistNow(id)
   },
   updatePlaylistInfo: async (id, patch) => {
     await library.updatePlaylistInfo(id, patch)
-    void pushPlaylistNow(id)
+    await pushPlaylistNow(id)
   },
   setPlaylistCover: async (id, file) => {
     await library.setPlaylistCover(id, file)
-    void pushPlaylistNow(id)
+    await pushPlaylistNow(id)
   },
   deletePlaylist: async (id) => {
     await library.deletePlaylist(id)
-    const userId = useAuthStore.getState().user?.id
-    if (userId && isCloudAuthEnabled()) {
-      void removeCloudPlaylist(userId, id).catch((e) => console.warn('Delete cloud playlist', e))
-    }
+    await deletePlaylistNow(id)
   },
   addToPlaylist: async (playlistId, trackIds) => {
     await library.addTracksToPlaylist(playlistId, trackIds)
-    void pushPlaylistNow(playlistId)
+    await pushPlaylistNow(playlistId)
   },
   removeFromPlaylist: async (playlistId, trackId) => {
     await library.removeTrackFromPlaylist(playlistId, trackId)
-    void pushPlaylistNow(playlistId)
+    await pushPlaylistNow(playlistId)
   },
   reorderPlaylistTracks: async (playlistId, trackIds) => {
     await library.reorderPlaylistTracks(playlistId, trackIds)
-    void pushPlaylistNow(playlistId)
+    await pushPlaylistNow(playlistId)
   },
 
   getLiked: () => get().tracks.filter((t) => t.liked),

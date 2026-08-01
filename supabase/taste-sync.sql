@@ -66,3 +66,16 @@ create policy "library_playlists_update_own"
   on public.library_playlists for update using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "library_playlists_delete_own"
   on public.library_playlists for delete using (auth.uid() = user_id);
+
+-- Tiempo real PC ↔ móvil (me gusta / playlists sin pulsar Actualizar)
+do $$
+begin
+  alter publication supabase_realtime add table public.library_likes;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.library_playlists;
+exception when duplicate_object then null;
+end $$;

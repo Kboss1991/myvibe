@@ -995,6 +995,19 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
   return applied
 }
 
+/** Solo baja me gusta + playlists (sin subir). */
+export async function pullLibraryTaste(userId: string): Promise<{
+  likesIn: number
+  playlistsIn: number
+}> {
+  await consolidateCloudLikes(userId).catch((e) =>
+    console.warn('Consolidate likes', e),
+  )
+  const likesIn = await pullLibraryLikes(userId)
+  const playlistsIn = await pullLibraryPlaylists(userId)
+  return { likesIn, playlistsIn }
+}
+
 /** Sync completo de me gusta + playlists (perfil). Baja primero, luego sube. */
 export async function syncLibraryTaste(userId: string): Promise<{
   likesIn: number
@@ -1013,4 +1026,56 @@ export async function syncLibraryTaste(userId: string): Promise<{
   const likesOut = await pushLibraryLikes(userId)
   const playlistsOut = await pushLibraryPlaylists(userId)
   return { likesIn, likesOut, playlistsIn, playlistsOut }
+}
+
+/**
+ * Escucha cambios de me gusta / playlists en la nube y avisa para bajarlos.
+ * Requiere Realtime en esas tablas (ver library.sql / taste-sync.sql).
+ */
+export function subscribeLibraryTaste(
+  userId: string,
+  onRemoteChange: () => void,
+): () => void {
+  if (!isCloudAuthEnabled()) return () => undefined
+  const supabase = getSupabase()
+  let timer: number | null = null
+  const notify = () => {
+    if (timer != null) window.clearTimeout(timer)
+    timer = window.setTimeout(() => {
+      timer = null
+      onRemoteChange()
+    }, 250)
+  }
+  const channel = supabase
+    .channel(`library-taste:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'library_likes',
+        filter: `user_id=eq.${userId}`,
+      },
+      notify,
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'library_playlists',
+        filter: `user_id=eq.${userId}`,
+      },
+      notify,
+    )
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('Realtime me gusta/playlists no disponible; se usará sync periódico')
+      }
+    })
+
+  return () => {
+    if (timer != null) window.clearTimeout(timer)
+    void supabase.removeChannel(channel)
+  }
 }

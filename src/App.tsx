@@ -21,7 +21,7 @@ import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
 import { useAuthStore } from './store/authStore'
-import { useLibraryStore } from './store/libraryStore'
+import { startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
 import { usePlayerStore } from './store/playerStore'
 import './App.css'
 
@@ -99,6 +99,7 @@ export default function App() {
     let hostStop: (() => void) | null = null
     let syncTimer: number | undefined
     let deviceTimer: number | undefined
+    let stopTasteAuto: (() => void) | null = null
 
     const runSync = () => {
       void syncCloudCatalog().catch((e) => console.warn('Sync catálogo', e))
@@ -124,6 +125,8 @@ export default function App() {
       if (stopped) return
       await runDevice()
       if (stopped) return
+      // Me gusta / playlists: push al instante en cada acción + realtime/poll
+      stopTasteAuto = startLibraryTasteAutoSync(user.id)
       runSync()
       if (stopped) return
 
@@ -153,6 +156,7 @@ export default function App() {
       if (deviceTimer) window.clearInterval(deviceTimer)
       document.removeEventListener('visibilitychange', onVis)
       window.removeEventListener('focus', runSync)
+      stopTasteAuto?.()
       hostStop?.()
     }
   }, [user, syncCloudCatalog])

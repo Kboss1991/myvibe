@@ -278,7 +278,8 @@ export function ProfilePage() {
         ) : (
           <>
             <p className="profile-card__hint">
-              Me gusta y playlists van con tu cuenta (PC y móvil). El audio sigue en cada dispositivo.
+              Me gusta y playlists se guardan solos en tu cuenta al tocarlos (PC y móvil).
+              «Actualizar» solo fuerza el catálogo de canciones.
             </p>
             <p className="profile-card__meta">
               Última sync:{' '}
