@@ -124,6 +124,7 @@ interface LibraryState {
   deletePlaylist: (id: string) => Promise<void>
   addToPlaylist: (playlistId: string, trackIds: string[]) => Promise<void>
   removeFromPlaylist: (playlistId: string, trackId: string) => Promise<void>
+  reorderPlaylistTracks: (playlistId: string, trackIds: string[]) => Promise<void>
   getLiked: () => Track[]
   getRecent: () => Track[]
   search: (q: string) => Track[]
@@ -602,6 +603,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
   removeFromPlaylist: async (playlistId, trackId) => {
     await library.removeTrackFromPlaylist(playlistId, trackId)
+    void pushPlaylistNow(playlistId)
+  },
+  reorderPlaylistTracks: async (playlistId, trackIds) => {
+    await library.reorderPlaylistTracks(playlistId, trackIds)
     void pushPlaylistNow(playlistId)
   },
 

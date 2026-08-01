@@ -14,6 +14,7 @@ export function PlaylistDetailPage() {
   const deletePlaylist = useLibraryStore((s) => s.deletePlaylist)
   const addToPlaylist = useLibraryStore((s) => s.addToPlaylist)
   const removeFromPlaylist = useLibraryStore((s) => s.removeFromPlaylist)
+  const reorderPlaylistTracks = useLibraryStore((s) => s.reorderPlaylistTracks)
   const sharePlaylist = useLibraryStore((s) => s.sharePlaylist)
 
   const playlist = playlists.find((p) => p.id === id)
@@ -60,6 +61,9 @@ export function PlaylistDetailPage() {
         }}
         onRemoveTrack={async (trackId) => {
           await removeFromPlaylist(playlist.id, trackId)
+        }}
+        onReorderTracks={async (trackIds) => {
+          await reorderPlaylistTracks(playlist.id, trackIds)
         }}
         onShare={async () => {
           const mode = await sharePlaylist(playlist.id)

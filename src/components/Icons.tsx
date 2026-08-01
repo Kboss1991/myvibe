@@ -160,6 +160,14 @@ export function IconClose(p: IconProps) {
   )
 }
 
+export function IconGrip(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M8 6h.01M8 12h.01M8 18h.01M16 6h.01M16 12h.01M16 18h.01" strokeWidth="2.6" />
+    </svg>
+  )
+}
+
 export function IconCheck(p: IconProps) {
   return (
     <svg {...base(p)}>
