@@ -232,7 +232,9 @@ export function PlayerBar() {
             <button
               type="button"
               className={`icon-btn player-bar__ctrl ${shuffle ? 'is-on' : ''}`}
-              aria-label="Aleatorio"
+              aria-label={shuffle ? 'Desactivar orden aleatorio' : 'Activar orden aleatorio'}
+              aria-pressed={shuffle}
+              title={shuffle ? 'Aleatorio: sí' : 'Aleatorio: no'}
               onClick={() => toggleShuffle()}
             >
               <IconShuffle size={16} />
@@ -621,7 +623,9 @@ export function NowPlaying() {
         <button
           type="button"
           className={`icon-btn ${shuffle ? 'is-on' : ''}`}
-          aria-label="Aleatorio"
+          aria-label={shuffle ? 'Desactivar orden aleatorio' : 'Activar orden aleatorio'}
+          aria-pressed={shuffle}
+          title={shuffle ? 'Aleatorio: sí' : 'Aleatorio: no'}
           onClick={() => toggleShuffle()}
         >
           <IconShuffle size={22} />

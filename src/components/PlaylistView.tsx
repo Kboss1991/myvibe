@@ -78,6 +78,8 @@ export function PlaylistView({
   const user = useAuthStore((s) => s.user)
   const playTracks = usePlayerStore((s) => s.playTracks)
   const addToQueue = usePlayerStore((s) => s.addToQueue)
+  const shuffle = usePlayerStore((s) => s.shuffle)
+  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const [sharing, setSharing] = useState(false)
@@ -234,7 +236,18 @@ export function PlaylistView({
 
           <div className="sp-hero__meta">
             <p className="sp-hero__type">Lista</p>
-            <h1 className="sp-hero__title">{title}</h1>
+            <div className="sp-hero__title-row">
+              <h1 className="sp-hero__title">{title}</h1>
+              <button
+                type="button"
+                className="sp-play"
+                disabled={!tracks.length}
+                aria-label="Reproducir"
+                onClick={() => void playTracks(ids)}
+              >
+                <IconPlay size={22} />
+              </button>
+            </div>
             <p className="sp-hero__stats">
               <span className="sp-hero__owner">
                 <UserAvatar user={user} size={22} className="sp-hero__avatar" />
@@ -271,28 +284,13 @@ export function PlaylistView({
         )}
         <button
           type="button"
-          className="sp-pill sp-pill--icon"
-          disabled={!tracks.length}
-          aria-label="Orden aleatorio"
-          title="Orden aleatorio"
-          onClick={() =>
-            void playTracks(
-              tracks.map((t) => t.id),
-              undefined,
-              { shuffle: true },
-            )
-          }
+          className={`sp-pill sp-pill--icon ${shuffle ? 'is-on' : ''}`}
+          aria-label={shuffle ? 'Desactivar orden aleatorio' : 'Activar orden aleatorio'}
+          title={shuffle ? 'Aleatorio: sí' : 'Aleatorio: no'}
+          aria-pressed={shuffle}
+          onClick={() => toggleShuffle()}
         >
           <IconShuffle size={18} />
-        </button>
-        <button
-          type="button"
-          className="sp-play"
-          disabled={!tracks.length}
-          aria-label="Reproducir"
-          onClick={() => void playTracks(ids, undefined, { shuffle: false })}
-        >
-          <IconPlay size={22} />
         </button>
 
         <div className="sp-actions__more">

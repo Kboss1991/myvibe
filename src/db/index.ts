@@ -93,7 +93,7 @@ export async function ensurePlaybackSnapshot(): Promise<PlaybackSnapshot> {
     currentTrackId: null,
     queue: [],
     index: 0,
-    shuffle: false,
+    shuffle: true,
     repeat: 'off',
     position: 0,
     volume: 1,

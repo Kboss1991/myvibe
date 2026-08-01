@@ -105,11 +105,21 @@
 }
 
 .player-bar__ctrl {
-  color: var(--text-muted);
+  color: #b3b3b3;
 }
 
 .player-bar__ctrl.is-on {
   color: var(--accent);
+}
+
+.player-bar__ctrl:hover,
+.player-bar__ctrl:active {
+  color: #fff;
+}
+
+.player-bar__ctrl.is-on:hover,
+.player-bar__ctrl.is-on:active {
+  color: var(--accent-hover);
 }
 
 .player-bar__skip {
@@ -695,8 +705,18 @@
   color: var(--accent);
 }
 
-.transport .icon-btn:hover:not(.is-on) {
-  color: var(--brand-amber-bright);
+.transport .icon-btn {
+  color: #b3b3b3;
+}
+
+.transport .icon-btn:hover:not(.is-on),
+.transport .icon-btn:active:not(.is-on) {
+  color: #fff;
+}
+
+.transport .icon-btn.is-on:hover,
+.transport .icon-btn.is-on:active {
+  color: var(--accent-hover);
 }
 
 .volume-row {

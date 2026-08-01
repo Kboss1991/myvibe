@@ -590,7 +590,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   radioDelay: audioEngine.radioDelay,
   radioPauseStartedAt: null,
   isPlaying: false,
-  shuffle: false,
+  shuffle: true,
   repeat: 'off',
   position: 0,
   duration: 0,
@@ -610,7 +610,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       originalQueue: snap.queue,
       index: snap.index,
       currentTrackId: snap.currentTrackId,
-      shuffle: snap.shuffle,
+      // Aleatorio ON por defecto en toda la app
+      shuffle: true,
       // Migrar estado antiguo 'one' → 'all'
       repeat: snap.repeat === 'all' || (snap.repeat as string) === 'one' ? 'all' : 'off',
       position: snap.position,
@@ -852,19 +853,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     audioEngine.clearStandby()
     prefetchedNextId = null
     const q = queue ?? get().queue
-    const nextQueue = q.includes(trackId) ? q : [...q, trackId]
-    const index = Math.max(0, nextQueue.indexOf(trackId))
+    let nextQueue = q.includes(trackId) ? [...q] : [...q, trackId]
+    let index = Math.max(0, nextQueue.indexOf(trackId))
+    const originalQueue = [...nextQueue]
+    const shuffleOn = get().shuffle
+    if (shuffleOn) {
+      nextQueue = shuffleArray(nextQueue, index >= 0 ? index : undefined)
+      index = 0
+    }
     set({
       queue: nextQueue,
-      originalQueue: nextQueue,
+      originalQueue,
       index,
-      shuffle: false,
+      shuffle: shuffleOn,
     })
     persistSoon({
       queue: nextQueue,
       index,
       currentTrackId: trackId,
-      shuffle: false,
+      shuffle: shuffleOn,
       position: 0,
     })
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
