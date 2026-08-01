@@ -3,7 +3,7 @@ import type { Playlist, Track } from '../types'
 import { isCloudAuthEnabled, getSupabase } from './supabase'
 import { deleteTrack, getAudioBlob } from './library'
 import { isLibraryHostDevice } from './devices'
-import { groupDuplicateTracks, pickCanonicalTrack, trackContentKeys, tracksLookSame } from './trackDedupe'
+import { groupDuplicateTracks, pickCanonicalTrack, trackContentKeys, tracksLookSame, findBestTrackMatch } from './trackDedupe'
 
 export type CloudTrackRow = {
   local_id: string
@@ -549,6 +549,50 @@ async function fetchCloudTrackLite(userId: string): Promise<CloudTrackLite[]> {
 }
 
 /**
+ * Sube metadatos de pistas concretas (sin borrar nada en la nube).
+ * Necesario para que el otro dispositivo pueda resolver me gusta / playlists.
+ */
+export async function pushTracksMetadata(
+  userId: string,
+  trackIds?: string[],
+): Promise<number> {
+  if (!isCloudAuthEnabled()) return 0
+  const supabase = getSupabase()
+  let tracks = await db.tracks.toArray()
+  if (trackIds?.length) {
+    const want = new Set(trackIds)
+    tracks = tracks.filter((t) => want.has(t.id))
+  } else {
+    tracks = tracks.filter((t) => t.hasLocalAudio !== false)
+  }
+  if (!tracks.length) return 0
+
+  const rows = tracks.map((t) => ({
+    user_id: userId,
+    local_id: t.id,
+    title: t.title || '',
+    artist: t.artist || '',
+    album: t.album || '',
+    genre: t.genre || '',
+    year: t.year || '',
+    duration: t.duration || 0,
+    mime_type: t.mimeType || 'audio/mpeg',
+    file_name: t.fileName || `${t.title}.mp3`,
+    updated_at: new Date().toISOString(),
+  }))
+
+  const chunk = 80
+  for (let i = 0; i < rows.length; i += chunk) {
+    const slice = rows.slice(i, i + chunk)
+    const { error } = await supabase.from('library_tracks').upsert(slice, {
+      onConflict: 'user_id,local_id',
+    })
+    if (error) throw new Error(error.message || 'Error al subir metadatos')
+  }
+  return rows.length
+}
+
+/**
  * Reasigna me gusta huérfanos (id de otro dispositivo) al id canónico del catálogo / local.
  */
 async function consolidateCloudLikes(userId: string): Promise<void> {
@@ -619,20 +663,30 @@ async function consolidateCloudLikes(userId: string): Promise<void> {
 /**
  * Sube me gusta al perfil (Supabase).
  * Usa el local_id canónico del catálogo (mismo contenido entre PC y móvil).
- * No pisa filas remotas más recientes (LWW).
+ * @param opts.force Tras un gesto del usuario: siempre sube con timestamp ahora (no LWW remoto).
  */
 export async function pushLibraryLikes(
   userId: string,
   trackId?: string,
+  opts?: { force?: boolean },
 ): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
   const supabase = getSupabase()
+  const force = Boolean(opts?.force)
   const allLocal = await db.tracks.toArray()
   const tracks = trackId
     ? allLocal.filter((t) => t.id === trackId)
     : allLocal
   const cloud = await fetchCloudTrackLite(userId)
   const localIds = new Set(allLocal.map((t) => t.id))
+
+  // Asegurar metadatos en nube para emparejar en el otro dispositivo
+  const metaIds = tracks.map((t) => t.id)
+  if (metaIds.length) {
+    await pushTracksMetadata(userId, metaIds).catch((e) =>
+      console.warn('Meta likes', e),
+    )
+  }
 
   const candidates: Array<{
     user_id: string
@@ -646,12 +700,13 @@ export async function pushLibraryLikes(
     localTs: number
   }> = []
   const staleIds: string[] = []
+  const now = Date.now()
 
   for (const t of tracks) {
     if (!(t.liked || typeof t.likedUpdatedAt === 'number')) continue
     const local_id = pickCloudLocalIdForTrack(t, cloud, localIds)
     if (local_id !== t.id) staleIds.push(t.id)
-    const localTs = t.likedUpdatedAt || t.createdAt || Date.now()
+    const localTs = force ? now : t.likedUpdatedAt || t.createdAt || now
     candidates.push({
       user_id: userId,
       local_id,
@@ -667,29 +722,36 @@ export async function pushLibraryLikes(
 
   if (!candidates.length) return 0
 
-  // No sobrescribir me gusta más nuevos hechos en otro dispositivo
-  const remoteIds = [...new Set(candidates.map((c) => c.local_id))]
-  const remoteById = new Map<string, number>()
-  const chunkMeta = 80
-  for (let i = 0; i < remoteIds.length; i += chunkMeta) {
-    const slice = remoteIds.slice(i, i + chunkMeta)
-    const { data, error } = await supabase
-      .from('library_likes')
-      .select('local_id,updated_at')
-      .eq('user_id', userId)
-      .in('local_id', slice)
-    if (error) {
-      console.warn('Push likes remote check', error.message)
-      break
-    }
-    for (const row of (data || []) as { local_id: string; updated_at: string }[]) {
-      remoteById.set(row.local_id, Date.parse(row.updated_at) || 0)
-    }
-  }
+  let rows = candidates.map(({ localTs: _ts, ...row }) => row)
 
-  const rows = candidates
-    .filter((c) => c.localTs >= (remoteById.get(c.local_id) ?? 0))
-    .map(({ localTs: _ts, ...row }) => row)
+  if (!force) {
+    const remoteIds = [...new Set(candidates.map((c) => c.local_id))]
+    const remoteById = new Map<string, number>()
+    const chunkMeta = 80
+    for (let i = 0; i < remoteIds.length; i += chunkMeta) {
+      const slice = remoteIds.slice(i, i + chunkMeta)
+      const { data, error } = await supabase
+        .from('library_likes')
+        .select('local_id,updated_at')
+        .eq('user_id', userId)
+        .in('local_id', slice)
+      if (error) {
+        if (/relation|does not exist|schema cache/i.test(error.message)) {
+          throw new Error(
+            'Falta la tabla library_likes en Supabase. Ejecuta library.sql / taste-sync.sql',
+          )
+        }
+        console.warn('Push likes remote check', error.message)
+        break
+      }
+      for (const row of (data || []) as { local_id: string; updated_at: string }[]) {
+        remoteById.set(row.local_id, Date.parse(row.updated_at) || 0)
+      }
+    }
+    rows = candidates
+      .filter((c) => c.localTs >= (remoteById.get(c.local_id) ?? 0))
+      .map(({ localTs: _ts, ...row }) => row)
+  }
 
   if (!rows.length) return 0
 
@@ -699,7 +761,6 @@ export async function pushLibraryLikes(
     let { error } = await supabase.from('library_likes').upsert(slice, {
       onConflict: 'user_id,local_id',
     })
-    // Si aún no se ejecutó el ALTER de columnas de contenido, reintentar sin ellas
     if (error && /title|artist|file_name|duration|column|schema/i.test(error.message)) {
       const bare = slice.map(({ user_id, local_id, liked, updated_at }) => ({
         user_id,
@@ -711,10 +772,16 @@ export async function pushLibraryLikes(
         onConflict: 'user_id,local_id',
       }))
     }
-    if (error) throw new Error(error.message || 'Error al sincronizar me gusta')
+    if (error) {
+      if (/relation|does not exist|schema cache/i.test(error.message)) {
+        throw new Error(
+          'Falta la tabla library_likes en Supabase. Ejecuta library.sql / taste-sync.sql',
+        )
+      }
+      throw new Error(error.message || 'Error al sincronizar me gusta')
+    }
   }
 
-  // Quitar likes bajo el id del otro dispositivo si ya están en el canónico
   const kept = new Set(rows.map((r) => r.local_id))
   const toDelete = [...new Set(staleIds)].filter((id) => !kept.has(id))
   if (toDelete.length) {
@@ -756,11 +823,32 @@ export async function pullLibraryLikes(userId: string): Promise<number> {
   const cloud = await fetchCloudTrackLite(userId)
   if (!likes.length) return 0
 
-  const locals = await db.tracks.toArray()
+  let locals = await db.tracks.toArray()
   const likesById = new Map(likes.map((r) => [r.local_id, r]))
   const cloudById = new Map(cloud.map((c) => [c.local_id, c]))
+  const appliedIds = new Set<string>()
 
   let applied = 0
+
+  const applyLike = async (trackId: string, best: CloudLikeRow) => {
+    if (appliedIds.has(trackId)) return
+    const track = locals.find((t) => t.id === trackId)
+    if (!track) return
+    const remoteTs = Date.parse(best.updated_at) || 0
+    const localTs = track.likedUpdatedAt || 0
+    if (remoteTs < localTs) return
+    if (track.liked === best.liked && localTs >= remoteTs) return
+    await db.tracks.update(trackId, {
+      liked: best.liked,
+      likedUpdatedAt: remoteTs,
+    })
+    appliedIds.add(trackId)
+    applied += 1
+    const idx = locals.findIndex((t) => t.id === trackId)
+    if (idx >= 0) {
+      locals[idx] = { ...locals[idx]!, liked: best.liked, likedUpdatedAt: remoteTs }
+    }
+  }
 
   for (const track of locals) {
     const candidateIds = new Set<string>([track.id])
@@ -812,34 +900,56 @@ export async function pullLibraryLikes(userId: string): Promise<number> {
       }
     }
     if (!best) continue
+    await applyLike(track.id, best)
+  }
 
-    const remoteTs = Date.parse(best.updated_at) || 0
-    const localTs = track.likedUpdatedAt || 0
-    if (remoteTs < localTs) continue
-    if (track.liked === best.liked && localTs >= remoteTs) continue
-
-    await db.tracks.update(track.id, {
-      liked: best.liked,
-      likedUpdatedAt: remoteTs,
-    })
-    applied += 1
+  // Pase inverso: cada like remoto → mejor pista local (por si el id no coincide)
+  for (const like of likes) {
+    if (!like.liked) continue
+    const meta = cloudById.get(like.local_id)
+    const probe = {
+      title: meta?.title || like.title || '',
+      artist: meta?.artist || like.artist || '',
+      duration: Number(meta?.duration ?? like.duration) || 0,
+      fileName: meta?.file_name || like.file_name || '',
+    }
+    if (!probe.title && !probe.fileName) {
+      const byId = locals.find((t) => t.id === like.local_id)
+      if (byId) await applyLike(byId.id, like)
+      continue
+    }
+    const match =
+      locals.find((t) => t.id === like.local_id) ||
+      findBestTrackMatch(locals, probe) ||
+      locals.find((t) => tracksLookSame(t, probe))
+    if (match) await applyLike(match.id, like)
   }
 
   return applied
 }
 
-/** Sube playlists del perfil a Supabase (ids canónicos; no pisa listas más nuevas). */
+/** Sube playlists del perfil a Supabase (ids canónicos). */
 export async function pushLibraryPlaylists(
   userId: string,
   playlistId?: string,
+  opts?: { force?: boolean },
 ): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
   const supabase = getSupabase()
+  const force = Boolean(opts?.force)
   const playlists: Playlist[] = playlistId
     ? (([await db.playlists.get(playlistId)].filter(Boolean) as Playlist[]) )
     : await db.playlists.toArray()
 
   if (!playlists.length) return 0
+
+  // Publicar metadatos de las canciones de la lista para que el otro dispositivo las resuelva
+  const allTrackIds = [...new Set(playlists.flatMap((p) => p.trackIds || []))]
+  if (allTrackIds.length) {
+    await pushTracksMetadata(userId, allTrackIds).catch((e) =>
+      console.warn('Meta playlists', e),
+    )
+  }
 
   const [cloud, locals] = await Promise.all([
     fetchCloudTrackLite(userId),
@@ -847,6 +957,7 @@ export async function pushLibraryPlaylists(
   ])
   const localIds = new Set(locals.map((t) => t.id))
   const trackById = new Map(locals.map((t) => [t.id, t]))
+  const now = Date.now()
 
   const candidates = playlists.map((p) => {
     const track_ids = (p.trackIds || []).map((id) => {
@@ -854,7 +965,7 @@ export async function pushLibraryPlaylists(
       if (!track) return id
       return pickCloudLocalIdForTrack(track, cloud, localIds)
     })
-    const updatedAt = p.updatedAt || p.createdAt || Date.now()
+    const updatedAt = force ? now : p.updatedAt || p.createdAt || now
     return {
       user_id: userId,
       local_id: p.id,
@@ -868,29 +979,34 @@ export async function pushLibraryPlaylists(
     }
   })
 
-  const remoteIds = candidates.map((c) => c.local_id)
-  const remoteById = new Map<string, number>()
-  if (remoteIds.length) {
-    const { data, error } = await supabase
-      .from('library_playlists')
-      .select('local_id,updated_at')
-      .eq('user_id', userId)
-      .in('local_id', remoteIds)
-    if (error) {
-      // Tabla ausente u otro error: dejar que el upsert falle con mensaje claro
-      if (!/column|schema|relation|does not exist/i.test(error.message)) {
+  let rows = candidates.map(({ localTs: _ts, ...row }) => row)
+
+  if (!force) {
+    const remoteIds = candidates.map((c) => c.local_id)
+    const remoteById = new Map<string, number>()
+    if (remoteIds.length) {
+      const { data, error } = await supabase
+        .from('library_playlists')
+        .select('local_id,updated_at')
+        .eq('user_id', userId)
+        .in('local_id', remoteIds)
+      if (error) {
+        if (/relation|does not exist|schema cache/i.test(error.message)) {
+          throw new Error(
+            'Falta la tabla library_playlists en Supabase. Ejecuta library.sql / taste-sync.sql',
+          )
+        }
         console.warn('Push playlists remote check', error.message)
-      }
-    } else {
-      for (const row of (data || []) as { local_id: string; updated_at: string }[]) {
-        remoteById.set(row.local_id, Date.parse(row.updated_at) || 0)
+      } else {
+        for (const row of (data || []) as { local_id: string; updated_at: string }[]) {
+          remoteById.set(row.local_id, Date.parse(row.updated_at) || 0)
+        }
       }
     }
+    rows = candidates
+      .filter((c) => c.localTs >= (remoteById.get(c.local_id) ?? 0))
+      .map(({ localTs: _ts, ...row }) => row)
   }
-
-  const rows = candidates
-    .filter((c) => c.localTs >= (remoteById.get(c.local_id) ?? 0))
-    .map(({ localTs: _ts, ...row }) => row)
 
   if (!rows.length) return 0
 
@@ -900,7 +1016,14 @@ export async function pushLibraryPlaylists(
     const { error } = await supabase.from('library_playlists').upsert(slice, {
       onConflict: 'user_id,local_id',
     })
-    if (error) throw new Error(error.message || 'Error al sincronizar playlists')
+    if (error) {
+      if (/relation|does not exist|schema cache/i.test(error.message)) {
+        throw new Error(
+          'Falta la tabla library_playlists en Supabase. Ejecuta library.sql / taste-sync.sql',
+        )
+      }
+      throw new Error(error.message || 'Error al sincronizar playlists')
+    }
   }
 
   const known = readKnownPlaylistIds(userId)
@@ -956,7 +1079,25 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
     const resolvedIds: string[] = []
     for (const id of trackIds) {
       const resolved = resolveLocalTrackId(id, cloud, locals)
-      resolvedIds.push(resolved || id)
+      if (resolved) {
+        resolvedIds.push(resolved)
+        continue
+      }
+      const meta = cloud.find((c) => c.local_id === id)
+      if (meta) {
+        const match = findBestTrackMatch(locals, {
+          title: meta.title,
+          artist: meta.artist,
+          duration: meta.duration,
+          fileName: meta.file_name,
+        })
+        if (match) {
+          resolvedIds.push(match.id)
+          continue
+        }
+      }
+      // Conservar id remoto: tras pull de catálogo puede existir stub
+      resolvedIds.push(id)
     }
 
     if (!existing) {
@@ -1000,6 +1141,8 @@ export async function pullLibraryTaste(userId: string): Promise<{
   likesIn: number
   playlistsIn: number
 }> {
+  // Catálogo primero: stubs para poder resolver ids del móvil en el PC
+  await pullLibraryCatalog(userId).catch((e) => console.warn('Pull catalog (taste)', e))
   await consolidateCloudLikes(userId).catch((e) =>
     console.warn('Consolidate likes', e),
   )

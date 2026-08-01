@@ -72,9 +72,15 @@ async function pushLikeNow(trackId: string) {
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
   try {
-    await withRetry(() => pushLibraryLikes(userId, trackId))
+    await withRetry(() => pushLibraryLikes(userId, trackId, { force: true }))
+    useLibraryStore.setState({
+      lastSyncAt: Date.now(),
+      lastSyncMessage: 'Me gusta guardado en tu cuenta',
+    })
   } catch (e) {
+    const msg = e instanceof Error ? e.message : 'No se pudo guardar el me gusta'
     console.warn('Push like', e)
+    useLibraryStore.setState({ lastSyncMessage: msg })
     scheduleTasteSync(600)
   }
 }
@@ -84,9 +90,15 @@ async function pushPlaylistNow(playlistId?: string) {
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
   try {
-    await withRetry(() => pushLibraryPlaylists(userId, playlistId))
+    await withRetry(() => pushLibraryPlaylists(userId, playlistId, { force: true }))
+    useLibraryStore.setState({
+      lastSyncAt: Date.now(),
+      lastSyncMessage: 'Playlist guardada en tu cuenta',
+    })
   } catch (e) {
+    const msg = e instanceof Error ? e.message : 'No se pudo guardar la playlist'
     console.warn('Push playlist', e)
+    useLibraryStore.setState({ lastSyncMessage: msg })
     scheduleTasteSync(600)
   }
 }
@@ -107,16 +119,41 @@ async function deletePlaylistNow(playlistId: string) {
 export function startLibraryTasteAutoSync(userId: string): () => void {
   if (!isCloudAuthEnabled()) return () => undefined
   tasteRealtimeStop?.()
-  tasteRealtimeStop = subscribeLibraryTaste(userId, () => scheduleTastePull(150))
+  tasteRealtimeStop = subscribeLibraryTaste(userId, () => scheduleTastePull(100))
 
-  // Por si Realtime no está activo en el proyecto
-  const poll = window.setInterval(() => scheduleTastePull(0), 12_000)
-  scheduleTastePull(0)
+  const pullNow = () => {
+    void withRetry(() => pullLibraryTaste(userId))
+      .then((r) => {
+        if (r.likesIn || r.playlistsIn) {
+          useLibraryStore.setState({
+            lastSyncAt: Date.now(),
+            lastSyncMessage: `Perfil ↓ me gusta ${r.likesIn} · listas ${r.playlistsIn}`,
+          })
+        }
+      })
+      .catch((e) => {
+        const msg = e instanceof Error ? e.message : 'Error al bajar me gusta/listas'
+        console.warn('Pull me gusta/playlists', e)
+        useLibraryStore.setState({ lastSyncMessage: msg })
+      })
+  }
+
+  // Por si Realtime no está activo: el otro dispositivo se entera en pocos segundos
+  const poll = window.setInterval(pullNow, 5_000)
+  pullNow()
+
+  const onVis = () => {
+    if (document.visibilityState === 'visible') pullNow()
+  }
+  document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('focus', pullNow)
 
   return () => {
     tasteRealtimeStop?.()
     tasteRealtimeStop = null
     window.clearInterval(poll)
+    document.removeEventListener('visibilitychange', onVis)
+    window.removeEventListener('focus', pullNow)
     if (tastePullTimer != null) {
       window.clearTimeout(tastePullTimer)
       tastePullTimer = null
@@ -654,7 +691,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     const userId = useAuthStore.getState().user?.id
     if (userId && isCloudAuthEnabled()) {
       try {
-        await withRetry(() => pushLibraryLikes(userId))
+        await withRetry(() => pushLibraryLikes(userId, undefined, { force: true }))
+        set({
+          lastSyncAt: Date.now(),
+          lastSyncMessage: 'Me gusta guardados en tu cuenta',
+        })
       } catch (e) {
         console.warn('Push likes', e)
         scheduleTasteSync(400)
