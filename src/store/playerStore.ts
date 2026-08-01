@@ -94,14 +94,14 @@ let prefetchedNextId: string | null = null
 /** Si el avance automático no pudo hacer play (bloqueo), reintentar al volver. */
 let pendingBackgroundPlay = false
 /** Tras llamada / interrupción del sistema: reintentar play y reclamar Now Playing. */
-let interruptionResumeTimer: ReturnType<typeof setInterval> | null = null
+let interruptionResumeTimer: number | null = null
 let interruptionResumeUntil = 0
 /** Cola de episodios del show abierto (ids). */
 let podcastEpisodeQueue: string[] = []
 let podcastPlayEpoch = 0
 let lastPodcastProgressSave = 0
 let radioDelayTimer: ReturnType<typeof setTimeout> | null = null
-let nearEndPollTimer: ReturnType<typeof setInterval> | null = null
+let nearEndPollTimer: number | null = null
 let lastNearEndTickAt = 0
 
 function resolveNextLibraryTrack(state: {
