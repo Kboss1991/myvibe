@@ -359,6 +359,20 @@
 
 .seek-block--radio input[type='range'] {
   height: 28px;
+  pointer-events: none;
+  accent-color: var(--accent);
+}
+
+.now-playing__radio-reset {
+  display: block;
+  margin: 10px auto 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-decoration: underline;
+  cursor: pointer;
+  padding: 4px 8px;
 }
 
 .now-playing__radio-hint {

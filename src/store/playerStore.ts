@@ -1057,13 +1057,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const station = getRadioStation(currentRadioId)
       if (!station) return
 
-      // Tras pausa: acumular delay solo en el valor (UI), sin recargar el stream
+      // Tras pausa: sumar ese tiempo al retraso. No recargar (perdería el sync).
       if (radioPauseStartedAt != null) {
         const added = (performance.now() - radioPauseStartedAt) / 1000
         const next = roundRadioDelayMs(
           Math.min(audioEngine.maxRadioDelay, radioDelay + added),
         )
-        audioEngine.setRadioDelay(next, { reload: false })
+        audioEngine.setRadioDelay(next)
         set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
       }
 
@@ -1080,10 +1080,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         await new Promise((r) => window.setTimeout(r, 80))
         ok = await audioEngine.play()
       }
-      if ((!ok || audioEngine.paused) && get().currentRadioId === currentRadioId) {
-        await get().playRadio(currentRadioId)
-        return
-      }
+      // Si falla el play, NO resintonizar: playRadio vuelve al vivo y borra el retraso
       set({ isPlaying: !audioEngine.paused, radioPauseStartedAt: null })
       setMediaPlaybackState(!audioEngine.paused)
       return
@@ -1473,14 +1470,24 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   setRadioDelay: (seconds) => {
     const rounded = roundRadioDelayMs(seconds)
-    // UI al instante
-    set({ radioDelay: rounded, radioPauseStartedAt: null })
-    if (radioDelayTimer) clearTimeout(radioDelayTimer)
-    // Debounce del slider; reload solo aquí (gesto explícito del usuario)
-    radioDelayTimer = setTimeout(() => {
-      audioEngine.setRadioDelay(rounded, { reload: true })
+    if (radioDelayTimer) {
+      clearTimeout(radioDelayTimer)
+      radioDelayTimer = null
+    }
+    // Solo “Sin retraso” (0) puede recargar el stream. Cualquier otro cambio
+    // actualiza el valor / DelayNode sin volver al directo.
+    const reset = rounded <= 0
+    if (reset) {
+      set({ radioDelay: 0, radioPauseStartedAt: null })
+      audioEngine.setRadioDelay(0, { reload: true })
       set({ radioDelay: audioEngine.radioDelay, radioPauseStartedAt: null })
-    }, 280)
+      return
+    }
+    // Si hay grafo Web Audio, afinar al instante. Si no, el audio real se
+    // ajusta con pausa/play; aquí solo reflejamos el valor pedido.
+    set({ radioDelay: rounded })
+    audioEngine.setRadioDelay(rounded)
+    set({ radioDelay: audioEngine.radioDelay })
   },
 }))
 

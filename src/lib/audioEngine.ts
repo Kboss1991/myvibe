@@ -474,14 +474,21 @@ class AudioEngine {
     this.delayNode.delayTime.setTargetAtTime(value, this.ctx?.currentTime ?? 0, 0.05)
   }
 
+  get hasDelayGraph() {
+    return this.delayGraphActive && Boolean(this.delayNode)
+  }
+
   /**
    * Retraso de la radio (0–30 s) para sincronizar con la tele.
-   * @param opts.reload Si false, nunca recarga el stream (solo DelayNode / valor).
+   *
+   * El sync real suele venir de pausar el directo (el buffer se queda atrás).
+   * Recargar el stream al “editar” vuelve al vivo y pierde ese sync — por eso
+   * solo recargamos al poner 0 (Sin retraso) o si el DelayNode ya está activo.
    */
   setRadioDelay(seconds: number, opts?: { reload?: boolean }) {
     const next = Math.max(0, Math.min(MAX_RADIO_DELAY, seconds))
     const prev = this.radioDelaySec
-    const allowReload = opts?.reload !== false
+    const allowReload = opts?.reload === true
     this.radioDelaySec = next
     try {
       localStorage.setItem('myvibe_radio_delay', String(this.radioDelaySec))
@@ -494,27 +501,28 @@ class AudioEngine {
       return
     }
 
-    // Grafo ya activo: solo cambiar el DelayNode
-    if (this.delayGraphActive && this.delayNode && next > 0) {
-      this.applyDelayToGraph()
-      void this.resumeContext()
+    // Grafo Web Audio activo: afinar sin tocar el stream
+    if (this.delayGraphActive && this.delayNode) {
+      if (next <= 0 && allowReload) {
+        void this.applyDelayMode(false)
+      } else {
+        this.applyDelayToGraph()
+        void this.resumeContext()
+      }
       if (prev !== next) this.emit()
       return
     }
 
-    // Sin recarga (p. ej. al pulsar play tras pausa): no tocar el stream
-    if (!allowReload) {
+    // Sync por pausa (sin DelayNode): nunca recargar si next > 0
+    if (next > 0) {
       if (prev !== next) this.emit()
       return
     }
 
-    // Solo el slider/usuario puede intentar activar el grafo (una vez)
-    if (next > 0 && !this.delayGraphActive) {
-      void this.applyDelayMode(true)
-    } else if (next <= 0 && this.delayGraphActive) {
+    // Sin retraso: volver al directo
+    if (allowReload) {
       void this.applyDelayMode(false)
     }
-
     if (prev !== next) this.emit()
   }
 
@@ -544,7 +552,8 @@ class AudioEngine {
       if (enable && !this.delayGraphActive) throw new Error('no delay graph')
     } catch {
       if (token !== this.delayApplyToken) return
-      // Restaurar audio directo para no quedarse pillado/mudo
+      // Restaurar audio directo (sin delay). Solo se usa al resetear o al fallar
+      // un intento explícito de grafo — no desde el ajuste por pausa.
       this.radioDelaySec = 0
       this.delayGraphActive = false
       try {

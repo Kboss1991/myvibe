@@ -427,13 +427,24 @@ export function NowPlaying() {
             max={maxDelay}
             step={0.001}
             value={displayDelay}
-            onChange={(e) => setRadioDelay(Number(e.target.value))}
-            aria-label="Retraso en segundos y milisegundos"
+            readOnly
+            tabIndex={-1}
+            aria-valuetext={formatRadioDelay(displayDelay)}
+            aria-label="Retraso actual en segundos y milisegundos"
           />
           <div className="seek-times">
             <span>{formatRadioDelay(displayDelay)}</span>
             <span>{formatRadioDelay(maxDelay)}</span>
           </div>
+          {displayDelay > 0 || radioPauseStartedAt != null ? (
+            <button
+              type="button"
+              className="now-playing__radio-reset"
+              onClick={() => setRadioDelay(0)}
+            >
+              Sin retraso
+            </button>
+          ) : null}
         </div>
 
         <div className="transport">
@@ -456,7 +467,9 @@ export function NowPlaying() {
         </div>
 
         <p className="now-playing__radio-hint">
-          Pausa y play para afinar el retraso con la televisión
+          {radioPauseStartedAt != null
+            ? 'Cuando cuadre con la tele, pulsa play. Puedes repetir para afinar.'
+            : 'Pulsa pausa, espera a la tele y play. Repite para sumar más retraso.'}
         </p>
       </div>
     )

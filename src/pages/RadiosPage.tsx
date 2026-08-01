@@ -9,17 +9,12 @@ import {
   subscribeMyRadios,
   type RadioStation,
 } from '../lib/myRadios'
+import { formatRadioDelay } from '../lib/radios'
 import { usePlayerStore } from '../store/playerStore'
 import { IconClose, IconPause, IconPlay, IconPlus, IconRadio, IconSearch, IconTrash } from '../components/Icons'
 import './pages.css'
 
 let lastRadioSelectAt = 0
-
-function formatRadioDelay(sec: number) {
-  const n = Number(sec)
-  if (!Number.isFinite(n) || n <= 0) return '0 s'
-  return `${n.toLocaleString('es-ES', { maximumFractionDigits: 1 })} s`
-}
 
 function useMyRadios(): RadioStation[] {
   return useSyncExternalStore(subscribeMyRadios, listMyRadios, listMyRadios)
@@ -106,10 +101,6 @@ export function RadiosPage() {
     else void playRadio(id)
   }
 
-  const nudgeDelay = (delta: number) => {
-    setRadioDelay(Math.round((radioDelay + delta) * 2) / 2)
-  }
-
   const onAdd = (station: RadioStation) => {
     addMyRadio(station)
   }
@@ -166,49 +157,26 @@ export function RadiosPage() {
         <div className="radio-sync__text">
           <h2>Sincronizar con la tele</h2>
           <p>
-            Si el audio va por delante de la imagen, retrásalo hasta que cuadre.
-            El valor se guarda en este dispositivo.
+            Pausa la radio, espera a que cuadre la imagen y dale a play. Cada
+            pausa suma ese tiempo al retraso. El valor se guarda en este dispositivo.
           </p>
         </div>
         <div className="radio-sync__controls">
-          <button
-            type="button"
-            className="radio-sync__nudge"
-            aria-label="Menos retraso"
-            disabled={radioDelay <= 0}
-            onClick={() => nudgeDelay(-0.5)}
-          >
-            −
-          </button>
-          <div className="radio-sync__value" aria-live="polite">
+          <div className="radio-sync__value radio-sync__value--solo" aria-live="polite">
             <strong>{formatRadioDelay(radioDelay)}</strong>
             <span>retraso</span>
           </div>
-          <button
-            type="button"
-            className="radio-sync__nudge"
-            aria-label="Más retraso"
-            disabled={radioDelay >= maxDelay}
-            onClick={() => nudgeDelay(0.5)}
-          >
-            +
-          </button>
         </div>
-        <label className="radio-sync__slider">
-          <span className="sr-only">Retraso en segundos</span>
-          <input
-            type="range"
-            min={0}
-            max={maxDelay}
-            step={0.5}
-            value={radioDelay}
-            onChange={(e) => setRadioDelay(Number(e.target.value))}
+        <div className="radio-sync__meter" aria-hidden>
+          <div
+            className="radio-sync__meter-fill"
+            style={{ width: `${Math.min(100, (radioDelay / Math.max(maxDelay, 1)) * 100)}%` }}
           />
-          <span className="radio-sync__ends">
-            <span>0</span>
-            <span>{maxDelay} s</span>
-          </span>
-        </label>
+        </div>
+        <p className="radio-sync__ends">
+          <span>0</span>
+          <span>{maxDelay} s</span>
+        </p>
         {radioDelay > 0 ? (
           <button type="button" className="radio-sync__reset" onClick={() => setRadioDelay(0)}>
             Sin retraso
