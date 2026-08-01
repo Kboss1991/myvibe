@@ -827,6 +827,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       clearTimeout(radioDelayTimer)
       radioDelayTimer = null
     }
+    // Nueva emisora = retraso a cero (el sync TV es por buffer de esa sintonía)
     set({
       currentRadioId: station.id,
       currentTrackId: null,
@@ -851,7 +852,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       const ok = await audioEngine.play()
       if (get().currentRadioId !== station.id) return
       const playing = ok && !audioEngine.paused
-      set({ isPlaying: playing, radioPauseStartedAt: null, radioDelay: audioEngine.radioDelay })
+      // Forzar 0: loadLive ya resetea el motor; no heredar delay de la emisora anterior
+      set({ isPlaying: playing, radioPauseStartedAt: null, radioDelay: 0 })
       setMediaPlaybackState(playing)
       void updateRadioMediaSession(station, {
         play: () => {

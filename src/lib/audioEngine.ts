@@ -471,7 +471,15 @@ class AudioEngine {
   private applyDelayToGraph() {
     if (!this.delayNode) return
     const value = this.live ? this.radioDelaySec : 0
-    this.delayNode.delayTime.setTargetAtTime(value, this.ctx?.currentTime ?? 0, 0.05)
+    // Valor instantáneo: setTargetAtTime “come” sílabas / hace micro-saltos
+    // al cambiar el delay mientras suena.
+    const t = this.ctx?.currentTime ?? 0
+    try {
+      this.delayNode.delayTime.cancelScheduledValues(t)
+      this.delayNode.delayTime.setValueAtTime(value, t)
+    } catch {
+      this.delayNode.delayTime.value = value
+    }
   }
 
   get hasDelayGraph() {
@@ -501,12 +509,13 @@ class AudioEngine {
       return
     }
 
-    // Grafo Web Audio activo: afinar sin tocar el stream
+    // Grafo Web Audio: solo recargar al quitar retraso. Nunca modular delayTime
+    // en caliente (setTarget/setValue mientras suena = come sílabas / micro-saltos).
+    // El sync real con la tele es el buffer del <audio> tras pausa/play.
     if (this.delayGraphActive && this.delayNode) {
       if (next <= 0 && allowReload) {
         void this.applyDelayMode(false)
       } else {
-        this.applyDelayToGraph()
         void this.resumeContext()
       }
       if (prev !== next) this.emit()
@@ -541,10 +550,12 @@ class AudioEngine {
 
     try {
       await this.load(url, 0, { live: true })
+      // Otra emisora / otro reset ganó la carrera
       if (token !== this.delayApplyToken) return
+      if (this.liveStreamUrl !== url) return
       if (wasPlaying) {
         const ok = await this.play()
-        if (token !== this.delayApplyToken) return
+        if (token !== this.delayApplyToken || this.liveStreamUrl !== url) return
         if (!ok || this.audio.paused) throw new Error('play failed')
       }
       this.delayGraphActive = enable && Boolean(this.sourceNode)
@@ -552,6 +563,7 @@ class AudioEngine {
       if (enable && !this.delayGraphActive) throw new Error('no delay graph')
     } catch {
       if (token !== this.delayApplyToken) return
+      if (this.liveStreamUrl !== url) return
       // Restaurar audio directo (sin delay). Solo se usa al resetear o al fallar
       // un intento explícito de grafo — no desde el ajuste por pausa.
       this.radioDelaySec = 0
@@ -563,7 +575,7 @@ class AudioEngine {
       }
       try {
         await this.load(url, 0, { live: true })
-        if (token !== this.delayApplyToken) return
+        if (token !== this.delayApplyToken || this.liveStreamUrl !== url) return
         if (wasPlaying) await this.play()
       } catch {
         /* ignore */
@@ -672,12 +684,17 @@ class AudioEngine {
       this.audio.load()
     } else if (useHls && Hls.isSupported()) {
       await new Promise<void>((resolve, reject) => {
-        const bufferPad = Math.max(30, this.radioDelaySec + 15)
+        // Buffer amplio: el sync TV es por pausa y puede acumular hasta MAX_RADIO_DELAY.
+        // Si el buffer es corto, al reanudar HLS “adelanta” al vivo → come palabras / saltos.
+        const bufferPad = Math.max(60, MAX_RADIO_DELAY + 30)
         const hls = new Hls({
           enableWorker: true,
-          lowLatencyMode: this.radioDelaySec < 1,
+          lowLatencyMode: false,
           maxBufferLength: bufferPad,
           maxMaxBufferLength: bufferPad + 30,
+          // Nunca acelerar para alcanzar el borde en vivo (rompe el retraso TV)
+          maxLiveSyncPlaybackRate: 1,
+          liveDurationInfinity: true,
         })
         this.hls = hls
         hls.loadSource(url)
@@ -789,15 +806,23 @@ class AudioEngine {
   }
 
   async loadLive(url: string): Promise<void> {
-    this.liveStreamUrl = url
-    // Nunca aplicar delay al sintonizar: provoca recargas/CORS y un bucle play/stop.
+    // Cancela “Sin retraso” / recargas async de la emisora anterior (si no,
+    // pueden pisar el stream nuevo y dejar el delay/HLS a medias).
+    this.delayApplyToken += 1
     this.radioDelaySec = 0
     this.delayGraphActive = false
+    this.live = false
+    this.liveStreamUrl = null
     try {
       localStorage.setItem('myvibe_radio_delay', '0')
     } catch {
       /* ignore */
     }
+    // Siempre elemento limpio al sintonizar: si la radio anterior iba con
+    // retraso (buffer/HLS/Web Audio), reutilizar el <audio> provoca saltos
+    // y “come” palabras al volver a pausar/play en la siguiente.
+    this.replaceAudioElement()
+    this.liveStreamUrl = url
     await this.load(url, 0, { live: true })
     this.emit()
   }
