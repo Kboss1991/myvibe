@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type CSSProperties } from 'react'
 import { audioEngine } from '../lib/audioEngine'
 import { formatTime } from '../lib/mediaSession'
 import { formatRadioDelay, getRadioStation } from '../lib/radios'
@@ -26,6 +26,11 @@ import {
 } from './Icons'
 import './Player.css'
 import './TrackList.css'
+
+function seekProgressStyle(position: number, duration: number): CSSProperties {
+  const p = duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0
+  return { ['--seek-p' as string]: `${p}%` }
+}
 
 export function PlayerBar() {
   const tracks = useLibraryStore((s) => s.tracks)
@@ -295,6 +300,7 @@ export function PlayerBar() {
             value={Math.min(position, duration || 0)}
             onChange={(e) => seek(Number(e.target.value))}
             aria-label="Progreso"
+            style={seekProgressStyle(position, duration || 0)}
           />
           <span className="player-bar__time">{formatTime(duration)}</span>
         </div>
@@ -522,6 +528,7 @@ export function NowPlaying() {
             value={Math.min(position, duration || 0)}
             onChange={(e) => seek(Number(e.target.value))}
             aria-label="Progreso"
+            style={seekProgressStyle(position, duration || 0)}
           />
           <div className="seek-times">
             <span>{formatTime(position)}</span>
@@ -625,6 +632,7 @@ export function NowPlaying() {
           value={Math.min(position, duration || 0)}
           onChange={(e) => seek(Number(e.target.value))}
           aria-label="Progreso"
+          style={seekProgressStyle(position, duration || 0)}
         />
         <div className="seek-times">
           <span>{formatTime(position)}</span>
