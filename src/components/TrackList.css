@@ -82,6 +82,7 @@
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   transition: padding 0.2s ease, box-shadow 0.2s ease;
+  touch-action: pan-y;
 }
 
 .page.is-scrolled .sticky-chrome {

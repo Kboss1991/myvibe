@@ -28,7 +28,9 @@
   overflow-y: scroll;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;
-  touch-action: pan-y;
+  /* Sin restringir a pan-y: si no, al cruzarse con pan-x de filas
+     horizontales el gesto vertical muere (solo se puede scrollear en huecos). */
+  touch-action: manipulation;
   background: #121212;
 }
 

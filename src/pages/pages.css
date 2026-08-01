@@ -1,6 +1,13 @@
 .page {
   padding: 16px 16px 24px;
   animation: fadeUp 0.3s ease;
+  touch-action: pan-y;
+}
+
+.page.home-page,
+.page.search-page {
+  /* Filas horizontales necesitan pan-x además del scroll de página */
+  touch-action: manipulation;
 }
 
 .page-header {
@@ -151,7 +158,8 @@
   gap: 12px;
   overflow-x: auto;
   padding-bottom: 4px;
-  touch-action: pan-x;
+  /* pan-x solo bloqueaba el scroll vertical de la página al tocar la fila */
+  touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -261,7 +269,7 @@
   overflow-x: auto;
   margin-bottom: 16px;
   padding-bottom: 4px;
-  touch-action: pan-x;
+  touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
 }
 

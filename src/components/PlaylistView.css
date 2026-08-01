@@ -7,6 +7,15 @@
     var(--playlist-theme, #3a4a38) 0%,
     #121212 36%
   );
+  touch-action: pan-y;
+}
+
+.sp-hero,
+.sp-hero-fade,
+.sp-table-wrap,
+.sp-table-body,
+.sp-row {
+  touch-action: pan-y;
 }
 
 .sp-playlist--liked {
@@ -161,6 +170,9 @@
   width: 100%;
   box-sizing: border-box;
   padding: 6px 12px 14px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
 }
 
 .sp-actions .sp-pill {
