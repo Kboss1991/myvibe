@@ -8,6 +8,7 @@ import {
   type LatestPodcastItem,
 } from '../lib/podcastRss'
 import { formatEpisodeDate, getMyPodcasts } from '../lib/podcasts'
+import { playlistCoverArtProps } from '../lib/library'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
@@ -100,12 +101,20 @@ export function HomePage() {
 
         {(playlists.length > 0 || !tracks.length) && (
           <div className="home-quick-grid">
-            {playlists.slice(0, 5).map((p) => (
+            {playlists.slice(0, 5).map((p) => {
+              const cover = playlistCoverArtProps(p)
+              return (
               <Link key={p.id} to={`/playlist/${p.id}`} className="home-quick">
-                <CoverArt trackId={p.trackIds[0]} hasCover={!!p.trackIds[0]} size={56} />
+                <CoverArt
+                  trackId={cover.trackId}
+                  hasCover={cover.hasCover}
+                  refreshKey={cover.refreshKey}
+                  size={56}
+                />
                 <span>{p.name}</span>
               </Link>
-            ))}
+              )
+            })}
             {!tracks.length && (
               <Link to="/upload" className="home-quick">
                 <span className="home-quick__liked" style={{ background: 'var(--accent)' }}>
@@ -215,12 +224,15 @@ export function HomePage() {
             <Link to="/library">Mostrar todos</Link>
           </div>
           <div className="h-scroll home-cover-row">
-            {playlists.slice(0, 10).map((p) => (
+            {playlists.slice(0, 10).map((p) => {
+              const cover = playlistCoverArtProps(p)
+              return (
               <Link key={p.id} to={`/playlist/${p.id}`} className="home-cover-card">
                 <span className="home-cover-card__art">
                   <CoverArt
-                    trackId={p.trackIds[0]}
-                    hasCover={!!p.trackIds[0]}
+                    trackId={cover.trackId}
+                    hasCover={cover.hasCover}
+                    refreshKey={cover.refreshKey}
                     size={200}
                     rounded="md"
                   />
@@ -228,7 +240,8 @@ export function HomePage() {
                 <strong>{p.name}</strong>
                 <span>{p.trackIds.length} canciones</span>
               </Link>
-            ))}
+              )
+            })}
           </div>
         </section>
       )}

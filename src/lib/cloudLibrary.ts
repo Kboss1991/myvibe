@@ -2,6 +2,11 @@ import { db } from '../db'
 import type { Playlist, Track } from '../types'
 import { isCloudAuthEnabled, getSupabase } from './supabase'
 import { deleteTrack, getAudioBlob } from './library'
+import {
+  downloadPlaylistCoverCloud,
+  removePlaylistCoverCloud,
+  uploadPlaylistCoverCloud,
+} from './playlistCovers'
 import { isLibraryHostDevice } from './devices'
 import { groupDuplicateTracks, pickCanonicalTrack, trackContentKeys, tracksLookSame, findBestTrackMatch } from './trackDedupe'
 
@@ -1081,6 +1086,18 @@ export async function pushLibraryPlaylists(
   const known = readKnownPlaylistIds(userId)
   for (const p of playlists) known.add(p.id)
   writeKnownPlaylistIds(userId, known)
+
+  // Portadas: subir las que tienen cover local
+  for (const p of playlists) {
+    if (!p.hasCover) {
+      if (force) void removePlaylistCoverCloud(userId, p.id)
+      continue
+    }
+    await uploadPlaylistCoverCloud(userId, p.id).catch((e) =>
+      console.warn('Playlist cover upload', e),
+    )
+  }
+
   return rows.length
 }
 
@@ -1099,6 +1116,7 @@ export async function removeCloudPlaylist(
   const known = readKnownPlaylistIds(userId)
   known.delete(playlistId)
   writeKnownPlaylistIds(userId, known)
+  await removePlaylistCoverCloud(userId, playlistId)
 }
 
 /** Baja playlists del perfil (LWW) y aplica borrados remotos. */
@@ -1153,12 +1171,17 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
     }
 
     if (!existing) {
+      const wantCover = Boolean(row.has_cover)
+      let hasCover = false
+      if (wantCover) {
+        hasCover = await downloadPlaylistCoverCloud(userId, row.local_id)
+      }
       await db.playlists.put({
         id: row.local_id,
         name: row.name || 'Playlist',
         description: row.description || '',
         trackIds: resolvedIds,
-        hasCover: Boolean(row.has_cover),
+        hasCover,
         createdAt: Date.parse(row.created_at) || Date.now(),
         updatedAt: remoteTs || Date.now(),
       })
@@ -1168,11 +1191,21 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
 
     if ((existing.updatedAt || 0) > remoteTs) continue
 
+    const wantCover = Boolean(row.has_cover)
+    let hasCover = existing.hasCover
+    if (wantCover) {
+      const ok = await downloadPlaylistCoverCloud(userId, row.local_id)
+      if (ok) hasCover = true
+    } else if (existing.hasCover) {
+      // Remoto sin portada: mantener local si había (no borrar agresivo)
+      hasCover = existing.hasCover
+    }
+
     await db.playlists.update(row.local_id, {
       name: row.name || existing.name,
       description: row.description ?? existing.description,
       trackIds: resolvedIds,
-      // No forzar hasCover desde nube (las fotos no se suben aún)
+      hasCover,
       updatedAt: remoteTs || existing.updatedAt,
     })
     applied += 1

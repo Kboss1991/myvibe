@@ -1063,6 +1063,28 @@ export function playlistCoverId(playlistId: string): string {
   return `playlist:${playlistId}`
 }
 
+/** Props de CoverArt para una playlist (portada custom o primera canción). */
+export function playlistCoverArtProps(playlist: {
+  id: string
+  hasCover?: boolean
+  trackIds: string[]
+  updatedAt?: number
+}): { trackId: string | undefined; hasCover: boolean; refreshKey: number } {
+  if (playlist.hasCover) {
+    return {
+      trackId: playlistCoverId(playlist.id),
+      hasCover: true,
+      refreshKey: playlist.updatedAt || Date.now(),
+    }
+  }
+  const first = playlist.trackIds[0]
+  return {
+    trackId: first,
+    hasCover: Boolean(first),
+    refreshKey: playlist.updatedAt || 0,
+  }
+}
+
 export async function setPlaylistCover(playlistId: string, file: File): Promise<void> {
   const id = playlistCoverId(playlistId)
   revokeCachedUrls(id)

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { CoverArt } from '../components/CoverArt'
 import { TrackList } from '../components/TrackList'
 import { IconSearch } from '../components/Icons'
+import { playlistCoverArtProps } from '../lib/library'
 import { useLibraryStore } from '../store/libraryStore'
 import { usePlayerStore } from '../store/playerStore'
 import './pages.css'
@@ -166,12 +167,15 @@ export function SearchPage() {
                 <section className="section">
                   <h2 className="section__title">Playlists</h2>
                   <div className="h-scroll home-cover-row">
-                    {playlistResults.map((p) => (
+                    {playlistResults.map((p) => {
+                      const cover = playlistCoverArtProps(p)
+                      return (
                       <Link key={p.id} to={`/playlist/${p.id}`} className="home-cover-card">
                         <span className="home-cover-card__art">
                           <CoverArt
-                            trackId={p.trackIds[0]}
-                            hasCover={!!p.trackIds[0]}
+                            trackId={cover.trackId}
+                            hasCover={cover.hasCover}
+                            refreshKey={cover.refreshKey}
                             size={160}
                             rounded="md"
                           />
@@ -179,7 +183,8 @@ export function SearchPage() {
                         <strong>{p.name}</strong>
                         <span>Playlist · {p.trackIds.length}</span>
                       </Link>
-                    ))}
+                      )
+                    })}
                   </div>
                 </section>
               )}

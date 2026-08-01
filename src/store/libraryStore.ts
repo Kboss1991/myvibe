@@ -724,6 +724,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
   setPlaylistCover: async (id, file) => {
     await library.setPlaylistCover(id, file)
+    // Forzar push con portada a la nube
     await pushPlaylistNow(id)
   },
   deletePlaylist: async (id) => {

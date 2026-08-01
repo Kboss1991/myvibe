@@ -43,6 +43,7 @@ export function PlaylistDetailPage() {
         coverTrackId={playlist.trackIds[0]}
         hasCover={playlist.hasCover}
         coverId={playlist.hasCover ? playlistCoverId(playlist.id) : null}
+        coverRefreshKey={playlist.updatedAt}
         playlistId={playlist.id}
         onEditInfo={async (name, description) => {
           await updatePlaylistInfo(playlist.id, { name, description })

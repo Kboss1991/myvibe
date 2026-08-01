@@ -14,7 +14,7 @@ import {
   IconSelect,
   IconClose,
 } from '../components/Icons'
-import { playlistCoverId } from '../lib/library'
+import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { useLibraryStore } from '../store/libraryStore'
@@ -265,12 +265,15 @@ export function LibraryPage() {
 
       {tab === 'playlists' && (
         <ul className="playlist-list">
-          {playlists.map((p) => (
+          {playlists.map((p) => {
+            const cover = playlistCoverArtProps(p)
+            return (
             <li key={p.id}>
               <Link to={`/playlist/${p.id}`} className="playlist-list__link">
                 <CoverArt
-                  trackId={p.hasCover ? playlistCoverId(p.id) : p.trackIds[0]}
-                  hasCover={p.hasCover || !!p.trackIds[0]}
+                  trackId={cover.trackId}
+                  hasCover={cover.hasCover}
+                  refreshKey={cover.refreshKey}
                   size={56}
                 />
                 <div>
@@ -289,7 +292,8 @@ export function LibraryPage() {
                 <IconTrash size={18} />
               </button>
             </li>
-          ))}
+            )
+          })}
           {playlists.length === 0 && (
             <div className="empty-state">
               <p className="empty-state__title">Sin playlists</p>

@@ -12,6 +12,7 @@ import {
 } from './Icons'
 import { AppIcon } from './AppIcon'
 import { BrandWordmark } from './BrandWordmark'
+import { playlistCoverArtProps } from '../lib/library'
 import { CoverArt } from './CoverArt'
 import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
 import { UserAvatar } from './UserAvatar'
@@ -88,7 +89,9 @@ export function Sidebar() {
             </span>
           </NavLink>
 
-          {playlists.map((p) => (
+          {playlists.map((p) => {
+            const cover = playlistCoverArtProps(p)
+            return (
             <NavLink
               key={p.id}
               to={`/playlist/${p.id}`}
@@ -97,8 +100,9 @@ export function Sidebar() {
               }
             >
               <CoverArt
-                trackId={p.trackIds[0]}
-                hasCover={!!p.trackIds[0]}
+                trackId={cover.trackId}
+                hasCover={cover.hasCover}
+                refreshKey={cover.refreshKey}
                 size={40}
                 rounded="sm"
               />
@@ -110,7 +114,8 @@ export function Sidebar() {
                 </small>
               </span>
             </NavLink>
-          ))}
+            )
+          })}
 
           {playlists.length === 0 && liked.length === 0 && (
             <p className="sidebar__empty">

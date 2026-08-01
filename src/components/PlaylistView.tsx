@@ -46,6 +46,8 @@ type Props = {
   hasCover?: boolean
   /** id de cover custom: playlist:xxx */
   coverId?: string | null
+  /** Fuerza recarga de la portada (p. ej. updatedAt) */
+  coverRefreshKey?: number | string | null
   playlistId?: string
   likedStyle?: boolean
   onEditInfo?: (name: string, description: string) => Promise<void>
@@ -65,6 +67,7 @@ export function PlaylistView({
   coverTrackId,
   hasCover,
   coverId,
+  coverRefreshKey,
   playlistId,
   likedStyle,
   onEditInfo,
@@ -208,6 +211,7 @@ export function PlaylistView({
               <CoverArt
                 trackId={heroCoverId}
                 hasCover={heroHasCover !== false}
+                refreshKey={coverRefreshKey ?? ''}
                 size="100%"
                 rounded="md"
                 className="sp-hero__cover-img"

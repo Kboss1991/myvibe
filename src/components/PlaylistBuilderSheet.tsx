@@ -207,6 +207,7 @@ export function PlaylistBuilderSheet({ playlistId: initialId, onClose }: Props) 
                     <CoverArt
                       trackId={playlistCoverId(playlist.id)}
                       hasCover
+                      refreshKey={playlist.updatedAt}
                       size={120}
                       rounded="md"
                     />
