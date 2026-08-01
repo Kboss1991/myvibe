@@ -86,12 +86,34 @@ export const REMEMBER_EMAIL_KEY = 'myvibe_remember_email'
 
 export async function ensurePlaybackSnapshot(): Promise<PlaybackSnapshot> {
   const existing = await db.playback.get(PLAYBACK_KEY)
-  if (existing) return existing
+  if (existing) {
+    const normalized: PlaybackSnapshot = {
+      ...existing,
+      queue: Array.isArray(existing.queue) ? existing.queue : [],
+      originalQueue: Array.isArray(existing.originalQueue) && existing.originalQueue.length
+        ? existing.originalQueue
+        : Array.isArray(existing.queue)
+          ? existing.queue
+          : [],
+      index: Number.isFinite(existing.index) ? existing.index : 0,
+      position: Number.isFinite(existing.position) ? existing.position : 0,
+      shuffle: existing.shuffle !== false,
+      recentIds: Array.isArray(existing.recentIds) ? existing.recentIds : [],
+    }
+    if (
+      !Array.isArray((existing as PlaybackSnapshot).originalQueue) ||
+      !(existing as PlaybackSnapshot).originalQueue?.length
+    ) {
+      await db.playback.update(PLAYBACK_KEY, { originalQueue: normalized.originalQueue })
+    }
+    return normalized
+  }
 
   const snapshot: PlaybackSnapshot = {
     id: PLAYBACK_KEY,
     currentTrackId: null,
     queue: [],
+    originalQueue: [],
     index: 0,
     shuffle: true,
     repeat: 'off',

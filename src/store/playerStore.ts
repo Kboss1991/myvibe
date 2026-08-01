@@ -416,19 +416,75 @@ function podcastSyntheticTrack(episode: PodcastEpisode, show: PodcastShow): Trac
   }
 }
 
-function persistSoon(partial: Partial<{
+type PlaybackPersistPartial = Partial<{
   currentTrackId: string | null
   queue: string[]
+  originalQueue: string[]
   index: number
   shuffle: boolean
   repeat: RepeatMode
   position: number
   volume: number
-}>) {
+}>
+
+let pendingPersist: PlaybackPersistPartial = {}
+
+function persistSoon(partial: PlaybackPersistPartial) {
+  Object.assign(pendingPersist, partial)
   if (persistTimer) clearTimeout(persistTimer)
-  persistTimer = setTimeout(() => {
-    void db.playback.update(PLAYBACK_KEY, partial)
+  persistTimer = window.setTimeout(() => {
+    void flushPlaybackPersist()
   }, 400)
+}
+
+async function flushPlaybackPersist() {
+  if (persistTimer) {
+    clearTimeout(persistTimer)
+    persistTimer = null
+  }
+  const partial = pendingPersist
+  pendingPersist = {}
+  if (!Object.keys(partial).length) return
+  try {
+    await db.playback.update(PLAYBACK_KEY, partial)
+  } catch {
+    // ignore
+  }
+}
+
+/** Guarda al instante posición + cola (al cerrar / pasar a segundo plano). */
+function persistPlaybackNow() {
+  const state = usePlayerStore.getState()
+  if (!state.hydrated) return
+  const livePos =
+    state.currentTrackId && !audioEngine.isLive && Number.isFinite(audioEngine.currentTime)
+      ? audioEngine.currentTime
+      : state.position
+  pendingPersist = {
+    ...pendingPersist,
+    currentTrackId: state.currentTrackId,
+    queue: state.queue,
+    originalQueue: state.originalQueue.length ? state.originalQueue : state.queue,
+    index: state.index,
+    shuffle: state.shuffle,
+    repeat: state.repeat,
+    position: livePos,
+    volume: state.volume,
+  }
+  void flushPlaybackPersist()
+}
+
+let persistLifecycleBound = false
+function bindPersistLifecycle() {
+  if (persistLifecycleBound || typeof window === 'undefined') return
+  persistLifecycleBound = true
+  const flush = () => persistPlaybackNow()
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') flush()
+  })
+  window.addEventListener('pagehide', flush)
+  window.addEventListener('beforeunload', flush)
+  document.addEventListener('freeze', flush as EventListener)
 }
 
 async function loadAndMaybePlay(
@@ -605,20 +661,45 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   hydrate: async () => {
     const snap = await ensurePlaybackSnapshot()
     audioEngine.setVolume(snap.volume)
+
+    let queue = Array.isArray(snap.queue) ? [...snap.queue] : []
+    let originalQueue =
+      Array.isArray(snap.originalQueue) && snap.originalQueue.length
+        ? [...snap.originalQueue]
+        : [...queue]
+    let index = Number.isFinite(snap.index) ? snap.index : 0
+    let currentTrackId = snap.currentTrackId
+
+    if (queue.length) {
+      if (currentTrackId) {
+        if (queue[index] !== currentTrackId) {
+          const found = queue.indexOf(currentTrackId)
+          index = found >= 0 ? found : Math.max(0, Math.min(index, queue.length - 1))
+          if (found < 0) currentTrackId = queue[index] ?? null
+        }
+      } else {
+        index = Math.max(0, Math.min(index, queue.length - 1))
+        currentTrackId = queue[index] ?? null
+      }
+    } else {
+      index = 0
+      currentTrackId = null
+    }
+
     set({
-      queue: snap.queue,
-      originalQueue: snap.queue,
-      index: snap.index,
-      currentTrackId: snap.currentTrackId,
-      // Aleatorio ON por defecto en toda la app
-      shuffle: true,
+      queue,
+      originalQueue,
+      index,
+      currentTrackId,
+      // Restaurar aleatorio; si no había valor guardado, ON
+      shuffle: snap.shuffle !== false,
       // Migrar estado antiguo 'one' → 'all'
       repeat: snap.repeat === 'all' || (snap.repeat as string) === 'one' ? 'all' : 'off',
       position: snap.position,
       volume: snap.volume,
       hydrated: true,
     })
-    persistSoon({ shuffle: true })
+    bindPersistLifecycle()
 
     if (!engineUnsub) {
       engineUnsub = audioEngine.subscribe(() => get().syncFromEngine())
@@ -662,8 +743,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       })
     }
 
-    if (snap.currentTrackId && snap.queue.length) {
-      await loadAndMaybePlay(snap.currentTrackId, snap.position, false, set)
+    if (currentTrackId && queue.length) {
+      // Restaura la pista y la posición; no autoplay (política del navegador)
+      await loadAndMaybePlay(currentTrackId, snap.position || 0, false, set)
     }
   },
 
@@ -871,6 +953,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     })
     persistSoon({
       queue: nextQueue,
+      originalQueue,
       index,
       currentTrackId: nextQueue[index] ?? trackId,
       shuffle: shuffleOn,
@@ -918,6 +1001,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     })
     persistSoon({
       queue,
+      originalQueue,
       index,
       currentTrackId: queue[index] ?? null,
       shuffle: shuffleOn,
@@ -1276,6 +1360,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       persistSoon({
         shuffle: true,
         queue: shuffled,
+        originalQueue: base,
         index: currentIndex >= 0 ? 0 : get().index,
       })
     } else {
@@ -1286,7 +1371,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         queue: base,
         index: idx,
       })
-      persistSoon({ shuffle: false, queue: base, index: idx })
+      persistSoon({
+        shuffle: false,
+        queue: base,
+        originalQueue: base,
+        index: idx,
+      })
     }
   },
 
@@ -1298,32 +1388,54 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   addToQueue: (trackId) => {
     const queue = [...get().queue, trackId]
-    set({ queue, originalQueue: get().shuffle ? get().originalQueue : queue })
-    persistSoon({ queue })
+    const originalQueue = get().shuffle ? get().originalQueue : queue
+    set({ queue, originalQueue })
+    persistSoon({ queue, originalQueue })
   },
 
   playNext: (trackId) => {
     const { queue, index } = get()
     const next = [...queue]
     next.splice(index + 1, 0, trackId)
-    set({ queue: next, originalQueue: get().shuffle ? get().originalQueue : next })
-    persistSoon({ queue: next })
+    const originalQueue = get().shuffle ? get().originalQueue : next
+    set({ queue: next, originalQueue })
+    persistSoon({ queue: next, originalQueue })
   },
 
   removeFromQueue: (queueIndex) => {
-    const { queue, index, currentTrackId } = get()
+    const { queue, index, currentTrackId, shuffle, originalQueue } = get()
     const next = queue.filter((_, i) => i !== queueIndex)
+    const nextOriginal = shuffle ? originalQueue : next
     let nextIndex = index
     if (queueIndex < index) nextIndex = Math.max(0, index - 1)
     if (queueIndex === index) {
       const newId = next[nextIndex] ?? next[0] ?? null
-      set({ queue: next, index: nextIndex, currentTrackId: newId })
-      persistSoon({ queue: next, index: nextIndex, currentTrackId: newId })
+      set({
+        queue: next,
+        originalQueue: nextOriginal,
+        index: nextIndex,
+        currentTrackId: newId,
+      })
+      persistSoon({
+        queue: next,
+        originalQueue: nextOriginal,
+        index: nextIndex,
+        currentTrackId: newId,
+      })
       if (newId) void loadAndMaybePlay(newId, 0, get().isPlaying, set)
       return
     }
-    set({ queue: next, index: nextIndex, currentTrackId })
-    persistSoon({ queue: next, index: nextIndex })
+    set({
+      queue: next,
+      originalQueue: nextOriginal,
+      index: nextIndex,
+      currentTrackId,
+    })
+    persistSoon({
+      queue: next,
+      originalQueue: nextOriginal,
+      index: nextIndex,
+    })
   },
 
   clearQueue: () => {
@@ -1338,7 +1450,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentPodcastEpisodeId: null,
       coverUrl: null,
     })
-    persistSoon({ queue: [], index: 0, currentTrackId: null, position: 0 })
+    persistSoon({
+      queue: [],
+      originalQueue: [],
+      index: 0,
+      currentTrackId: null,
+      position: 0,
+    })
   },
 
   setNowPlayingOpen: (open) => set({ nowPlayingOpen: open, ...(open ? {} : {}) }),

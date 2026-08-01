@@ -45,7 +45,11 @@ export interface Playlist {
 export interface PlaybackSnapshot {
   id: string
   currentTrackId: string | null
+  /** Cola de reproducción actual (puede estar mezclada). */
   queue: string[]
+  /** Orden original antes del shuffle (para restaurar). */
+  originalQueue: string[]
+  /** Índice en `queue` de la canción actual (las anteriores ya sonaron). */
   index: number
   shuffle: boolean
   repeat: RepeatMode
