@@ -184,7 +184,7 @@ export async function updateMediaSession(
   if (!('mediaSession' in navigator)) return
 
   if (!track) {
-    navigator.mediaSession.metadata = null
+    // NUNCA borrar metadata: en iOS eso quita el reproductor de la pantalla de bloqueo
     return
   }
 
@@ -196,12 +196,22 @@ export async function updateMediaSession(
     artwork: [],
   })
 
+  bindMediaHandlers(handlers)
+
   const artwork =
     track.hasLocalAudio !== false
       ? await buildLockScreenArtwork(track.id)
       : _coverUrl
         ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
         : []
+
+  // Si ya cambió de pista mientras cargábamos artwork, no pisar
+  try {
+    const currentTitle = navigator.mediaSession.metadata?.title
+    if (currentTitle && currentTitle !== track.title) return
+  } catch {
+    /* ignore */
+  }
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,

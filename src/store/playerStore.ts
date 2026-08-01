@@ -162,16 +162,39 @@ function commitChainedTrack(
     position: 0,
   })
   persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
+  // Mantener Now Playing vivo en bloqueo: no soltar pending hasta confirmar play
+  pendingBackgroundPlay = true
   setMediaPlaybackState(true)
-  pendingBackgroundPlay = false
+  // Metadatos YA (si esperamos al React effect, iOS quita el reproductor)
+  void refreshMediaSessionForTrackId(trackId)
   void getCoverObjectUrl(trackId).then((coverUrl) => {
     if (usePlayerStore.getState().currentTrackId === trackId) {
       set({ coverUrl })
+      void refreshMediaSessionForTrackId(trackId)
     }
   })
   void recordPlay(trackId)
   void persistRecent(trackId)
   prefetchNextForCurrent(get)
+}
+
+async function refreshMediaSessionForTrackId(trackId: string) {
+  const track = await db.tracks.get(trackId)
+  if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
+  const cover = usePlayerStore.getState().coverUrl
+  await updateMediaSession(track, cover, {
+    play: () => {
+      pendingBackgroundPlay = true
+      void usePlayerStore.getState().play()
+    },
+    pause: () => usePlayerStore.getState().pause(),
+    previoustrack: () => void usePlayerStore.getState().previous(),
+    nexttrack: () => void usePlayerStore.getState().next(),
+    seekto: (time) => usePlayerStore.getState().seek(time),
+    getPosition: () => usePlayerStore.getState().position,
+    seekSkip: false,
+  })
+  setMediaPlaybackState(true)
 }
 
 /**
@@ -217,15 +240,8 @@ function tryAdvanceLibraryTrack(
   trackAdvanceLockUntil = Date.now() + 2000
   prefetchedNextId = null
 
-  // 1) Si aún suena: overlap (play del siguiente ANTES de pausar el actual)
-  let ok = false
-  if (mode === 'early' || !audioEngine.paused) {
-    ok = audioEngine.overlapPromoteStandby(trackId)
-  }
-  // 2) Mismo elemento (mejor tras ended con pantalla encendida)
-  if (!ok) {
-    ok = audioEngine.chainPlay(url)
-  }
+  // SIEMPRE mismo <audio>: overlapPromote cambia de elemento y iOS quita Now Playing
+  const ok = audioEngine.chainPlay(url)
   if (!ok) {
     trackAdvanceLockUntil = Date.now() + 400
     if (mode !== 'early') {
@@ -240,12 +256,15 @@ function tryAdvanceLibraryTrack(
   window.setTimeout(() => {
     if (usePlayerStore.getState().currentTrackId !== trackId) return
     if (!audioEngine.paused) {
+      pendingBackgroundPlay = false
       prefetchNextForCurrent(get)
+      void refreshMediaSessionForTrackId(trackId)
       return
     }
     pendingBackgroundPlay = true
     set({ isPlaying: true })
     setMediaPlaybackState(true)
+    void refreshMediaSessionForTrackId(trackId)
     void loadAndMaybePlay(trackId, 0, true, set)
   }, 90)
 
@@ -622,6 +641,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
     if (!interruptionUnsub) {
       interruptionUnsub = audioEngine.onInterruption(() => {
+        // Durante auto-next el cambio de src dispara pause: no es una llamada
+        if (Date.now() < trackAdvanceLockUntil) return
         // Llamada / Siri / otra app: no marcar pause de usuario
         if (!get().currentTrackId && !get().currentRadioId && !get().currentPodcastEpisodeId) {
           return
@@ -1077,28 +1098,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ])
       }
       if (url && audioEngine.chainPlay(url)) {
-        set({
-          index: nextIndex,
-          currentTrackId: trackId,
-          currentRadioId: null,
-          currentPodcastEpisodeId: null,
-          isPlaying: true,
-          position: 0,
-        })
-        persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
-        setMediaPlaybackState(true)
-        pendingBackgroundPlay = false
-        void getCoverObjectUrl(trackId).then((coverUrl) => {
-          if (usePlayerStore.getState().currentTrackId === trackId) {
-            set({ coverUrl })
-          }
-        })
-        void recordPlay(trackId)
-        void persistRecent(trackId)
-        prefetchNextForCurrent(get)
+        commitChainedTrack(set, get, trackId, nextIndex)
         window.setTimeout(() => {
           if (usePlayerStore.getState().currentTrackId !== trackId) return
-          if (!audioEngine.paused) return
+          if (!audioEngine.paused) {
+            pendingBackgroundPlay = false
+            return
+          }
           pendingBackgroundPlay = true
           void loadAndMaybePlay(trackId, 0, true, set)
         }, 80)

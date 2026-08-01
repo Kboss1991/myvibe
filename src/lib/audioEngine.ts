@@ -206,9 +206,9 @@ class AudioEngine {
   }
 
   /**
-   * Continuar reproducción tras `ended` en el MISMO <audio>.
-   * Cambiar de elemento (standby) rompe el gesto/privilegio en iOS y Android.
-   * Debe llamarse de forma síncrona desde el handler de ended, sin awaits previos.
+   * Continuar reproducción tras `ended` / early-advance en el MISMO <audio>.
+   * Cambiar de elemento rompe Now Playing en iOS (desaparece de la pantalla de bloqueo).
+   * Debe llamarse de forma síncrona, sin awaits previos.
    */
   chainPlay(url: string): boolean {
     if (!url) return false
@@ -227,7 +227,8 @@ class AudioEngine {
     this.audio.removeAttribute('crossorigin')
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
-    // NO pause(), NO load() — solo src + play en el mismo turno que `ended`
+    // Cambiar src dispara 'pause' → marcar intencional para no tratarlo como llamada
+    this.markIntentionalPause()
     try {
       this.audio.src = url
     } catch {
@@ -244,7 +245,7 @@ class AudioEngine {
     }
   }
 
-  /** Precarga la siguiente pista en un segundo elemento (listo para play al `ended`). */
+  /** Precarga la siguiente pista en un segundo elemento (solo buffer; no promover en iOS). */
   prepareStandby(url: string, trackId?: string) {
     if (!url) return
     if (
