@@ -17,7 +17,6 @@ import {
   IconSkipBack,
   IconSkipForward,
   IconChevronDown,
-  IconVolume,
   IconClose,
   IconRadio,
   IconPodcast,
@@ -43,8 +42,6 @@ export function PlayerBar() {
   const duration = usePlayerStore((s) => s.duration)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
-  const volume = usePlayerStore((s) => s.volume)
-  const muted = usePlayerStore((s) => s.muted)
   const toggle = usePlayerStore((s) => s.toggle)
   const seek = usePlayerStore((s) => s.seek)
   const skipForward = usePlayerStore((s) => s.skipForward)
@@ -53,8 +50,6 @@ export function PlayerBar() {
   const previous = usePlayerStore((s) => s.previous)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
-  const setVolume = usePlayerStore((s) => s.setVolume)
-  const toggleMute = usePlayerStore((s) => s.toggleMute)
   const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
   const track = tracks.find((t) => t.id === currentTrackId)
@@ -306,7 +301,7 @@ export function PlayerBar() {
         </div>
       </div>
 
-      {/* Derecha: cola + volumen */}
+      {/* Derecha: cola */}
       <div className="player-bar__right">
         {!podcastEp ? (
           <button
@@ -318,25 +313,6 @@ export function PlayerBar() {
             <IconQueue size={18} />
           </button>
         ) : null}
-        <div className="player-bar__volume">
-          <button
-            type="button"
-            className="icon-btn"
-            aria-label={muted ? 'Quitar silencio' : 'Silenciar'}
-            onClick={() => toggleMute()}
-          >
-            <IconVolume size={18} />
-          </button>
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={muted ? 0 : volume}
-            onChange={(e) => setVolume(Number(e.target.value))}
-            aria-label="Volumen"
-          />
-        </div>
       </div>
     </div>
   )
@@ -355,8 +331,6 @@ export function NowPlaying() {
   const duration = usePlayerStore((s) => s.duration)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const repeat = usePlayerStore((s) => s.repeat)
-  const volume = usePlayerStore((s) => s.volume)
-  const muted = usePlayerStore((s) => s.muted)
   const toggle = usePlayerStore((s) => s.toggle)
   const next = usePlayerStore((s) => s.next)
   const previous = usePlayerStore((s) => s.previous)
@@ -365,7 +339,6 @@ export function NowPlaying() {
   const skipBack = usePlayerStore((s) => s.skipBack)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
   const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
-  const setVolume = usePlayerStore((s) => s.setVolume)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
   const radioDelay = usePlayerStore((s) => s.radioDelay)
   const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
@@ -568,19 +541,6 @@ export function NowPlaying() {
             <IconSkipForward15 size={24} />
           </button>
         </div>
-
-        <div className="volume-row">
-          <IconVolume size={18} />
-          <input
-            type="range"
-            min={0}
-            max={1}
-            step={0.01}
-            value={muted ? 0 : volume}
-            onChange={(e) => setVolume(Number(e.target.value))}
-            aria-label="Volumen"
-          />
-        </div>
       </div>
     )
   }
@@ -675,17 +635,7 @@ export function NowPlaying() {
         </button>
       </div>
 
-      <div className="volume-row">
-        <IconVolume size={18} />
-        <input
-          type="range"
-          min={0}
-          max={1}
-          step={0.01}
-          value={muted ? 0 : volume}
-          onChange={(e) => setVolume(Number(e.target.value))}
-          aria-label="Volumen"
-        />
+      <div className="now-playing__footer">
         <button type="button" className="icon-btn" aria-label="Cola" onClick={() => setQueueOpen(true)}>
           <IconQueue size={22} />
         </button>

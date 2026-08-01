@@ -193,14 +193,6 @@ export function IconPlus(p: IconProps) {
   )
 }
 
-export function IconVolume(p: IconProps) {
-  return (
-    <svg {...base(p)}>
-      <path d="M4 10v4h3l4 3V7L7 10H4zM16 9a4 4 0 0 1 0 6M18.5 7a7 7 0 0 1 0 10" />
-    </svg>
-  )
-}
-
 export function IconChevronDown(p: IconProps) {
   return (
     <svg {...base(p)}>

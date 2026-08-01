@@ -246,22 +246,6 @@
   min-width: 0;
 }
 
-.player-bar__volume {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: min(140px, 100%);
-}
-
-.player-bar__volume input[type='range'] {
-  flex: 1;
-  min-width: 0;
-  height: 16px;
-  margin: 0;
-  accent-color: #fff;
-  cursor: pointer;
-}
-
 .player-bar__live {
   display: inline-flex;
   align-items: center;
@@ -556,8 +540,7 @@
   .player-bar__ctrl,
   .player-bar__like,
   .player-bar__right,
-  .player-bar__queue,
-  .player-bar__volume {
+  .player-bar__queue {
     display: none !important;
   }
 
@@ -751,13 +734,9 @@
   margin-top: 4px;
 }
 
-.seek-block input[type='range'],
-.volume-row input[type='range'] {
+.seek-block input[type='range'] {
   width: 100%;
   accent-color: var(--accent);
-}
-
-.seek-block input[type='range'] {
   -webkit-appearance: none;
   appearance: none;
   background: transparent;
@@ -859,12 +838,11 @@
   color: var(--accent-hover);
 }
 
-.volume-row {
+.now-playing__footer {
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: var(--text-muted);
-  margin-top: 0;
+  justify-content: flex-end;
+  margin-top: 4px;
   padding-bottom: 0;
 }
 
