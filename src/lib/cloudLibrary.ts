@@ -619,6 +619,7 @@ async function consolidateCloudLikes(userId: string): Promise<void> {
 /**
  * Sube me gusta al perfil (Supabase).
  * Usa el local_id canónico del catálogo (mismo contenido entre PC y móvil).
+ * No pisa filas remotas más recientes (LWW).
  */
 export async function pushLibraryLikes(
   userId: string,
@@ -633,7 +634,7 @@ export async function pushLibraryLikes(
   const cloud = await fetchCloudTrackLite(userId)
   const localIds = new Set(allLocal.map((t) => t.id))
 
-  const rows: Array<{
+  const candidates: Array<{
     user_id: string
     local_id: string
     liked: boolean
@@ -642,6 +643,7 @@ export async function pushLibraryLikes(
     artist: string
     duration: number
     file_name: string
+    localTs: number
   }> = []
   const staleIds: string[] = []
 
@@ -649,19 +651,45 @@ export async function pushLibraryLikes(
     if (!(t.liked || typeof t.likedUpdatedAt === 'number')) continue
     const local_id = pickCloudLocalIdForTrack(t, cloud, localIds)
     if (local_id !== t.id) staleIds.push(t.id)
-    rows.push({
+    const localTs = t.likedUpdatedAt || t.createdAt || Date.now()
+    candidates.push({
       user_id: userId,
       local_id,
       liked: Boolean(t.liked),
-      updated_at: new Date(
-        t.likedUpdatedAt || t.createdAt || Date.now(),
-      ).toISOString(),
+      updated_at: new Date(localTs).toISOString(),
       title: t.title || '',
       artist: t.artist || '',
       duration: t.duration || 0,
       file_name: t.fileName || '',
+      localTs,
     })
   }
+
+  if (!candidates.length) return 0
+
+  // No sobrescribir me gusta más nuevos hechos en otro dispositivo
+  const remoteIds = [...new Set(candidates.map((c) => c.local_id))]
+  const remoteById = new Map<string, number>()
+  const chunkMeta = 80
+  for (let i = 0; i < remoteIds.length; i += chunkMeta) {
+    const slice = remoteIds.slice(i, i + chunkMeta)
+    const { data, error } = await supabase
+      .from('library_likes')
+      .select('local_id,updated_at')
+      .eq('user_id', userId)
+      .in('local_id', slice)
+    if (error) {
+      console.warn('Push likes remote check', error.message)
+      break
+    }
+    for (const row of (data || []) as { local_id: string; updated_at: string }[]) {
+      remoteById.set(row.local_id, Date.parse(row.updated_at) || 0)
+    }
+  }
+
+  const rows = candidates
+    .filter((c) => c.localTs >= (remoteById.get(c.local_id) ?? 0))
+    .map(({ localTs: _ts, ...row }) => row)
 
   if (!rows.length) return 0
 
@@ -800,7 +828,7 @@ export async function pullLibraryLikes(userId: string): Promise<number> {
   return applied
 }
 
-/** Sube playlists del perfil a Supabase. */
+/** Sube playlists del perfil a Supabase (ids canónicos; no pisa listas más nuevas). */
 export async function pushLibraryPlaylists(
   userId: string,
   playlistId?: string,
@@ -813,16 +841,58 @@ export async function pushLibraryPlaylists(
 
   if (!playlists.length) return 0
 
-  const rows = playlists.map((p) => ({
-    user_id: userId,
-    local_id: p.id,
-    name: p.name || '',
-    description: p.description || '',
-    track_ids: p.trackIds || [],
-    has_cover: Boolean(p.hasCover),
-    created_at: new Date(p.createdAt || Date.now()).toISOString(),
-    updated_at: new Date(p.updatedAt || Date.now()).toISOString(),
-  }))
+  const [cloud, locals] = await Promise.all([
+    fetchCloudTrackLite(userId),
+    db.tracks.toArray(),
+  ])
+  const localIds = new Set(locals.map((t) => t.id))
+  const trackById = new Map(locals.map((t) => [t.id, t]))
+
+  const candidates = playlists.map((p) => {
+    const track_ids = (p.trackIds || []).map((id) => {
+      const track = trackById.get(id)
+      if (!track) return id
+      return pickCloudLocalIdForTrack(track, cloud, localIds)
+    })
+    const updatedAt = p.updatedAt || p.createdAt || Date.now()
+    return {
+      user_id: userId,
+      local_id: p.id,
+      name: p.name || '',
+      description: p.description || '',
+      track_ids,
+      has_cover: Boolean(p.hasCover),
+      created_at: new Date(p.createdAt || Date.now()).toISOString(),
+      updated_at: new Date(updatedAt).toISOString(),
+      localTs: updatedAt,
+    }
+  })
+
+  const remoteIds = candidates.map((c) => c.local_id)
+  const remoteById = new Map<string, number>()
+  if (remoteIds.length) {
+    const { data, error } = await supabase
+      .from('library_playlists')
+      .select('local_id,updated_at')
+      .eq('user_id', userId)
+      .in('local_id', remoteIds)
+    if (error) {
+      // Tabla ausente u otro error: dejar que el upsert falle con mensaje claro
+      if (!/column|schema|relation|does not exist/i.test(error.message)) {
+        console.warn('Push playlists remote check', error.message)
+      }
+    } else {
+      for (const row of (data || []) as { local_id: string; updated_at: string }[]) {
+        remoteById.set(row.local_id, Date.parse(row.updated_at) || 0)
+      }
+    }
+  }
+
+  const rows = candidates
+    .filter((c) => c.localTs >= (remoteById.get(c.local_id) ?? 0))
+    .map(({ localTs: _ts, ...row }) => row)
+
+  if (!rows.length) return 0
 
   const chunk = 40
   for (let i = 0; i < rows.length; i += chunk) {
@@ -925,20 +995,22 @@ export async function pullLibraryPlaylists(userId: string): Promise<number> {
   return applied
 }
 
-/** Sync completo de me gusta + playlists (perfil). */
+/** Sync completo de me gusta + playlists (perfil). Baja primero, luego sube. */
 export async function syncLibraryTaste(userId: string): Promise<{
   likesIn: number
   likesOut: number
   playlistsIn: number
   playlistsOut: number
 }> {
-  // Unifica likes de distintos local_id (PC vs móvil) antes de subir/bajar
+  // Unifica likes de distintos local_id (PC vs móvil) antes de fusionar
   await consolidateCloudLikes(userId).catch((e) =>
     console.warn('Consolidate likes', e),
   )
-  const likesOut = await pushLibraryLikes(userId)
-  const playlistsOut = await pushLibraryPlaylists(userId)
+  // IMPORTANTE: bajar antes de subir. Si se sube primero, un dispositivo viejo
+  // pisa me gusta/listas más nuevos del otro (PC ↔ móvil).
   const likesIn = await pullLibraryLikes(userId)
   const playlistsIn = await pullLibraryPlaylists(userId)
+  const likesOut = await pushLibraryLikes(userId)
+  const playlistsOut = await pushLibraryPlaylists(userId)
   return { likesIn, likesOut, playlistsIn, playlistsOut }
 }

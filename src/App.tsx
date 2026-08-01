@@ -115,6 +115,10 @@ export default function App() {
       }
     }
 
+    const onVis = () => {
+      if (document.visibilityState === 'visible') runSync()
+    }
+
     const run = async () => {
       await new Promise((r) => setTimeout(r, 800))
       if (stopped) return
@@ -138,6 +142,8 @@ export default function App() {
 
       syncTimer = window.setInterval(runSync, 30_000)
       deviceTimer = window.setInterval(() => void runDevice(), 40_000)
+      document.addEventListener('visibilitychange', onVis)
+      window.addEventListener('focus', runSync)
     }
 
     void run()
@@ -145,6 +151,8 @@ export default function App() {
       stopped = true
       if (syncTimer) window.clearInterval(syncTimer)
       if (deviceTimer) window.clearInterval(deviceTimer)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', runSync)
       hostStop?.()
     }
   }, [user, syncCloudCatalog])

@@ -20,14 +20,14 @@ import { isLibraryHostDevice } from '../lib/devices'
 import { downloadTracksFromPc } from '../lib/libraryHost'
 import { useAuthStore } from './authStore'
 
-let tasteSyncTimer: ReturnType<typeof setTimeout> | null = null
+let tasteSyncTimer: number | null = null
 
 function scheduleTasteSync() {
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
-  if (tasteSyncTimer) clearTimeout(tasteSyncTimer)
-  tasteSyncTimer = setTimeout(() => {
+  if (tasteSyncTimer != null) window.clearTimeout(tasteSyncTimer)
+  tasteSyncTimer = window.setTimeout(() => {
     tasteSyncTimer = null
     void syncLibraryTaste(userId).catch((e) => {
       console.warn('Sync me gusta/playlists', e)
@@ -401,7 +401,18 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       pruned = await pruneCloudDuplicateTracks(userId)
       pulled = await pullLibraryCatalog(userId)
       deduped += await library.dedupeLibraryTracks()
-      const taste = await syncLibraryTaste(userId)
+      let taste = { likesIn: 0, likesOut: 0, playlistsIn: 0, playlistsOut: 0 }
+      let tasteError: string | null = null
+      try {
+        taste = await syncLibraryTaste(userId)
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Error sync perfil'
+        console.warn('Sync me gusta/playlists', e)
+        tasteError =
+          /relation|does not exist|schema cache|library_likes|library_playlists/i.test(msg)
+            ? ' · Falta ejecutar library.sql / taste-sync.sql en Supabase'
+            : ` · Perfil: ${msg}`
+      }
       const cloudCount = await getCloudCatalogCount(userId)
       const peer = await getDevicePeer(userId)
       const age = peer ? Date.now() - Date.parse(peer.updatedAt) : Infinity
@@ -419,6 +430,10 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
           (taste.likesIn || taste.playlistsIn
             ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`
             : '') +
+          (taste.likesOut || taste.playlistsOut
+            ? ` · Perfil ↑ likes ${taste.likesOut} / listas ${taste.playlistsOut}`
+            : '') +
+          (tasteError || '') +
           (deduped ? ` · Duplicados quitados: ${deduped}` : '') +
           (pruned ? ` · Nube limpia: −${pruned}` : '') +
           (localCount === 0 && cloudCount === 0

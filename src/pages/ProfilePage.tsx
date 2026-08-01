@@ -277,6 +277,9 @@ export function ProfilePage() {
           <p className="profile-card__hint">Supabase no configurado — todo es local en este dispositivo.</p>
         ) : (
           <>
+            <p className="profile-card__hint">
+              Me gusta y playlists van con tu cuenta (PC y móvil). El audio sigue en cada dispositivo.
+            </p>
             <p className="profile-card__meta">
               Última sync:{' '}
               {lastSyncAt ? formatLastSeen(lastSyncAt) : 'aún no'}
