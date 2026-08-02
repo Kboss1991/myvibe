@@ -10,6 +10,7 @@ import {
   IconHeadphones,
   IconMusicNote,
   IconPerson,
+  IconPlay,
   IconShare,
 } from '../components/Icons'
 import { UserAvatar } from '../components/UserAvatar'
@@ -251,36 +252,36 @@ export function ProfilePage() {
           <h3 className="stats-section__label">Tus números</h3>
           <div className="stats-numbers" role="list">
             <article className="stats-number-card" role="listitem">
-              <span className="stats-number-card__icon stats-number-card__icon--purple">
-                <IconHeadphones size={22} />
+              <span className="stats-number-card__icon">
+                <IconHeadphones size={20} />
               </span>
               <span className="stats-number-card__label">Minutos de música</span>
               <strong className="stats-number-card__value">{stats.estimatedMinutes}</strong>
             </article>
             <article className="stats-number-card" role="listitem">
-              <span className="stats-number-card__icon stats-number-card__icon--red">
-                <IconPerson size={22} />
+              <span className="stats-number-card__icon">
+                <IconPerson size={20} />
               </span>
               <span className="stats-number-card__label">Artistas escuchados</span>
               <strong className="stats-number-card__value">{stats.uniqueArtists}</strong>
             </article>
             <article className="stats-number-card" role="listitem">
-              <span className="stats-number-card__icon stats-number-card__icon--violet">
-                <IconMusicNote size={22} />
+              <span className="stats-number-card__icon">
+                <IconMusicNote size={20} />
               </span>
               <span className="stats-number-card__label">Canciones escuchadas</span>
               <strong className="stats-number-card__value">{stats.uniqueTracksPlayed}</strong>
             </article>
             <article className="stats-number-card" role="listitem">
-              <span className="stats-number-card__icon stats-number-card__icon--amber">
-                <IconFlame size={22} />
+              <span className="stats-number-card__icon">
+                <IconFlame size={20} />
               </span>
               <span className="stats-number-card__label">Días de racha</span>
               <strong className="stats-number-card__value">{stats.streakDays}</strong>
             </article>
             <article className="stats-number-card" role="listitem">
-              <span className="stats-number-card__icon stats-number-card__icon--teal">
-                <IconMusicNote size={22} />
+              <span className="stats-number-card__icon">
+                <IconPlay size={20} />
               </span>
               <span className="stats-number-card__label">Reproducciones</span>
               <strong className="stats-number-card__value">{stats.totalPlays}</strong>
