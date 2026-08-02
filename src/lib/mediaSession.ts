@@ -168,10 +168,6 @@ function bindMediaHandlers(handlers: {
   }
 }
 
-function sleep(ms: number) {
-  return new Promise<void>((r) => window.setTimeout(r, ms))
-}
-
 /**
  * Now Playing / CarPlay.
  * Si `playing: true` (salto de pista): UNA sola escritura de metadata (con artwork)
@@ -200,24 +196,18 @@ export async function updateMediaSession(
 
   const playingHint = opts?.playing
 
-  // Salto / reproducción: un solo write. El 2º (artwork tardío) era el que dejaba Play.
+  // Salto / reproducción: UN solo write, con carátula lista (sin 2º write que pone Play).
   if (playingHint === true) {
     let artwork: MediaImage[] = []
-    try {
-      const quickCover: MediaImage[] = _coverUrl
-        ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
-        : []
-      artwork =
-        track.hasLocalAudio !== false
-          ? await Promise.race([
-              buildLockScreenArtwork(track.id),
-              sleep(280).then(() => quickCover),
-            ])
-          : quickCover
-    } catch {
-      artwork = _coverUrl
-        ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
-        : []
+    if (track.hasLocalAudio !== false) {
+      try {
+        artwork = await buildLockScreenArtwork(track.id)
+      } catch {
+        artwork = []
+      }
+    }
+    if (!artwork.length && _coverUrl) {
+      artwork = [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
     }
 
     navigator.mediaSession.metadata = new MediaMetadata({

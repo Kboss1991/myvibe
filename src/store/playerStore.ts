@@ -144,6 +144,20 @@ async function publishPlayingMediaSession(trackId: string) {
       /* ignore */
     }
   }
+
+  // Portada lista ANTES del único write de metadata (si no, CarPlay muestra el logo)
+  try {
+    const coverUrl = await getCoverObjectUrl(trackId)
+    if (token !== sessionPublishToken) return
+    if (coverUrl && usePlayerStore.getState().currentTrackId === trackId) {
+      usePlayerStore.setState({ coverUrl })
+    }
+  } catch {
+    /* ignore */
+  }
+
+  if (token !== sessionPublishToken) return
+  if (usePlayerStore.getState().currentTrackId !== trackId) return
   beginTrackChangeMediaGuard(8000)
   setMediaPlaybackState(true)
   await refreshMediaSessionForTrackId(trackId, true)
@@ -275,18 +289,48 @@ function mediaIsEffectivelyPlaying() {
   return false
 }
 
-/** Play remoto (CarPlay / bloqueo): no reiniciar si ya suena. */
+/**
+ * Play remoto (CarPlay / bloqueo).
+ * NUNCA hardResume / recargar src desde aquí: es lo que “rompe” hasta abrir el móvil.
+ */
 function handleRemotePlay() {
-  if (!audioEngine.paused || Date.now() < mediaPlayingHoldUntil) {
-    stopInterruptionResumeWatcher()
+  stopInterruptionResumeWatcher()
+  const state = usePlayerStore.getState()
+  if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
+    return
+  }
+
+  if (!audioEngine.paused) {
     usePlayerStore.setState({ isPlaying: true })
-    holdMediaPlaying(2000)
+    beginTrackChangeMediaGuard(2500)
+    setMediaPlaybackState(true)
     refreshMediaPlaybackState(true, { strong: true })
     return
   }
+
   pendingBackgroundPlay = true
-  holdMediaPlaying(3000)
-  void usePlayerStore.getState().play()
+  beginTrackChangeMediaGuard(5000)
+  usePlayerStore.setState({ isPlaying: true })
+  void softRemoteResume()
+}
+
+async function softRemoteResume() {
+  try {
+    audioEngine.applyPlaybackSession()
+    await audioEngine.ensureAudible()
+    let ok = await audioEngine.play()
+    if (!ok || audioEngine.paused) {
+      await new Promise<void>((r) => window.setTimeout(r, 120))
+      ok = await audioEngine.play()
+    }
+    const playing = !audioEngine.paused
+    usePlayerStore.setState({ isPlaying: playing || pendingBackgroundPlay })
+    setMediaPlaybackState(playing || pendingBackgroundPlay)
+    refreshMediaPlaybackState(playing || pendingBackgroundPlay, { strong: true })
+  } catch {
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+  }
 }
 
 function handleRemotePause() {
@@ -1334,12 +1378,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         Number.isFinite(audioEngine.currentTime) && audioEngine.currentTime > 0
           ? audioEngine.currentTime
           : get().position
-      // Primero play normal; hardResume solo si sigue parado (reload destruye sesión)
       let ok = await audioEngine.play()
       if (!ok || audioEngine.paused) {
+        await new Promise<void>((r) => window.setTimeout(r, 100))
+        ok = await audioEngine.play()
+      }
+      const visible =
+        typeof document === 'undefined' || document.visibilityState === 'visible'
+      if ((!ok || audioEngine.paused) && visible) {
         ok = await audioEngine.hardResume(resumeAt)
       }
       if (!ok || audioEngine.paused) {
+        if (!visible) {
+          pendingBackgroundPlay = true
+          beginTrackChangeMediaGuard(5000)
+          set({ isPlaying: true })
+          setMediaPlaybackState(true)
+          refreshMediaPlaybackState(true, { strong: true })
+          return
+        }
         const ep = getPodcastEpisode(currentPodcastEpisodeId)
         const show = ep ? getPodcastShow(ep.showId) : null
         if (ep && show) {
@@ -1352,7 +1409,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
       set({ isPlaying: true })
       await bindMediaSession([])
-      refreshMediaPlaybackState(true)
+      refreshMediaPlaybackState(true, { strong: true })
       return
     }
     if (radioPauseStartedAt != null) set({ radioPauseStartedAt: null })
@@ -1368,18 +1425,33 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ? audioEngine.currentTime
         : get().position
 
-    // Primero play normal; hardResume solo si sigue parado (en CarPlay el reload rompe todo)
+    // Solo play suave. hardResume/recarga de src desde CarPlay deja el motor roto.
     let ok = await audioEngine.play()
     if (!ok || audioEngine.paused) {
+      await new Promise<void>((r) => window.setTimeout(r, 100))
+      ok = await audioEngine.play()
+    }
+    // hardResume solo en primer plano (gesto en la app), nunca con pantalla bloqueada
+    const visible =
+      typeof document === 'undefined' || document.visibilityState === 'visible'
+    if ((!ok || audioEngine.paused) && visible) {
       ok = await audioEngine.hardResume(resumeAt)
     }
     if (!ok || audioEngine.paused) {
-      await loadAndMaybePlay(currentTrackId, resumeAt, true, set)
+      if (visible) {
+        await loadAndMaybePlay(currentTrackId, resumeAt, true, set)
+      } else {
+        pendingBackgroundPlay = true
+        beginTrackChangeMediaGuard(5000)
+        set({ isPlaying: true })
+        setMediaPlaybackState(true)
+        refreshMediaPlaybackState(true, { strong: true })
+      }
       return
     }
     set({ isPlaying: true })
     await bindMediaSession([])
-    refreshMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
   },
 
   next: async (opts) => {
