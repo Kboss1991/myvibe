@@ -11,8 +11,14 @@ class AudioEngine {
   private endedHandlers = new Set<() => void>()
   /** Pausa no pedida por nosotros (llamada, Siri, otra app) */
   private interruptionHandlers = new Set<() => void>()
+  /** Fin de interrupción del sistema (colgar, volver audio a la app) */
+  private interruptionEndHandlers = new Set<() => void>()
   /** true justo al llamar pause() programático — evita falsas interrupciones */
   private intentionalPause = false
+  /** true mientras iOS tiene el audio (llamada, Siri, etc.) */
+  private systemInterrupted = false
+  private audioSessionWired = false
+  private ctxStateWired = false
   /** Referencia al blob URL actual; NO se revoca aquí (lo gestiona library cache). */
   private objectUrl: string | null = null
   private hls: Hls | null = null
@@ -96,17 +102,87 @@ class AudioEngine {
     return MAX_RADIO_DELAY
   }
 
+  get isSystemInterrupted() {
+    return this.systemInterrupted
+  }
+
+  /** true si conviene no recargar la PWA (audio activo o llamada en curso). */
+  get shouldKeepAlive() {
+    return !this.audio.paused || this.systemInterrupted
+  }
+
   applyPlaybackSession() {
     try {
       const nav = navigator as Navigator & {
-        audioSession?: { type: string }
+        audioSession?: {
+          type: string
+          state?: string
+          onstatechange: ((this: unknown, ev: Event) => void) | null
+        }
       }
       if (nav.audioSession) {
         nav.audioSession.type = 'playback'
+        if (!this.audioSessionWired) {
+          this.audioSessionWired = true
+          const session = nav.audioSession
+          session.onstatechange = () => {
+            const state = String(session.state ?? '')
+            if (state === 'interrupted') {
+              this.enterSystemInterruption()
+              return
+            }
+            // active / inactive: la llamada (u otra app) ya soltó el audio
+            if (this.systemInterrupted) {
+              this.leaveSystemInterruption()
+            }
+          }
+        }
       }
     } catch {
       // API no disponible
     }
+  }
+
+  private enterSystemInterruption() {
+    if (this.intentionalPause) return
+    const was = this.systemInterrupted
+    this.systemInterrupted = true
+    if (!was) {
+      for (const h of this.interruptionHandlers) {
+        try {
+          h()
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+
+  private leaveSystemInterruption() {
+    if (!this.systemInterrupted) return
+    this.systemInterrupted = false
+    for (const h of this.interruptionEndHandlers) {
+      try {
+        h()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  private wireContextState(ctx: AudioContext) {
+    if (this.ctxStateWired) return
+    this.ctxStateWired = true
+    ctx.addEventListener('statechange', () => {
+      const state = String(ctx.state)
+      if (state === 'interrupted') {
+        this.enterSystemInterruption()
+        return
+      }
+      if (state === 'running' && this.systemInterrupted) {
+        this.leaveSystemInterruption()
+      }
+    })
   }
 
   private mountIntoDom() {
@@ -386,6 +462,7 @@ class AudioEngine {
       window.AudioContext ||
       (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
     this.ctx = new Ctx()
+    this.wireContextState(this.ctx)
     this.sourceNode = this.ctx.createMediaElementSource(this.audio)
     this.delayNode = this.ctx.createDelay(MAX_RADIO_DELAY)
     this.gainNode = this.ctx.createGain()
@@ -419,6 +496,7 @@ class AudioEngine {
     if (this.ctx) {
       void this.ctx.close().catch(() => undefined)
       this.ctx = null
+      this.ctxStateWired = false
     }
   }
 
@@ -463,8 +541,15 @@ class AudioEngine {
   }
 
   private async resumeContext() {
-    if (this.ctx?.state === 'suspended') {
-      await this.ctx.resume()
+    if (!this.ctx) return
+    this.wireContextState(this.ctx)
+    const state = String(this.ctx.state)
+    if (state === 'suspended' || state === 'interrupted') {
+      try {
+        await this.ctx.resume()
+      } catch {
+        /* iOS puede rechazar resume mientras dura la llamada */
+      }
     }
   }
 
@@ -985,6 +1070,12 @@ class AudioEngine {
   onInterruption(handler: () => void) {
     this.interruptionHandlers.add(handler)
     return () => this.interruptionHandlers.delete(handler)
+  }
+
+  /** Fin de interrupción (colgar, iOS devuelve el audio). Clave en CarPlay. */
+  onInterruptionEnd(handler: () => void) {
+    this.interruptionEndHandlers.add(handler)
+    return () => this.interruptionEndHandlers.delete(handler)
   }
 }
 

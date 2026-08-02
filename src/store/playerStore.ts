@@ -89,6 +89,8 @@ let persistTimer: number | null = null
 let endedUnsub: (() => void) | null = null
 let engineUnsub: (() => void) | null = null
 let interruptionUnsub: (() => void) | null = null
+let interruptionEndUnsub: (() => void) | null = null
+let interruptionBurstToken = 0
 let trackAdvanceLockUntil = 0
 let prefetchedNextId: string | null = null
 /** Si el avance automático no pudo hacer play (bloqueo), reintentar al volver. */
@@ -323,7 +325,7 @@ function stopInterruptionResumeWatcher() {
 }
 
 function startInterruptionResumeWatcher() {
-  interruptionResumeUntil = Date.now() + 120_000
+  interruptionResumeUntil = Date.now() + 180_000
   if (interruptionResumeTimer != null) return
   interruptionResumeTimer = window.setInterval(() => {
     if (Date.now() > interruptionResumeUntil) {
@@ -337,15 +339,51 @@ function startInterruptionResumeWatcher() {
     }
     // Reclamar Now Playing para que el play del coche no abra Podcasts
     audioEngine.applyPlaybackSession()
-    void bindMediaSession([])
+    void bindMediaSession([]).then(() => {
+      refreshMediaPlaybackState(true)
+    })
     if (!audioEngine.paused) {
       pendingBackgroundPlay = false
       stopInterruptionResumeWatcher()
       setMediaPlaybackState(true)
       return
     }
+    // Durante la llamada play() falla siempre: no spamear
+    if (audioEngine.isSystemInterrupted) return
     void state.play()
-  }, 1500)
+  }, 1200)
+}
+
+/**
+ * Tras colgar, iOS a veces tarda un poco en soltar el hardware.
+ * Varios intentos cortos sin esperar a que el usuario abra el móvil.
+ */
+async function burstResumeAfterCall() {
+  const token = ++interruptionBurstToken
+  const delays = [0, 200, 600, 1200, 2500, 5000, 9000]
+  for (const wait of delays) {
+    if (wait) await new Promise((r) => window.setTimeout(r, wait))
+    if (token !== interruptionBurstToken) return
+    if (!pendingBackgroundPlay) return
+    if (audioEngine.isSystemInterrupted) continue
+
+    const state = usePlayerStore.getState()
+    if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
+      return
+    }
+
+    audioEngine.applyPlaybackSession()
+    await bindMediaSession([])
+    refreshMediaPlaybackState(true)
+    await state.play()
+
+    if (!audioEngine.paused) {
+      pendingBackgroundPlay = false
+      stopInterruptionResumeWatcher()
+      setMediaPlaybackState(true)
+      return
+    }
+  }
 }
 
 /** Reanudar tras llamada / volver al coche / desbloquear. */
@@ -356,16 +394,23 @@ export function resumeAfterInterruption() {
   }
   audioEngine.applyPlaybackSession()
   void bindMediaSession([])
+
+  // Si venimos de una llamada, forzar ola de reintentos (CarPlay no abre la PWA)
   if (pendingBackgroundPlay || (state.isPlaying && audioEngine.paused)) {
-    void state.play()
-  } else if (state.isPlaying) {
+    pendingBackgroundPlay = true
+    setMediaPlaybackState(true)
+    void burstResumeAfterCall()
+    startInterruptionResumeWatcher()
+    return
+  }
+  if (state.isPlaying) {
     void audioEngine.ensureAudible()
     void audioEngine.play()
-  } else {
-    // Seguir apareciendo en Now Playing aunque estemos en pause (evita que gane Podcasts)
-    void bindMediaSession([])
-    setMediaPlaybackState(false)
+    return
   }
+  // Seguir apareciendo en Now Playing aunque estemos en pause (evita que gane Podcasts)
+  void bindMediaSession([])
+  setMediaPlaybackState(false)
 }
 
 function bumpPodcastProgressTick(
@@ -738,10 +783,25 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         // Mantener metadatos en Now Playing (si se pierden, el coche abre Podcasts)
         audioEngine.applyPlaybackSession()
         void bindMediaSession([]).then(() => {
-          // No forzar paused: al bloquear, iOS dispara pause espurio y el botón
-          // quedaba en Play. Si el audio sigue, mostrar Pause; si paró (llamada), Play.
-          refreshMediaPlaybackState(!audioEngine.paused)
+          // Durante la llamada el audio está pausado, pero conviene seguir
+          // reclamando Now Playing como "playing" para no ceder CarPlay a Podcasts.
+          refreshMediaPlaybackState(true)
         })
+        startInterruptionResumeWatcher()
+      })
+    }
+
+    if (!interruptionEndUnsub) {
+      interruptionEndUnsub = audioEngine.onInterruptionEnd(() => {
+        if (!get().currentTrackId && !get().currentRadioId && !get().currentPodcastEpisodeId) {
+          return
+        }
+        // Colgar / iOS suelta el audio: reanudar sin abrir el móvil
+        pendingBackgroundPlay = true
+        set({ isPlaying: true })
+        audioEngine.applyPlaybackSession()
+        void bindMediaSession([]).then(() => refreshMediaPlaybackState(true))
+        void burstResumeAfterCall()
         startInterruptionResumeWatcher()
       })
     }

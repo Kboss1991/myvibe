@@ -3,10 +3,25 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { registerSW } from 'virtual:pwa-register'
 import App from './App'
+import { audioEngine } from './lib/audioEngine'
 import './styles/tokens.css'
 
+function shouldDeferReload() {
+  try {
+    if (audioEngine.shouldKeepAlive) return true
+    if ('mediaSession' in navigator && navigator.mediaSession.playbackState === 'playing') {
+      return true
+    }
+  } catch {
+    /* ignore */
+  }
+  return false
+}
+
 function forceReloadOnce(reason: string) {
-  const key = `mv-reload:v20260731-radios:${reason}`
+  // No tumbar la PWA en mitad de una canción / llamada (CarPlay desaparece)
+  if (shouldDeferReload()) return
+  const key = `mv-reload:v20260802-carplay:${reason}`
   if (sessionStorage.getItem(key)) return
   sessionStorage.setItem(key, '1')
   window.location.reload()

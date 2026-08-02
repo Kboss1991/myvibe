@@ -61,7 +61,7 @@ export default defineConfig({
       },
       workbox: {
         // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
-        cacheId: 'myvibe-radio-delay-switch-20260801',
+        cacheId: 'myvibe-carplay-call-resume-20260802',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
