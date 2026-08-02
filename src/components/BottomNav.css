@@ -3,24 +3,26 @@
   grid-template-columns: repeat(5, 1fr);
   gap: 0;
   width: 100%;
-  padding: 8px 0 0;
-  padding-bottom: max(2px, calc(var(--safe-bottom-pad, 0px) - 45px));
+  padding: 6px 0 0;
+  padding-bottom: max(0px, calc(var(--safe-bottom-pad, 0px) - 52px));
   background: #181818;
 }
 
 @media (max-width: 899px) {
   .bottom-nav {
-    padding-top: 8px;
+    padding-top: 4px;
     padding-left: 0;
     padding-right: 0;
-    padding-bottom: max(2px, calc(var(--safe-bottom, 0px) - 45px));
+    /* Casi pegado al borde inferior; el dock ya cubre el home indicator */
+    padding-bottom: 0;
   }
 
   .bottom-nav__link {
-    min-height: 46px;
-    padding: 2px 2px 4px;
-    gap: 6px;
-    font-size: 0.75rem;
+    min-height: 40px;
+    padding: 0 2px 2px;
+    gap: 3px;
+    font-size: 0.72rem;
+    justify-content: flex-end;
   }
 }
 

@@ -108,7 +108,7 @@ body.sheet-open .app-dock {
     padding-left: 0;
     padding-right: 0;
     /* Espacio para que el dock bajado no se recorte */
-    padding-bottom: 55px;
+    padding-bottom: 72px;
     background: #121212;
   }
 
@@ -122,9 +122,11 @@ body.sheet-open .app-dock {
     margin-left: calc(-1 * var(--safe-left));
     margin-right: calc(-1 * var(--safe-right));
     /* Baja el dock hacia el borde inferior (el padding del column evita el corte) */
-    margin-bottom: -55px;
+    margin-bottom: -72px;
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
+    /* Rellena el home indicator para que el menú no flote */
+    padding-bottom: max(10px, calc(var(--safe-bottom, 0px) - 8px));
     border-top-color: #282828;
     overflow: visible;
     max-height: none;
