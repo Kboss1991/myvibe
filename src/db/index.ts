@@ -120,6 +120,7 @@ export async function ensurePlaybackSnapshot(): Promise<PlaybackSnapshot> {
     position: 0,
     volume: 1,
     recentIds: [],
+    playbackSource: null,
   }
   await db.playback.put(snapshot)
   return snapshot

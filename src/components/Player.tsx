@@ -583,7 +583,7 @@ export function NowPlaying() {
             aria-label={`Volver a ${sourceTitle}`}
           >
             <p className="now-playing__eyebrow">Escuchando de</p>
-            <p className="now-playing__album now-playing__album--link">{sourceTitle}</p>
+            <p className="now-playing__source-title">{sourceTitle}</p>
           </button>
         ) : (
           <div>

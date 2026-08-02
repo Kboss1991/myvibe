@@ -487,7 +487,26 @@ type PlaybackPersistPartial = Partial<{
   repeat: RepeatMode
   position: number
   volume: number
+  playbackSource: PlaybackSource | null
 }>
+
+function normalizePlaybackSource(raw: unknown): PlaybackSource | null {
+  if (!raw || typeof raw !== 'object') return null
+  const s = raw as Record<string, unknown>
+  if (s.kind === 'liked' && typeof s.title === 'string' && s.title.trim()) {
+    return { kind: 'liked', title: s.title.trim() }
+  }
+  if (
+    s.kind === 'playlist' &&
+    typeof s.id === 'string' &&
+    s.id &&
+    typeof s.title === 'string' &&
+    s.title.trim()
+  ) {
+    return { kind: 'playlist', id: s.id, title: s.title.trim() }
+  }
+  return null
+}
 
 let pendingPersist: PlaybackPersistPartial = {}
 
@@ -532,6 +551,7 @@ function persistPlaybackNow() {
     repeat: state.repeat,
     position: livePos,
     volume: state.volume,
+    playbackSource: state.playbackSource,
   }
   void flushPlaybackPersist()
 }
@@ -766,6 +786,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       repeat: snap.repeat === 'all' || (snap.repeat as string) === 'one' ? 'all' : 'off',
       position: snap.position,
       volume: snap.volume,
+      playbackSource: currentTrackId
+        ? normalizePlaybackSource(snap.playbackSource)
+        : null,
       hydrated: true,
     })
     bindPersistLifecycle()
@@ -927,6 +950,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       isPlaying: true,
       playbackSource: null,
     })
+    persistSoon({ playbackSource: null })
     setMediaPlaybackState(true)
     try {
       const { reportStationClick } = await import('../lib/radioBrowser')
@@ -987,6 +1011,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       queueOpen: false,
       playbackSource: null,
     })
+    persistSoon({ playbackSource: null })
 
     try {
       await audioEngine.load(episode.audioUrl, resumeAt, { live: false, skipCors: true })
@@ -1050,6 +1075,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId: nextQueue[index] ?? trackId,
       shuffle: shuffleOn,
       position: 0,
+      playbackSource: null,
     })
     const playId = nextQueue[index] ?? trackId
     const ok = await loadAndMaybePlay(playId, 0, true, set)
@@ -1101,6 +1127,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId: queue[index] ?? null,
       shuffle: shuffleOn,
       position: 0,
+      playbackSource: source,
     })
     for (let i = index; i < queue.length; i++) {
       const trackId = queue[i]!

@@ -63,6 +63,8 @@ export interface PlaybackSnapshot {
   position: number
   volume: number
   recentIds: string[]
+  /** Lista / Me gusta desde la que se lanzó la cola (Now Playing). */
+  playbackSource?: PlaybackSource | null
 }
 
 export interface CoverRecord {

@@ -709,19 +709,37 @@
   color: inherit;
   cursor: pointer;
   border-radius: 8px;
+  text-decoration: none;
+  -webkit-text-decoration: none;
+}
+
+.now-playing__source:link,
+.now-playing__source:visited,
+.now-playing__source:hover,
+.now-playing__source:active,
+.now-playing__source:focus {
+  text-decoration: none;
+  -webkit-text-decoration: none;
 }
 
 .now-playing__source:active {
   background: rgba(255, 255, 255, 0.08);
 }
 
-.now-playing__album--link {
+.now-playing__source-title {
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 700;
   color: var(--accent);
   max-width: 100%;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-decoration: none;
+  text-decoration: none !important;
+  -webkit-text-decoration: none !important;
+  border: none;
+  border-bottom: none;
+  box-shadow: none;
 }
 
 .now-playing__art-wrap {
