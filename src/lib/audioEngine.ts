@@ -15,6 +15,7 @@ class AudioEngine {
   private interruptionEndHandlers = new Set<() => void>()
   /** true justo al llamar pause() programático — evita falsas interrupciones */
   private intentionalPause = false
+  private intentionalPauseToken = 0
   /** true mientras iOS tiene el audio (llamada, Siri, etc.) */
   private systemInterrupted = false
   private audioSessionWired = false
@@ -82,12 +83,18 @@ class AudioEngine {
     el.addEventListener('error', () => this.emit())
   }
 
-  /** Marca la siguiente pause() del elemento como intencional (no interrupción). */
-  markIntentionalPause() {
+  /**
+   * Marca pause() / cambio de src como intencional (no interrupción).
+   * Ventana > 0: el evento `pause` de un reload de src llega en otro turno.
+   */
+  markIntentionalPause(ms = 400) {
     this.intentionalPause = true
+    const token = ++this.intentionalPauseToken
     window.setTimeout(() => {
-      this.intentionalPause = false
-    }, 0)
+      if (token === this.intentionalPauseToken) {
+        this.intentionalPause = false
+      }
+    }, Math.max(0, ms))
   }
 
   get isLive() {
@@ -927,11 +934,18 @@ class AudioEngine {
   /**
    * Tras pause en pantalla de bloqueo / BT, play() a veces “arranca” sin sonido.
    * Recarga el mismo src y reanuda en la posición.
+   * Nunca llamar si ya suena: resetear src dispara pause→interrupción falsa y rompe CarPlay.
    */
   async hardResume(resumeAt?: number): Promise<boolean> {
     this.mountIntoDom()
     this.applyPlaybackSession()
     await this.resumeContext()
+    if (!this.audio.paused && !this.audio.ended) {
+      this.audio.muted = false
+      if (!this.gainNode) this.audio.volume = this.volumeValue
+      this.emit()
+      return true
+    }
     if (this.sourceNode && !this.live) {
       this.ensureElementAudioRoute()
     }
@@ -945,6 +959,8 @@ class AudioEngine {
 
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
+    // Evita que el pause del reload dispare onInterruption / watcher CarPlay
+    this.markIntentionalPause(1200)
     this.audio.src = src
 
     try {

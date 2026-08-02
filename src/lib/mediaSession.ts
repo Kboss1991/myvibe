@@ -303,30 +303,37 @@ export function refreshMediaPlaybackState(playing?: boolean) {
 
 /**
  * Reclama Now Playing / CarPlay frente a Spotify u otras apps.
- * Reescribir metadata + playbackState es lo que iOS usa para decidir quién “manda”.
+ * Por defecto solo reafirma playbackState (reescribir metadata resetea el botón a Play).
+ * Usa `reclaim: true` tras llamada / pérdida de sesión.
  */
-export function claimNowPlaying(playing?: boolean) {
+export function claimNowPlaying(
+  playing?: boolean,
+  opts?: { reclaim?: boolean },
+) {
   if (!('mediaSession' in navigator)) return
-  try {
-    const meta = navigator.mediaSession.metadata
-    if (meta) {
-      const artwork = meta.artwork ? Array.from(meta.artwork) : []
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: meta.title || 'MyVibe',
-        artist: meta.artist || 'MyVibe',
-        album: meta.album || 'MyVibe',
-        artwork,
-      })
-    } else {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: 'MyVibe',
-        artist: 'MyVibe',
-        album: 'MyVibe',
-        artwork: [],
-      })
+  const reclaim = Boolean(opts?.reclaim)
+  if (reclaim) {
+    try {
+      const meta = navigator.mediaSession.metadata
+      if (meta) {
+        const artwork = meta.artwork ? Array.from(meta.artwork) : []
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: meta.title || 'MyVibe',
+          artist: meta.artist || 'MyVibe',
+          album: meta.album || 'MyVibe',
+          artwork,
+        })
+      } else {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'MyVibe',
+          artist: 'MyVibe',
+          album: 'MyVibe',
+          artwork: [],
+        })
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
   refreshMediaPlaybackState(playing)
 }

@@ -187,11 +187,8 @@ async function refreshMediaSessionForTrackId(trackId: string) {
   if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
   const cover = usePlayerStore.getState().coverUrl
   await updateMediaSession(track, cover, {
-    play: () => {
-      pendingBackgroundPlay = true
-      void usePlayerStore.getState().play()
-    },
-    pause: () => usePlayerStore.getState().pause(),
+    play: () => handleRemotePlay(),
+    pause: () => handleRemotePause(),
     previoustrack: () => void usePlayerStore.getState().previous(),
     nexttrack: () => void usePlayerStore.getState().next(),
     seekto: (time) => usePlayerStore.getState().seek(time),
@@ -202,11 +199,34 @@ async function refreshMediaSessionForTrackId(trackId: string) {
 }
 
 function mediaIsEffectivelyPlaying() {
-  return (
-    pendingBackgroundPlay ||
-    !audioEngine.paused ||
-    usePlayerStore.getState().isPlaying
-  )
+  // El botón CarPlay debe seguir al audio real. pending/isPlaying solo cuentan
+  // durante una interrupción de sistema (llamada), no en pause de usuario.
+  if (!audioEngine.paused) return true
+  if (audioEngine.isSystemInterrupted && (pendingBackgroundPlay || usePlayerStore.getState().isPlaying)) {
+    return true
+  }
+  return false
+}
+
+/** Play remoto (CarPlay / bloqueo): no reiniciar si ya suena. */
+function handleRemotePlay() {
+  if (!audioEngine.paused) {
+    pendingBackgroundPlay = false
+    stopInterruptionResumeWatcher()
+    usePlayerStore.setState({ isPlaying: true })
+    refreshMediaPlaybackState(true)
+    return
+  }
+  pendingBackgroundPlay = true
+  void usePlayerStore.getState().play()
+}
+
+function handleRemotePause() {
+  if (audioEngine.paused && !pendingBackgroundPlay && !usePlayerStore.getState().isPlaying) {
+    refreshMediaPlaybackState(false)
+    return
+  }
+  usePlayerStore.getState().pause()
 }
 
 /**
@@ -349,22 +369,20 @@ function startInterruptionResumeWatcher() {
     }
     // Reclamar Now Playing para que CarPlay no se vaya a Spotify/Podcasts
     audioEngine.applyPlaybackSession()
-    void bindMediaSession([]).then(() => {
-      claimNowPlaying(true)
-    })
     if (!audioEngine.paused) {
       pendingBackgroundPlay = false
       stopInterruptionResumeWatcher()
-      claimNowPlaying(true)
+      refreshMediaPlaybackState(true)
       return
     }
     // Durante la llamada play() falla siempre: solo pelear el Now Playing
     if (audioEngine.isSystemInterrupted) {
-      claimNowPlaying(true)
+      claimNowPlaying(true, { reclaim: true })
       return
     }
     void state.play().then(() => {
-      if (!audioEngine.paused) claimNowPlaying(true)
+      if (!audioEngine.paused) refreshMediaPlaybackState(true)
+      else claimNowPlaying(true, { reclaim: true })
     })
   }, 1200)
 }
@@ -389,17 +407,17 @@ async function burstResumeAfterCall() {
 
     audioEngine.applyPlaybackSession()
     await bindMediaSession([])
-    claimNowPlaying(true)
+    claimNowPlaying(true, { reclaim: true })
     await state.play()
 
     if (!audioEngine.paused) {
       pendingBackgroundPlay = false
       stopInterruptionResumeWatcher()
-      claimNowPlaying(true)
+      refreshMediaPlaybackState(true)
       return
     }
     // Aunque aún no suene, seguir ocupando el slot de CarPlay frente a Spotify
-    claimNowPlaying(true)
+    claimNowPlaying(true, { reclaim: true })
   }
 }
 
@@ -410,19 +428,26 @@ export function resumeAfterInterruption() {
     return
   }
   audioEngine.applyPlaybackSession()
-  void bindMediaSession([]).then(() => claimNowPlaying(pendingBackgroundPlay || state.isPlaying))
+  const wantPlaying = pendingBackgroundPlay || state.isPlaying
+  void bindMediaSession([]).then(() =>
+    claimNowPlaying(wantPlaying, { reclaim: Boolean(pendingBackgroundPlay) }),
+  )
 
   // Si venimos de una llamada, forzar ola de reintentos (CarPlay no abre la PWA)
   if (pendingBackgroundPlay || (state.isPlaying && audioEngine.paused)) {
     pendingBackgroundPlay = true
-    claimNowPlaying(true)
+    claimNowPlaying(true, { reclaim: true })
     void burstResumeAfterCall()
     startInterruptionResumeWatcher()
     return
   }
   if (state.isPlaying) {
-    void audioEngine.ensureAudible()
-    void audioEngine.play()
+    if (audioEngine.paused) {
+      void audioEngine.ensureAudible()
+      void audioEngine.play()
+    } else {
+      refreshMediaPlaybackState(true)
+    }
     return
   }
   // Seguir apareciendo en Now Playing aunque estemos en pause (evita que gane Podcasts)
@@ -832,7 +857,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         void bindMediaSession([]).then(() => {
           // Durante la llamada el audio está pausado, pero hay que seguir
           // reclamando el slot "playing" para no ceder CarPlay a Spotify.
-          claimNowPlaying(true)
+          claimNowPlaying(true, { reclaim: true })
         })
         startInterruptionResumeWatcher()
       })
@@ -847,7 +872,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         pendingBackgroundPlay = true
         set({ isPlaying: true })
         audioEngine.applyPlaybackSession()
-        void bindMediaSession([]).then(() => claimNowPlaying(true))
+        void bindMediaSession([]).then(() => claimNowPlaying(true, { reclaim: true }))
         void burstResumeAfterCall()
         startInterruptionResumeWatcher()
       })
@@ -865,15 +890,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       pendingBackgroundPlay = false
       stopInterruptionResumeWatcher()
     }
+    const effectivePlaying = mediaIsEffectivelyPlaying()
     const live = Boolean(get().currentRadioId) || audioEngine.isLive
     if (live) {
       stopNearEndPoller()
       set({
-        isPlaying: pendingBackgroundPlay ? true : playing,
+        isPlaying: effectivePlaying,
         position: 0,
         duration: 0,
       })
-      setMediaPlaybackState(pendingBackgroundPlay ? true : playing)
+      setMediaPlaybackState(effectivePlaying)
       return
     }
     const position = audioEngine.currentTime
@@ -881,11 +907,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({
       position,
       duration: Number.isFinite(duration) ? duration : 0,
-      isPlaying: pendingBackgroundPlay ? true : playing,
+      isPlaying: effectivePlaying,
       volume: audioEngine.volume,
       muted: audioEngine.muted,
     })
-    setMediaPositionState(position, duration, pendingBackgroundPlay ? true : playing)
+    setMediaPositionState(position, duration, effectivePlaying)
     persistSoon({ position })
 
     if (get().currentPodcastEpisodeId && playing) {
@@ -1174,6 +1200,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioDelay,
     } = get()
     audioEngine.applyPlaybackSession()
+
+    // Ya suena: solo sincronizar CarPlay. hardResume aquí cortocircuita el audio.
+    if (!audioEngine.paused && (currentTrackId || currentRadioId || currentPodcastEpisodeId)) {
+      pendingBackgroundPlay = false
+      stopInterruptionResumeWatcher()
+      set({
+        isPlaying: true,
+        ...(currentRadioId ? { radioPauseStartedAt: null } : {}),
+      })
+      refreshMediaPlaybackState(true)
+      return
+    }
+
     if (currentRadioId) {
       const station = getRadioStation(currentRadioId)
       if (!station) return
@@ -1217,9 +1256,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         Number.isFinite(audioEngine.currentTime) && audioEngine.currentTime > 0
           ? audioEngine.currentTime
           : get().position
-      const locked =
-        typeof document !== 'undefined' && document.visibilityState === 'hidden'
-      let ok = locked ? await audioEngine.hardResume(resumeAt) : await audioEngine.play()
+      // Primero play normal; hardResume solo si sigue parado (reload destruye sesión)
+      let ok = await audioEngine.play()
       if (!ok || audioEngine.paused) {
         ok = await audioEngine.hardResume(resumeAt)
       }
@@ -1251,11 +1289,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       Number.isFinite(audioEngine.currentTime) && audioEngine.currentTime > 0
         ? audioEngine.currentTime
         : get().position
-    const locked =
-      typeof document !== 'undefined' && document.visibilityState === 'hidden'
 
-    // En bloqueo, tras pause el elemento suele quedar mudo: reenganchar fuente
-    let ok = locked ? await audioEngine.hardResume(resumeAt) : await audioEngine.play()
+    // Primero play normal; hardResume solo si sigue parado (en CarPlay el reload rompe todo)
+    let ok = await audioEngine.play()
     if (!ok || audioEngine.paused) {
       ok = await audioEngine.hardResume(resumeAt)
     }
@@ -1628,11 +1664,8 @@ export async function bindMediaSession(tracks: Track[]) {
     const station = getRadioStation(state.currentRadioId)
     if (station) {
       await updateRadioMediaSession(station, {
-        play: () => {
-          pendingBackgroundPlay = true
-          void usePlayerStore.getState().play()
-        },
-        pause: () => usePlayerStore.getState().pause(),
+        play: () => handleRemotePlay(),
+        pause: () => handleRemotePause(),
         previoustrack: () => void usePlayerStore.getState().previous(),
         nexttrack: () => void usePlayerStore.getState().next(),
       })
@@ -1648,11 +1681,8 @@ export async function bindMediaSession(tracks: Track[]) {
         podcastSyntheticTrack(ep, show),
         ep.artworkUrl || show.artworkUrl || state.coverUrl,
         {
-          play: () => {
-            pendingBackgroundPlay = true
-            void usePlayerStore.getState().play()
-          },
-          pause: () => usePlayerStore.getState().pause(),
+          play: () => handleRemotePlay(),
+          pause: () => handleRemotePause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
           seekto: (time) => usePlayerStore.getState().seek(time),
@@ -1670,12 +1700,8 @@ export async function bindMediaSession(tracks: Track[]) {
     track = (await db.tracks.get(state.currentTrackId)) ?? null
   }
   await updateMediaSession(track, state.coverUrl, {
-    play: () => {
-      // Play del coche / bloqueo: forzar reanudación tras interrupción
-      pendingBackgroundPlay = true
-      void usePlayerStore.getState().play()
-    },
-    pause: () => usePlayerStore.getState().pause(),
+    play: () => handleRemotePlay(),
+    pause: () => handleRemotePause(),
     previoustrack: () => void usePlayerStore.getState().previous(),
     nexttrack: () => void usePlayerStore.getState().next(),
     seekto: (time) => usePlayerStore.getState().seek(time),
