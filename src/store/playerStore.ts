@@ -102,6 +102,9 @@ let pendingBackgroundPlay = false
  * iOS/CarPlay pisa el botón a Play al cambiar metadata/posición.
  */
 let mediaPlayingHoldUntil = 0
+/** No llamar setPositionState justo tras el salto: en CarPlay resetea a Play. */
+let suppressPositionUntil = 0
+let sessionPublishToken = 0
 /** Tras llamada / interrupción del sistema: reintentar play y reclamar Now Playing. */
 let interruptionResumeTimer: number | null = null
 let interruptionResumeUntil = 0
@@ -112,6 +115,46 @@ function holdMediaPlaying(ms = 4500) {
 
 function clearMediaPlayingHold() {
   mediaPlayingHoldUntil = 0
+}
+
+function beginTrackChangeMediaGuard(ms = 6000) {
+  holdMediaPlaying(ms)
+  suppressPositionUntil = Math.max(suppressPositionUntil, Date.now() + Math.min(ms, 3000))
+}
+
+/**
+ * Publica Now Playing SOLO cuando el <audio> ya no está en pause.
+ * Si se publica antes, iOS/CarPlay deja el botón en Play aunque luego suene.
+ */
+async function publishPlayingMediaSession(trackId: string) {
+  const token = ++sessionPublishToken
+  beginTrackChangeMediaGuard(8000)
+  for (let i = 0; i < 40; i++) {
+    if (token !== sessionPublishToken) return
+    if (usePlayerStore.getState().currentTrackId !== trackId) return
+    if (!audioEngine.paused) break
+    await new Promise<void>((r) => window.setTimeout(r, 50))
+  }
+  if (token !== sessionPublishToken) return
+  if (usePlayerStore.getState().currentTrackId !== trackId) return
+  if (audioEngine.paused) {
+    try {
+      await audioEngine.play()
+    } catch {
+      /* ignore */
+    }
+  }
+  beginTrackChangeMediaGuard(8000)
+  setMediaPlaybackState(true)
+  await refreshMediaSessionForTrackId(trackId, true)
+  // Reafirmar sin volver a escribir metadata
+  for (const delay of [120, 400, 900, 1800, 3500]) {
+    window.setTimeout(() => {
+      if (token !== sessionPublishToken) return
+      if (usePlayerStore.getState().currentTrackId !== trackId) return
+      if (mediaIsEffectivelyPlaying()) setMediaPlaybackState(true)
+    }, delay)
+  }
 }
 /** Cola de episodios del show abierto (ids). */
 let podcastEpisodeQueue: string[] = []
@@ -179,18 +222,14 @@ function commitChainedTrack(
     position: 0,
   })
   persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
-  // Mantener Now Playing vivo en bloqueo: no soltar pending hasta confirmar play
   pendingBackgroundPlay = true
-  holdMediaPlaying(5000)
-  setMediaPlaybackState(true)
-  refreshMediaPlaybackState(true, { strong: true })
-  // Metadatos YA (si esperamos al React effect, iOS quita el reproductor)
-  void refreshMediaSessionForTrackId(trackId)
+  beginTrackChangeMediaGuard(8000)
+  // NO publicar MediaSession aquí: el <audio> aún está en pause tras el cambio de src.
+  // Esperar a que suene → una sola escritura de metadata.
+  void publishPlayingMediaSession(trackId)
   void getCoverObjectUrl(trackId).then((coverUrl) => {
     if (usePlayerStore.getState().currentTrackId === trackId) {
       set({ coverUrl })
-      // Solo refrescar carátula + estado; no hace falta otro ciclo completo si ya hay metadata
-      void refreshMediaSessionForTrackId(trackId)
     }
   })
   void recordPlay(trackId)
@@ -198,11 +237,11 @@ function commitChainedTrack(
   prefetchNextForCurrent(get)
 }
 
-async function refreshMediaSessionForTrackId(trackId: string) {
+async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = false) {
   const track = await db.tracks.get(trackId)
   if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
   const cover = usePlayerStore.getState().coverUrl
-  const wantPlaying = mediaIsEffectivelyPlaying()
+  const wantPlaying = forcePlaying || mediaIsEffectivelyPlaying()
   await updateMediaSession(
     track,
     cover,
@@ -217,8 +256,8 @@ async function refreshMediaSessionForTrackId(trackId: string) {
     },
     { playing: wantPlaying },
   )
-  // Tras cambiar metadatos iOS resetea a Play; pulso largo en CarPlay
-  refreshMediaPlaybackState(wantPlaying, { strong: wantPlaying })
+  if (wantPlaying) refreshMediaPlaybackState(true, { strong: true })
+  else refreshMediaPlaybackState(wantPlaying)
 }
 
 function mediaIsEffectivelyPlaying() {
@@ -322,17 +361,14 @@ function tryAdvanceLibraryTrack(
   window.setTimeout(() => {
     if (usePlayerStore.getState().currentTrackId !== trackId) return
     if (!audioEngine.paused) {
-      // No quitar pending/hold aquí: CarPlay aún puede resetear el botón
-      holdMediaPlaying(4000)
+      beginTrackChangeMediaGuard(4000)
       prefetchNextForCurrent(get)
-      refreshMediaPlaybackState(true, { strong: true })
+      setMediaPlaybackState(true)
       return
     }
     pendingBackgroundPlay = true
-    holdMediaPlaying(5000)
+    beginTrackChangeMediaGuard(5000)
     set({ isPlaying: true })
-    setMediaPlaybackState(true)
-    void refreshMediaSessionForTrackId(trackId)
     void loadAndMaybePlay(trackId, 0, true, set)
   }, 90)
 
@@ -707,9 +743,9 @@ async function loadAndMaybePlay(
       if (audioEngine.paused) {
         // En bloqueo el play del siguiente track a veces falla: marcar reintento
         pendingBackgroundPlay = true
+        beginTrackChangeMediaGuard(8000)
         set({ isPlaying: true })
-        void refreshMediaSessionForTrackId(trackId)
-        refreshMediaPlaybackState(true)
+        void publishPlayingMediaSession(trackId)
         return true
       }
     }
@@ -720,8 +756,7 @@ async function loadAndMaybePlay(
       await recordPlay(trackId)
       await persistRecent(trackId)
       prefetchNextForCurrent(usePlayerStore.getState)
-      void refreshMediaSessionForTrackId(trackId)
-      refreshMediaPlaybackState(true)
+      void publishPlayingMediaSession(trackId)
     } else {
       refreshMediaPlaybackState(false)
     }
@@ -948,7 +983,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       volume: audioEngine.volume,
       muted: audioEngine.muted,
     })
-    setMediaPositionState(position, duration, effectivePlaying)
+    // Tras salto de pista, setPositionState en CarPlay vuelve a poner Play
+    if (Date.now() < suppressPositionUntil) {
+      if (effectivePlaying) setMediaPlaybackState(true)
+    } else {
+      setMediaPositionState(position, duration, effectivePlaying)
+    }
     persistSoon({ position })
 
     if (get().currentPodcastEpisodeId && playing) {
@@ -1400,12 +1440,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         window.setTimeout(() => {
           if (usePlayerStore.getState().currentTrackId !== trackId) return
           if (!audioEngine.paused) {
-            holdMediaPlaying(4000)
-            refreshMediaPlaybackState(true, { strong: true })
+            beginTrackChangeMediaGuard(4000)
+            setMediaPlaybackState(true)
             return
           }
           pendingBackgroundPlay = true
-          holdMediaPlaying(5000)
+          beginTrackChangeMediaGuard(5000)
           void loadAndMaybePlay(trackId, 0, true, set)
         }, 80)
         return
@@ -1426,14 +1466,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     })
 
     pendingBackgroundPlay = true
-    holdMediaPlaying(5000)
+    beginTrackChangeMediaGuard(8000)
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
     if (ok) {
       prefetchNextForCurrent(get)
-      // Skip manual: iOS/CarPlay deja Play tras cambiar metadatos
-      void refreshMediaSessionForTrackId(trackId).then(() =>
-        refreshMediaPlaybackState(true, { strong: true }),
-      )
       return
     }
     // Evitar quedarse en silencio en una pista rota
@@ -1442,10 +1478,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       set({ index: i, currentTrackId: id })
       if (await loadAndMaybePlay(id, 0, true, set)) {
         prefetchNextForCurrent(get)
-        holdMediaPlaying(5000)
-        void refreshMediaSessionForTrackId(id).then(() =>
-          refreshMediaPlaybackState(true, { strong: true }),
-        )
         return
       }
     }
@@ -1455,10 +1487,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         set({ index: i, currentTrackId: id })
         if (await loadAndMaybePlay(id, 0, true, set)) {
           prefetchNextForCurrent(get)
-          holdMediaPlaying(5000)
-          void refreshMediaSessionForTrackId(id).then(() =>
-            refreshMediaPlaybackState(true, { strong: true }),
-          )
           return
         }
       }
@@ -1510,13 +1538,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     set({ index: prevIndex, currentTrackId: trackId })
     persistSoon({ index: prevIndex, currentTrackId: trackId, position: 0 })
     pendingBackgroundPlay = true
-    holdMediaPlaying(5000)
-    const ok = await loadAndMaybePlay(trackId, 0, true, set)
-    if (ok) {
-      void refreshMediaSessionForTrackId(trackId).then(() =>
-        refreshMediaPlaybackState(true, { strong: true }),
-      )
-    }
+    beginTrackChangeMediaGuard(8000)
+    await loadAndMaybePlay(trackId, 0, true, set)
   },
 
   seek: (time) => {

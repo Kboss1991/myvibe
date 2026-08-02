@@ -168,6 +168,15 @@ function bindMediaHandlers(handlers: {
   }
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((r) => window.setTimeout(r, ms))
+}
+
+/**
+ * Now Playing / CarPlay.
+ * Si `playing: true` (salto de pista): UNA sola escritura de metadata (con artwork)
+ * porque cada MediaMetadata en iOS resetea el botón a Play.
+ */
 export async function updateMediaSession(
   track: Track | null,
   _coverUrl: string | null,
@@ -190,25 +199,49 @@ export async function updateMediaSession(
   }
 
   const playingHint = opts?.playing
-  const assertAfterMetadata = () => {
-    // Crítico: iOS pone Play al escribir MediaMetadata; hay que pisarlo YA
-    if (playingHint === true) setMediaPlaybackState(true)
-    else if (playingHint === false) setMediaPlaybackState(false)
-    refreshMediaPlaybackState(playingHint, {
-      strong: playingHint === true,
+
+  // Salto / reproducción: un solo write. El 2º (artwork tardío) era el que dejaba Play.
+  if (playingHint === true) {
+    let artwork: MediaImage[] = []
+    try {
+      const quickCover: MediaImage[] = _coverUrl
+        ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
+        : []
+      artwork =
+        track.hasLocalAudio !== false
+          ? await Promise.race([
+              buildLockScreenArtwork(track.id),
+              sleep(280).then(() => quickCover),
+            ])
+          : quickCover
+    } catch {
+      artwork = _coverUrl
+        ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
+        : []
+    }
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      artwork,
     })
+    bindMediaHandlers(handlers)
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+    return
   }
 
-  // Primero metadatos; luego artwork asíncrono (para no retrasar controles)
+  // Pausa / idle: metadata rápida sin esperar artwork
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
     artist: track.artist,
     album: track.album,
     artwork: [],
   })
-
   bindMediaHandlers(handlers)
-  assertAfterMetadata()
+  if (playingHint === false) setMediaPlaybackState(false)
+  refreshMediaPlaybackState(playingHint)
 
   const artwork =
     track.hasLocalAudio !== false
@@ -217,16 +250,15 @@ export async function updateMediaSession(
         ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
         : []
 
-  // Si ya cambió de pista mientras cargábamos artwork, no pisar
   try {
     const currentTitle = navigator.mediaSession.metadata?.title
-    if (currentTitle && currentTitle !== track.title) {
-      assertAfterMetadata()
-      return
-    }
+    if (currentTitle && currentTitle !== track.title) return
   } catch {
     /* ignore */
   }
+
+  // Solo actualizar carátula si seguimos en pause (si ya suena, no tocar metadata)
+  if (resolvePlaybackState(playingHint)) return
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
@@ -234,10 +266,8 @@ export async function updateMediaSession(
     album: track.album,
     artwork,
   })
-
   bindMediaHandlers(handlers)
-  // El 2º write (con carátula) vuelve a resetear el botón en CarPlay
-  assertAfterMetadata()
+  refreshMediaPlaybackState(playingHint)
 }
 
 export async function updateRadioMediaSession(
@@ -297,8 +327,7 @@ function resolvePlaybackState(fallback?: boolean): boolean {
 
 /**
  * Tras actualizar metadatos, iOS/CarPlay a menudo deja el botón en Play aunque suene.
- * Reaplica el estado real en varias pasadas (el artwork asíncrono también lo resetea).
- * `strong` = salto de pista / artwork: CarPlay necesita más reintentos.
+ * Reaplica el estado real en varias pasadas.
  */
 export function refreshMediaPlaybackState(
   playing?: boolean,
@@ -365,7 +394,6 @@ export function claimNowPlaying(
 /** Progreso en pantalla de bloqueo / Centro de control. */
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
   if (!('mediaSession' in navigator)) return
-  // Siempre el botón play/pause, aunque duration aún no esté lista
   setMediaPlaybackState(playing)
   if (!Number.isFinite(duration) || duration <= 0) {
     if (playing) setMediaPlaybackState(true)
