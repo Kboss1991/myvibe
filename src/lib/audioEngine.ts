@@ -311,7 +311,7 @@ class AudioEngine {
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
     // Cambiar src dispara 'pause' → marcar intencional para no tratarlo como llamada
-    this.markIntentionalPause()
+    this.markIntentionalPause(1200)
     try {
       this.audio.src = url
     } catch {

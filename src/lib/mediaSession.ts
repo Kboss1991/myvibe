@@ -180,6 +180,7 @@ export async function updateMediaSession(
     getPosition?: () => number
     seekSkip?: boolean
   },
+  opts?: { playing?: boolean },
 ) {
   if (!('mediaSession' in navigator)) return
 
@@ -187,6 +188,12 @@ export async function updateMediaSession(
     // NUNCA borrar metadata: en iOS eso quita el reproductor de la pantalla de bloqueo
     return
   }
+
+  const playingHint = opts?.playing
+  const pulse = () =>
+    refreshMediaPlaybackState(playingHint, {
+      strong: playingHint === true,
+    })
 
   // Primero metadatos; luego artwork asíncrono (para no retrasar controles)
   navigator.mediaSession.metadata = new MediaMetadata({
@@ -198,7 +205,7 @@ export async function updateMediaSession(
 
   bindMediaHandlers(handlers)
   // iOS pone Play al cambiar MediaMetadata
-  refreshMediaPlaybackState()
+  pulse()
 
   const artwork =
     track.hasLocalAudio !== false
@@ -210,7 +217,10 @@ export async function updateMediaSession(
   // Si ya cambió de pista mientras cargábamos artwork, no pisar
   try {
     const currentTitle = navigator.mediaSession.metadata?.title
-    if (currentTitle && currentTitle !== track.title) return
+    if (currentTitle && currentTitle !== track.title) {
+      pulse()
+      return
+    }
   } catch {
     /* ignore */
   }
@@ -224,7 +234,7 @@ export async function updateMediaSession(
 
   bindMediaHandlers(handlers)
   // El 2º write (con carátula) vuelve a resetear el botón en CarPlay
-  refreshMediaPlaybackState()
+  pulse()
 }
 
 export async function updateRadioMediaSession(
@@ -285,15 +295,21 @@ function resolvePlaybackState(fallback?: boolean): boolean {
 /**
  * Tras actualizar metadatos, iOS/CarPlay a menudo deja el botón en Play aunque suene.
  * Reaplica el estado real en varias pasadas (el artwork asíncrono también lo resetea).
+ * `strong` = salto de pista / artwork: CarPlay necesita más reintentos.
  */
-export function refreshMediaPlaybackState(playing?: boolean) {
+export function refreshMediaPlaybackState(
+  playing?: boolean,
+  opts?: { strong?: boolean },
+) {
   const apply = () => setMediaPlaybackState(resolvePlaybackState(playing))
   apply()
   try {
     for (const t of playbackRefreshTimers) window.clearTimeout(t)
     playbackRefreshTimers = []
-    // CarPlay tarda más que el lock screen en “comerse” el playbackState
-    for (const delay of [0, 40, 120, 280, 600, 1200, 2200]) {
+    const delays = opts?.strong
+      ? [0, 30, 80, 160, 320, 600, 1000, 1600, 2400, 3600, 5200]
+      : [0, 40, 120, 280, 600, 1200, 2200]
+    for (const delay of delays) {
       playbackRefreshTimers.push(window.setTimeout(apply, delay))
     }
   } catch {

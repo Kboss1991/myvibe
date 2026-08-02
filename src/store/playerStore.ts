@@ -169,6 +169,7 @@ function commitChainedTrack(
   // Mantener Now Playing vivo en bloqueo: no soltar pending hasta confirmar play
   pendingBackgroundPlay = true
   setMediaPlaybackState(true)
+  refreshMediaPlaybackState(true, { strong: true })
   // Metadatos YA (si esperamos al React effect, iOS quita el reproductor)
   void refreshMediaSessionForTrackId(trackId)
   void getCoverObjectUrl(trackId).then((coverUrl) => {
@@ -186,23 +187,33 @@ async function refreshMediaSessionForTrackId(trackId: string) {
   const track = await db.tracks.get(trackId)
   if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
   const cover = usePlayerStore.getState().coverUrl
-  await updateMediaSession(track, cover, {
-    play: () => handleRemotePlay(),
-    pause: () => handleRemotePause(),
-    previoustrack: () => void usePlayerStore.getState().previous(),
-    nexttrack: () => void usePlayerStore.getState().next(),
-    seekto: (time) => usePlayerStore.getState().seek(time),
-    getPosition: () => usePlayerStore.getState().position,
-    seekSkip: false,
-  })
-  refreshMediaPlaybackState()
+  const wantPlaying = mediaIsEffectivelyPlaying()
+  await updateMediaSession(
+    track,
+    cover,
+    {
+      play: () => handleRemotePlay(),
+      pause: () => handleRemotePause(),
+      previoustrack: () => void usePlayerStore.getState().previous(),
+      nexttrack: () => void usePlayerStore.getState().next(),
+      seekto: (time) => usePlayerStore.getState().seek(time),
+      getPosition: () => usePlayerStore.getState().position,
+      seekSkip: false,
+    },
+    { playing: wantPlaying },
+  )
+  // Tras cambiar metadatos iOS resetea a Play; pulso largo en CarPlay
+  refreshMediaPlaybackState(wantPlaying, { strong: wantPlaying })
 }
 
 function mediaIsEffectivelyPlaying() {
-  // El botón CarPlay debe seguir al audio real. pending/isPlaying solo cuentan
-  // durante una interrupción de sistema (llamada), no en pause de usuario.
+  // Audio real manda.
   if (!audioEngine.paused) return true
-  if (audioEngine.isSystemInterrupted && (pendingBackgroundPlay || usePlayerStore.getState().isPlaying)) {
+  // Avance de pista / play remoto: el <audio> puede ir un instante en pause
+  // al cambiar src; sin esto CarPlay deja el botón en Play.
+  // pause() del usuario siempre limpia pendingBackgroundPlay.
+  if (pendingBackgroundPlay) return true
+  if (audioEngine.isSystemInterrupted && usePlayerStore.getState().isPlaying) {
     return true
   }
   return false
