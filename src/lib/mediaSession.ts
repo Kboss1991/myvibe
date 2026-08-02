@@ -275,6 +275,36 @@ export function refreshMediaPlaybackState(playing: boolean) {
   }
 }
 
+/**
+ * Reclama Now Playing / CarPlay frente a Spotify u otras apps.
+ * Reescribir metadata + playbackState es lo que iOS usa para decidir quién “manda”.
+ */
+export function claimNowPlaying(playing = true) {
+  if (!('mediaSession' in navigator)) return
+  try {
+    const meta = navigator.mediaSession.metadata
+    if (meta) {
+      const artwork = meta.artwork ? Array.from(meta.artwork) : []
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: meta.title || 'MyVibe',
+        artist: meta.artist || 'MyVibe',
+        album: meta.album || 'MyVibe',
+        artwork,
+      })
+    } else {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'MyVibe',
+        artist: 'MyVibe',
+        album: 'MyVibe',
+        artwork: [],
+      })
+    }
+  } catch {
+    // ignore
+  }
+  refreshMediaPlaybackState(playing)
+}
+
 /** Progreso en pantalla de bloqueo / Centro de control. */
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
   if (!('mediaSession' in navigator)) return

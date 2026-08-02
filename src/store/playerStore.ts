@@ -3,7 +3,7 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, claimNowPlaying } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
@@ -337,20 +337,25 @@ function startInterruptionResumeWatcher() {
       stopInterruptionResumeWatcher()
       return
     }
-    // Reclamar Now Playing para que el play del coche no abra Podcasts
+    // Reclamar Now Playing para que CarPlay no se vaya a Spotify/Podcasts
     audioEngine.applyPlaybackSession()
     void bindMediaSession([]).then(() => {
-      refreshMediaPlaybackState(true)
+      claimNowPlaying(true)
     })
     if (!audioEngine.paused) {
       pendingBackgroundPlay = false
       stopInterruptionResumeWatcher()
-      setMediaPlaybackState(true)
+      claimNowPlaying(true)
       return
     }
-    // Durante la llamada play() falla siempre: no spamear
-    if (audioEngine.isSystemInterrupted) return
-    void state.play()
+    // Durante la llamada play() falla siempre: solo pelear el Now Playing
+    if (audioEngine.isSystemInterrupted) {
+      claimNowPlaying(true)
+      return
+    }
+    void state.play().then(() => {
+      if (!audioEngine.paused) claimNowPlaying(true)
+    })
   }, 1200)
 }
 
@@ -374,15 +379,17 @@ async function burstResumeAfterCall() {
 
     audioEngine.applyPlaybackSession()
     await bindMediaSession([])
-    refreshMediaPlaybackState(true)
+    claimNowPlaying(true)
     await state.play()
 
     if (!audioEngine.paused) {
       pendingBackgroundPlay = false
       stopInterruptionResumeWatcher()
-      setMediaPlaybackState(true)
+      claimNowPlaying(true)
       return
     }
+    // Aunque aún no suene, seguir ocupando el slot de CarPlay frente a Spotify
+    claimNowPlaying(true)
   }
 }
 
@@ -393,12 +400,12 @@ export function resumeAfterInterruption() {
     return
   }
   audioEngine.applyPlaybackSession()
-  void bindMediaSession([])
+  void bindMediaSession([]).then(() => claimNowPlaying(pendingBackgroundPlay || state.isPlaying))
 
   // Si venimos de una llamada, forzar ola de reintentos (CarPlay no abre la PWA)
   if (pendingBackgroundPlay || (state.isPlaying && audioEngine.paused)) {
     pendingBackgroundPlay = true
-    setMediaPlaybackState(true)
+    claimNowPlaying(true)
     void burstResumeAfterCall()
     startInterruptionResumeWatcher()
     return
@@ -780,12 +787,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
         pendingBackgroundPlay = true
         set({ isPlaying: true })
-        // Mantener metadatos en Now Playing (si se pierden, el coche abre Podcasts)
+        // Mantener metadatos en Now Playing (si se pierden, CarPlay salta a Spotify)
         audioEngine.applyPlaybackSession()
         void bindMediaSession([]).then(() => {
-          // Durante la llamada el audio está pausado, pero conviene seguir
-          // reclamando Now Playing como "playing" para no ceder CarPlay a Podcasts.
-          refreshMediaPlaybackState(true)
+          // Durante la llamada el audio está pausado, pero hay que seguir
+          // reclamando el slot "playing" para no ceder CarPlay a Spotify.
+          claimNowPlaying(true)
         })
         startInterruptionResumeWatcher()
       })
@@ -800,7 +807,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         pendingBackgroundPlay = true
         set({ isPlaying: true })
         audioEngine.applyPlaybackSession()
-        void bindMediaSession([]).then(() => refreshMediaPlaybackState(true))
+        void bindMediaSession([]).then(() => claimNowPlaying(true))
         void burstResumeAfterCall()
         startInterruptionResumeWatcher()
       })
