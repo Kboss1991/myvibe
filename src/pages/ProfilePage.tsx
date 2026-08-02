@@ -14,27 +14,8 @@ import {
   IconShare,
 } from '../components/Icons'
 import { UserAvatar } from '../components/UserAvatar'
-import {
-  claimLibraryHost,
-  clearLibraryHostClaim,
-  formatLastSeen,
-  isLibraryHostDevice,
-  listDevices,
-  revokeDevice,
-  type UserDevice,
-} from '../lib/devices'
+import { formatLastSeen, isLibraryHostDevice } from '../lib/devices'
 import { isLibraryHostCapable } from '../lib/folderImport'
-import {
-  addFriendByCode,
-  addFriendByEmail,
-  ensureInviteCode,
-  listCircle,
-  listSharedPlaylists,
-  removeFriend,
-  sharePlaylistWithFriend,
-  type CircleFriend,
-  type SharedPlaylistCard,
-} from '../lib/friends'
 import {
   computeListenStats,
   formatPlayCountLabel,
@@ -88,19 +69,10 @@ export function ProfilePage() {
   const [localError, setLocalError] = useState<string | null>(null)
   const [okMsg, setOkMsg] = useState<string | null>(null)
   const [orphanCount, setOrphanCount] = useState<{ audio: number; covers: number } | null>(null)
-
-  const [devices, setDevices] = useState<UserDevice[]>([])
-  const [inviteCode, setInviteCode] = useState('')
-  const [friends, setFriends] = useState<CircleFriend[]>([])
-  const [shared, setShared] = useState<SharedPlaylistCard[]>([])
-  const [friendInput, setFriendInput] = useState('')
-  const [shareFriendId, setShareFriendId] = useState('')
-  const [sharePlaylistId, setSharePlaylistId] = useState('')
   const [syncing, setSyncing] = useState(false)
   const [tasteReady, setTasteReady] = useState<boolean | null>(null)
 
   const stats = useMemo(() => computeListenStats(tracks), [tracks])
-  const isHost = isLibraryHostDevice()
   const canHost = isLibraryHostCapable()
   const cloud = isCloudAuthEnabled()
   const sqlEditorUrl = supabaseSqlEditorUrl()
@@ -108,22 +80,12 @@ export function ProfilePage() {
   async function refreshProfileExtras() {
     if (!user) return
     try {
-      const [devs, code, circle, shares, taste] = await Promise.all([
-        listDevices(user.id),
-        ensureInviteCode(user.id).catch(() => ''),
-        listCircle(user.id).catch(() => [] as CircleFriend[]),
-        listSharedPlaylists(user.id).catch(() => [] as SharedPlaylistCard[]),
-        checkTasteTablesReady().catch(() => ({
-          ok: false,
-          likes: false,
-          playlists: false,
-          message: TASTE_SQL_HINT,
-        })),
-      ])
-      setDevices(devs)
-      setInviteCode(code)
-      setFriends(circle)
-      setShared(shares)
+      const taste = await checkTasteTablesReady().catch(() => ({
+        ok: false,
+        likes: false,
+        playlists: false,
+        message: TASTE_SQL_HINT,
+      }))
       setTasteReady(taste.ok)
       if (!taste.ok && taste.message) {
         setLocalError(taste.message)
@@ -151,7 +113,6 @@ export function ProfilePage() {
   const needsEmail = !hasRealEmail(user)
   const error = localError || authError
   const orphanTotal = orphanCount ? orphanCount.audio + orphanCount.covers : 0
-  const hostDevice = devices.find((d) => d.isLibraryHost)
 
   function openEdit() {
     clearError()
@@ -504,271 +465,6 @@ export function ProfilePage() {
             </p>
             {lastSyncMessage ? <p className="profile-card__hint">{lastSyncMessage}</p> : null}
           </>
-        )}
-      </section>
-
-      {/* Biblioteca principal */}
-      <section className="profile-card">
-        <h2 className="profile-card__title">Biblioteca principal</h2>
-        <p className="profile-card__hint">
-          El PC host publica el catálogo y puede borrar en la nube. El móvil descarga; no debería
-          ser host.
-        </p>
-        <p className="profile-card__meta">
-          Ahora:{' '}
-          {hostDevice
-            ? `${hostDevice.label}${hostDevice.isThisDevice ? ' (este)' : ''}`
-            : isHost
-              ? 'Este dispositivo (PC)'
-              : 'Ninguno marcado · el móvil solo descarga'}
-        </p>
-        {canHost ? (
-          <div className="profile-card__row">
-            {isHost ? (
-              <button
-                type="button"
-                className="btn-outline"
-                disabled={busy}
-                onClick={() => {
-                  setBusy(true)
-                  void clearLibraryHostClaim()
-                    .then(() => {
-                      setOkMsg('Ya no eres la biblioteca principal')
-                      return refreshProfileExtras()
-                    })
-                    .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error'))
-                    .finally(() => setBusy(false))
-                }}
-              >
-                Dejar de ser host
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="btn-outline"
-                disabled={busy}
-                onClick={() => {
-                  setBusy(true)
-                  void claimLibraryHost(user.id)
-                    .then(() => {
-                      setOkMsg('Este PC es la biblioteca principal')
-                      return refreshProfileExtras()
-                    })
-                    .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error'))
-                    .finally(() => setBusy(false))
-                }}
-              >
-                Marcar este PC como host
-              </button>
-            )}
-          </div>
-        ) : (
-          <p className="profile-card__meta">Este dispositivo es móvil/tablet: solo descarga.</p>
-        )}
-      </section>
-
-      {/* Dispositivos */}
-      <section className="profile-card">
-        <h2 className="profile-card__title">Dispositivos conectados</h2>
-        <ul className="profile-device-list">
-          {devices.map((d) => (
-            <li key={d.id} className={d.isThisDevice ? 'is-this' : ''}>
-              <div>
-                <strong>
-                  {d.label}
-                  {d.isThisDevice ? ' · Este' : ''}
-                  {d.isLibraryHost ? ' · Host' : ''}
-                </strong>
-                <span>
-                  {d.kind === 'pc' ? 'PC' : d.kind === 'tablet' ? 'Tablet' : 'Móvil'} ·{' '}
-                  {formatLastSeen(d.lastSeen)}
-                </span>
-              </div>
-              {!d.isThisDevice && cloud ? (
-                <button
-                  type="button"
-                  className="profile-danger-zone__link"
-                  disabled={busy}
-                  onClick={() => {
-                    if (!window.confirm(`¿Cerrar sesión en «${d.label}»?`)) return
-                    setBusy(true)
-                    void revokeDevice(user.id, d.id)
-                      .then(() => {
-                        setOkMsg('Sesión remota cerrada')
-                        return refreshProfileExtras()
-                      })
-                      .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error'))
-                      .finally(() => setBusy(false))
-                  }}
-                >
-                  Cerrar sesión
-                </button>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-        {!cloud && (
-          <p className="profile-card__hint">Con la nube verás todos los dispositivos de la cuenta.</p>
-        )}
-      </section>
-
-      {/* Círculo */}
-      <section className="profile-card">
-        <h2 className="profile-card__title">Círculo cercano</h2>
-        <p className="profile-card__hint">
-          No es una red abierta: solo gente que invites por código o correo. Ven “escuchando ahora”
-          y puedes compartir playlists (lista de temas, sin audio).
-        </p>
-        {cloud ? (
-          <>
-            <div className="profile-invite">
-              <span>Tu código</span>
-              <strong>{inviteCode || '…'}</strong>
-              <button
-                type="button"
-                className="btn-outline"
-                disabled={!inviteCode}
-                onClick={() => {
-                  void navigator.clipboard?.writeText(inviteCode).then(() => setOkMsg('Código copiado'))
-                }}
-              >
-                Copiar
-              </button>
-            </div>
-            <div className="profile-friend-add">
-              <input
-                value={friendInput}
-                onChange={(e) => setFriendInput(e.target.value)}
-                placeholder="Código o correo del amigo"
-                aria-label="Código o correo"
-              />
-              <button
-                type="button"
-                className="chip chip-play"
-                disabled={busy || !friendInput.trim()}
-                onClick={() => {
-                  const raw = friendInput.trim()
-                  setBusy(true)
-                  setLocalError(null)
-                  const run = raw.includes('@') ? addFriendByEmail(raw) : addFriendByCode(raw)
-                  void run
-                    .then((r) => {
-                      setOkMsg(`${r.displayName} está en tu círculo`)
-                      setFriendInput('')
-                      return refreshProfileExtras()
-                    })
-                    .catch((e) => setLocalError(e instanceof Error ? e.message : 'No se pudo añadir'))
-                    .finally(() => setBusy(false))
-                }}
-              >
-                Añadir
-              </button>
-            </div>
-            {friends.length === 0 ? (
-              <p className="profile-card__meta">Todavía no hay nadie en tu círculo.</p>
-            ) : (
-              <ul className="profile-friend-list">
-                {friends.map((f) => (
-                  <li key={f.id}>
-                    <div>
-                      <strong>{f.displayName}</strong>
-                      <span>
-                        {f.listening && Date.now() - f.listening.updatedAt < 30 * 60_000
-                          ? `Escuchando: ${f.listening.title} · ${f.listening.artist}`
-                          : 'Sin actividad reciente'}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="profile-danger-zone__link"
-                      onClick={() => {
-                        void removeFriend(user.id, f.id).then(() => refreshProfileExtras())
-                      }}
-                    >
-                      Quitar
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            {friends.length > 0 && playlists.length > 0 && (
-              <div className="profile-share-playlist">
-                <h3>Compartir playlist</h3>
-                <select
-                  value={shareFriendId}
-                  onChange={(e) => setShareFriendId(e.target.value)}
-                  aria-label="Amigo"
-                >
-                  <option value="">Elige amigo</option>
-                  {friends.map((f) => (
-                    <option key={f.id} value={f.id}>
-                      {f.displayName}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  value={sharePlaylistId}
-                  onChange={(e) => setSharePlaylistId(e.target.value)}
-                  aria-label="Playlist"
-                >
-                  <option value="">Elige playlist</option>
-                  {playlists.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  className="btn-outline"
-                  disabled={busy || !shareFriendId || !sharePlaylistId}
-                  onClick={() => {
-                    const pl = playlists.find((p) => p.id === sharePlaylistId)
-                    if (!pl) return
-                    const titles = pl.trackIds
-                      .map((id) => tracks.find((t) => t.id === id)?.title)
-                      .filter((x): x is string => Boolean(x))
-                    setBusy(true)
-                    void sharePlaylistWithFriend({
-                      friendId: shareFriendId,
-                      playlistLocalId: pl.id,
-                      playlistName: pl.name,
-                      trackTitles: titles,
-                    })
-                      .then(() => {
-                        setOkMsg(`«${pl.name}» compartida`)
-                        setShareFriendId('')
-                        setSharePlaylistId('')
-                        return refreshProfileExtras()
-                      })
-                      .catch((e) => setLocalError(e instanceof Error ? e.message : 'Error al compartir'))
-                      .finally(() => setBusy(false))
-                  }}
-                >
-                  Enviar
-                </button>
-              </div>
-            )}
-
-            {shared.length > 0 && (
-              <div className="profile-shared">
-                <h3>Compartidas</h3>
-                <ul>
-                  {shared.map((s) => (
-                    <li key={s.id}>
-                      <strong>{s.playlistName}</strong>
-                      <span>
-                        {s.fromMe ? 'Enviada' : 'Recibida'} · {s.trackTitles.length} temas
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </>
-        ) : (
-          <p className="profile-card__meta">Activa Supabase para el círculo entre dispositivos.</p>
         )}
       </section>
 
