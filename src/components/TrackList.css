@@ -274,16 +274,13 @@
   opacity: 0.45;
 }
 
+/* Hero de playlist: altura natural, sin colapso ligado al scroll */
+.sp-hero-block,
 .sp-hero-fade {
-  overflow: hidden;
-  max-height: calc(520px * (1 - var(--sticky-p, 0)));
-  opacity: calc(1 - var(--sticky-p, 0) * 1.15);
-  transform: translateY(calc(var(--sticky-p, 0) * -12px));
-}
-
-.page.is-scrolled .sp-hero-fade,
-.sp-playlist.is-scrolled .sp-hero-fade {
-  pointer-events: none;
+  overflow: visible;
+  max-height: none;
+  opacity: 1;
+  transform: none;
 }
 
 

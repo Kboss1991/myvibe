@@ -8,7 +8,6 @@ import {
 } from '../lib/playlistThemes'
 import { useAuthStore } from '../store/authStore'
 import { usePlayerStore } from '../store/playerStore'
-import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { CoverArt } from './CoverArt'
 import { CoverCropSheet } from './CoverCropSheet'
 import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
@@ -124,8 +123,6 @@ export function PlaylistView({
   const durationLabel =
     hours > 0 ? `${hours} h ${mins} min` : `${mins} min`
 
-  const { progress, collapsed } = useMainScrollCollapse(100)
-
   const displayTracks = useMemo(() => {
     let list = [...tracks]
     const q = query.trim().toLowerCase()
@@ -210,15 +207,12 @@ export function PlaylistView({
 
   return (
     <div
-      className={`sp-playlist ${likedStyle ? 'sp-playlist--liked' : ''} ${collapsed ? 'is-scrolled' : ''} ${editMode ? 'is-editing' : ''}`}
-      style={{
-        ['--sticky-p' as string]: String(progress),
-        ...(!likedStyle
-          ? { ['--playlist-theme' as string]: activeTheme }
-          : {}),
-      }}
+      className={`sp-playlist ${likedStyle ? 'sp-playlist--liked' : ''} ${editMode ? 'is-editing' : ''}`}
+      style={
+        !likedStyle ? { ['--playlist-theme' as string]: activeTheme } : undefined
+      }
     >
-      <div className="sp-hero-fade">
+      <div className="sp-hero-block">
         {likedStyle ? (
           <header className="sp-hero sp-hero--liked">
             <div className="sp-liked-banner">
