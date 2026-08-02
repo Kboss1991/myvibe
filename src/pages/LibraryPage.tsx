@@ -13,6 +13,7 @@ import {
   IconUpload,
   IconSelect,
   IconClose,
+  IconHeart,
 } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
@@ -30,6 +31,8 @@ export function LibraryPage() {
   const [selectMode, setSelectMode] = useState(false)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
+  const getLiked = useLibraryStore((s) => s.getLiked)
+  const liked = getLiked()
   const deletePlaylist = useLibraryStore((s) => s.deletePlaylist)
   const enrichMissingCovers = useLibraryStore((s) => s.enrichMissingCovers)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
@@ -57,7 +60,7 @@ export function LibraryPage() {
     tab === 'songs'
       ? `${tracks.length} canciones`
       : tab === 'playlists'
-        ? `${playlists.length} playlist${playlists.length === 1 ? '' : 's'}`
+        ? `${playlists.length + (liked.length > 0 ? 1 : 0)} playlist${playlists.length + (liked.length > 0 ? 1 : 0) === 1 ? '' : 's'}`
         : tab === 'artists'
           ? `${artistList.length} artista${artistList.length === 1 ? '' : 's'}`
           : tab === 'albums'
@@ -265,6 +268,21 @@ export function LibraryPage() {
 
       {tab === 'playlists' && (
         <ul className="playlist-list">
+          {liked.length > 0 && (
+            <li>
+              <Link to="/liked" className="playlist-list__link">
+                <span className="playlist-list__liked-thumb" aria-hidden>
+                  <IconHeart size={22} filled />
+                </span>
+                <div>
+                  <strong>Canciones que te gustan</strong>
+                  <span>
+                    {liked.length} canción{liked.length === 1 ? '' : 'es'}
+                  </span>
+                </div>
+              </Link>
+            </li>
+          )}
           {playlists.map((p) => {
             const cover = playlistCoverArtProps(p)
             return (
@@ -294,7 +312,7 @@ export function LibraryPage() {
             </li>
             )
           })}
-          {playlists.length === 0 && (
+          {playlists.length === 0 && liked.length === 0 && (
             <div className="empty-state">
               <p className="empty-state__title">Sin playlists</p>
               <p className="empty-state__hint">Pulsa + para crear una</p>

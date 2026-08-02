@@ -85,21 +85,16 @@ export function HomePage() {
           </div>
 
           {liked.length > 0 && (
-            <button
-              type="button"
+            <Link
+              to="/liked"
               className="home-quick home-quick--liked"
-              onClick={() =>
-                void playTracks(liked.map((t) => t.id), undefined, {
-                  source: { kind: 'liked', title: 'Canciones que te gustan' },
-                })
-              }
-              aria-label="Reproducir canciones que te gustan"
+              aria-label="Canciones que te gustan"
             >
               <span className="home-quick__liked">
                 <IconHeart size={22} filled />
               </span>
               <span>Canciones que te gustan</span>
-            </button>
+            </Link>
           )}
         </div>
 

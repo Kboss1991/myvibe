@@ -305,7 +305,8 @@ export function PlaylistView({
             <IconPlus size={16} /> Añadir
           </button>
         )}
-        {playlistId && onReorderTracks && onRemoveTrack && (
+        {/* Liked: editar = quitar me gusta. Playlist: reordenar + quitar. Sin nombre/color aquí. */}
+        {onRemoveTrack && (playlistId || likedStyle) && (
           <button
             type="button"
             className={`sp-pill ${editMode ? 'is-on' : ''}`}
@@ -443,7 +444,13 @@ export function PlaylistView({
       </div>
 
       {editMode && (
-        <p className="sp-edit-hint">Arrastra para reordenar · toca la X para quitar</p>
+        <p className="sp-edit-hint">
+          {onReorderTracks
+            ? 'Arrastra para reordenar · toca la X para quitar'
+            : likedStyle
+              ? 'Toca la X para quitar el me gusta'
+              : 'Toca la X para quitar'}
+        </p>
       )}
 
       <div className="sp-table-wrap">
@@ -472,24 +479,33 @@ export function PlaylistView({
                 <li
                   key={track.id}
                   className={`sp-row ${active ? 'is-active' : ''} ${dragId === track.id ? 'is-dragging' : ''}`}
-                  draggable={editMode}
-                  onDragStart={() => setDragId(track.id)}
+                  draggable={editMode && Boolean(onReorderTracks)}
+                  onDragStart={() => {
+                    if (!onReorderTracks) return
+                    setDragId(track.id)
+                  }}
                   onDragEnd={() => setDragId(null)}
                   onDragOver={(e) => {
-                    if (!editMode) return
+                    if (!editMode || !onReorderTracks) return
                     e.preventDefault()
                   }}
                   onDrop={(e) => {
-                    if (!editMode || !dragId) return
+                    if (!editMode || !dragId || !onReorderTracks) return
                     e.preventDefault()
                     moveTrack(dragId, track.id)
                     setDragId(null)
                   }}
                 >
                   {editMode ? (
-                    <span className="sp-row__grip" aria-hidden>
-                      <IconGrip size={16} />
-                    </span>
+                    onReorderTracks ? (
+                      <span className="sp-row__grip" aria-hidden>
+                        <IconGrip size={16} />
+                      </span>
+                    ) : (
+                      <span className="sp-row__playnum" aria-hidden>
+                        <span className="num">{i + 1}</span>
+                      </span>
+                    )
                   ) : (
                     <button
                       type="button"
@@ -550,28 +566,32 @@ export function PlaylistView({
                   <span className="col-time">{formatTime(track.duration)}</span>
                   {editMode && onRemoveTrack ? (
                     <div className="sp-row__edit-actions">
-                      <button
-                        type="button"
-                        className="sp-row__move"
-                        aria-label="Subir"
-                        disabled={i === 0}
-                        onClick={() => moveBy(track.id, -1)}
-                      >
-                        ▲
-                      </button>
-                      <button
-                        type="button"
-                        className="sp-row__move"
-                        aria-label="Bajar"
-                        disabled={i === displayTracks.length - 1}
-                        onClick={() => moveBy(track.id, 1)}
-                      >
-                        ▼
-                      </button>
+                      {onReorderTracks ? (
+                        <>
+                          <button
+                            type="button"
+                            className="sp-row__move"
+                            aria-label="Subir"
+                            disabled={i === 0}
+                            onClick={() => moveBy(track.id, -1)}
+                          >
+                            ▲
+                          </button>
+                          <button
+                            type="button"
+                            className="sp-row__move"
+                            aria-label="Bajar"
+                            disabled={i === displayTracks.length - 1}
+                            onClick={() => moveBy(track.id, 1)}
+                          >
+                            ▼
+                          </button>
+                        </>
+                      ) : null}
                       <button
                         type="button"
                         className="sp-row__remove"
-                        aria-label="Quitar de la lista"
+                        aria-label={likedStyle ? 'Quitar me gusta' : 'Quitar de la lista'}
                         onClick={() => void onRemoveTrack(track.id)}
                       >
                         <IconClose size={16} />

@@ -4,6 +4,7 @@ import { useLibraryStore } from '../store/libraryStore'
 export function LikedPage() {
   const getLiked = useLibraryStore((s) => s.getLiked)
   const shareLiked = useLibraryStore((s) => s.shareLiked)
+  const toggleLike = useLibraryStore((s) => s.toggleLike)
   const liked = getLiked()
 
   return (
@@ -14,6 +15,10 @@ export function LikedPage() {
         likedStyle
         coverTrackId={liked[0]?.id}
         hasCover={liked[0]?.hasCover}
+        onRemoveTrack={async (trackId) => {
+          const track = liked.find((t) => t.id === trackId)
+          if (track?.liked) await toggleLike(trackId)
+        }}
         onShare={async () => {
           const mode = await shareLiked()
           if (mode === 'downloaded') {
