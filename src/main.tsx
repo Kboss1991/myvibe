@@ -6,6 +6,7 @@ import App from './App'
 import { audioEngine } from './lib/audioEngine'
 import './styles/tokens.css'
 
+/** Intenta fijar portrait (PWA). Sin trucos CSS de rotar el html. */
 function tryLockPortrait() {
   try {
     const orientation = screen.orientation as ScreenOrientation & {
@@ -17,7 +18,7 @@ function tryLockPortrait() {
       })
     }
   } catch {
-    // iOS: el manifesto + CSS force-portrait mantienen la UI en vertical
+    // iOS a menudo ignora lock; el manifesto lleva orientation: portrait-primary
   }
 }
 
@@ -26,6 +27,13 @@ window.addEventListener('orientationchange', tryLockPortrait)
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') tryLockPortrait()
 })
+document.addEventListener(
+  'pointerdown',
+  () => {
+    tryLockPortrait()
+  },
+  { once: true, passive: true },
+)
 
 function shouldDeferReload() {
   try {
