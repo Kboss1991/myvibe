@@ -35,6 +35,18 @@ function dayKey(ts: number): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
 }
 
+function artistKey(name: string): string {
+  return name.trim().toLocaleLowerCase('es')
+}
+
+/** Prefiere el nombre con más plays; en empate, el que tenga mayúsculas. */
+function preferArtistLabel(current: string, candidate: string, candidatePlays: number, currentBest: number): string {
+  if (candidatePlays > currentBest) return candidate
+  if (candidatePlays < currentBest) return current
+  const score = (s: string) => (/[A-ZÁÉÍÓÚÑ]/.test(s) ? 1 : 0) + (s !== s.toLowerCase() ? 1 : 0)
+  return score(candidate) >= score(current) ? candidate : current
+}
+
 export function computeListenStats(tracks: Track[]): ListenStats {
   const played = tracks.filter((t) => t.playCount > 0 || t.lastPlayedAt)
   let totalPlays = 0
@@ -42,12 +54,14 @@ export function computeListenStats(tracks: Track[]): ListenStats {
   const artistMap = new Map<
     string,
     {
+      name: string
       plays: number
       seconds: number
       coverTrackId: string | null
       hasCover: boolean
       coverUpdatedAt?: number
       bestPlays: number
+      labelBestPlays: number
     }
   >()
 
@@ -57,18 +71,23 @@ export function computeListenStats(tracks: Track[]): ListenStats {
     totalPlays += plays
     estimatedSec += plays * duration
     const artist = (t.artist || 'Desconocido').trim() || 'Desconocido'
-    const prev = artistMap.get(artist)
+    const key = artistKey(artist)
+    const prev = artistMap.get(key)
     const seconds = plays * duration
     if (!prev) {
-      artistMap.set(artist, {
+      artistMap.set(key, {
+        name: artist,
         plays,
         seconds,
         coverTrackId: t.id,
         hasCover: Boolean(t.hasCover),
         coverUpdatedAt: t.coverUpdatedAt,
         bestPlays: plays,
+        labelBestPlays: plays,
       })
     } else {
+      prev.name = preferArtistLabel(prev.name, artist, plays, prev.labelBestPlays)
+      if (plays >= prev.labelBestPlays) prev.labelBestPlays = plays
       prev.plays += plays
       prev.seconds += seconds
       if (plays > prev.bestPlays || (plays === prev.bestPlays && t.hasCover && !prev.hasCover)) {
@@ -80,12 +99,12 @@ export function computeListenStats(tracks: Track[]): ListenStats {
     }
   }
 
-  const topArtists = [...artistMap.entries()]
-    .map(([name, a]) => {
+  const topArtists = [...artistMap.values()]
+    .map((a) => {
       const minutes =
         a.plays <= 0 ? 0 : Math.max(1, Math.round(a.seconds / 60))
       return {
-        name,
+        name: a.name,
         plays: a.plays,
         minutes,
         coverTrackId: a.coverTrackId,

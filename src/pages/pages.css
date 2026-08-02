@@ -1489,7 +1489,7 @@
 
 .stats-rank-list__item {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 12px;
 }
@@ -1562,14 +1562,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.stats-rank-list__metric {
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  max-width: 7.5rem;
 }
 
 @media (min-width: 900px) {

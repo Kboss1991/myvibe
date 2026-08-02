@@ -300,13 +300,8 @@ export function ProfilePage() {
                         </div>
                         <div className="stats-rank-list__meta">
                           <span className="stats-rank-list__title">{a.name}</span>
-                          {i === 0 ? (
-                            <span className="stats-rank-list__sub">{a.minutes} min</span>
-                          ) : null}
+                          <span className="stats-rank-list__sub">{a.minutes} min</span>
                         </div>
-                        {i > 0 ? (
-                          <span className="stats-rank-list__metric">{a.minutes} min</span>
-                        ) : null}
                       </li>
                     ))}
                   </ol>
@@ -360,17 +355,10 @@ export function ProfilePage() {
                         <div className="stats-rank-list__meta">
                           <span className="stats-rank-list__title">{t.title}</span>
                           <span className="stats-rank-list__sub">{t.artist}</span>
-                          {i === 0 ? (
-                            <span className="stats-rank-list__sub">
-                              {formatPlayCountLabel(t.plays)}
-                            </span>
-                          ) : null}
-                        </div>
-                        {i > 0 ? (
-                          <span className="stats-rank-list__metric">
+                          <span className="stats-rank-list__sub">
                             {formatPlayCountLabel(t.plays)}
                           </span>
-                        ) : null}
+                        </div>
                       </li>
                     ))}
                   </ol>
