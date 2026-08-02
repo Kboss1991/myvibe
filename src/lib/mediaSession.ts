@@ -190,10 +190,14 @@ export async function updateMediaSession(
   }
 
   const playingHint = opts?.playing
-  const pulse = () =>
+  const assertAfterMetadata = () => {
+    // Crítico: iOS pone Play al escribir MediaMetadata; hay que pisarlo YA
+    if (playingHint === true) setMediaPlaybackState(true)
+    else if (playingHint === false) setMediaPlaybackState(false)
     refreshMediaPlaybackState(playingHint, {
       strong: playingHint === true,
     })
+  }
 
   // Primero metadatos; luego artwork asíncrono (para no retrasar controles)
   navigator.mediaSession.metadata = new MediaMetadata({
@@ -204,8 +208,7 @@ export async function updateMediaSession(
   })
 
   bindMediaHandlers(handlers)
-  // iOS pone Play al cambiar MediaMetadata
-  pulse()
+  assertAfterMetadata()
 
   const artwork =
     track.hasLocalAudio !== false
@@ -218,7 +221,7 @@ export async function updateMediaSession(
   try {
     const currentTitle = navigator.mediaSession.metadata?.title
     if (currentTitle && currentTitle !== track.title) {
-      pulse()
+      assertAfterMetadata()
       return
     }
   } catch {
@@ -234,7 +237,7 @@ export async function updateMediaSession(
 
   bindMediaHandlers(handlers)
   // El 2º write (con carátula) vuelve a resetear el botón en CarPlay
-  pulse()
+  assertAfterMetadata()
 }
 
 export async function updateRadioMediaSession(
@@ -304,10 +307,15 @@ export function refreshMediaPlaybackState(
   const apply = () => setMediaPlaybackState(resolvePlaybackState(playing))
   apply()
   try {
+    queueMicrotask(apply)
+  } catch {
+    /* ignore */
+  }
+  try {
     for (const t of playbackRefreshTimers) window.clearTimeout(t)
     playbackRefreshTimers = []
     const delays = opts?.strong
-      ? [0, 30, 80, 160, 320, 600, 1000, 1600, 2400, 3600, 5200]
+      ? [0, 16, 50, 100, 200, 400, 700, 1100, 1800, 2800, 4000, 6000, 8000]
       : [0, 40, 120, 280, 600, 1200, 2200]
     for (const delay of delays) {
       playbackRefreshTimers.push(window.setTimeout(apply, delay))
@@ -359,7 +367,10 @@ export function setMediaPositionState(position: number, duration: number, playin
   if (!('mediaSession' in navigator)) return
   // Siempre el botón play/pause, aunque duration aún no esté lista
   setMediaPlaybackState(playing)
-  if (!Number.isFinite(duration) || duration <= 0) return
+  if (!Number.isFinite(duration) || duration <= 0) {
+    if (playing) setMediaPlaybackState(true)
+    return
+  }
   const pos = Math.max(0, Math.min(position, duration))
   try {
     navigator.mediaSession.setPositionState({
@@ -370,4 +381,6 @@ export function setMediaPositionState(position: number, duration: number, playin
   } catch {
     // Safari a veces falla si position > duration momentáneamente
   }
+  // setPositionState en CarPlay a veces deja el botón en Play otra vez
+  if (playing) setMediaPlaybackState(true)
 }
