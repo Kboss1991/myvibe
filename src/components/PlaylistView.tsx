@@ -219,18 +219,58 @@ export function PlaylistView({
       }}
     >
       <div className="sp-hero-fade">
-        <header className="sp-hero">
-          <button
-            type="button"
-            className="sp-hero__cover"
-            onClick={() => onPickCover && coverInputRef.current?.click()}
-            disabled={!onPickCover}
-          >
-            {likedStyle && !heroCoverId ? (
-              <div className="sp-hero__liked-art">
-                <IconHeart size={56} filled />
+        {likedStyle ? (
+          <header className="sp-hero sp-hero--liked">
+            <div className="sp-liked-banner">
+              <div className="sp-liked-banner__wash" aria-hidden />
+              <div className="sp-liked-banner__orb sp-liked-banner__orb--a" aria-hidden />
+              <div className="sp-liked-banner__orb sp-liked-banner__orb--b" aria-hidden />
+              <div className="sp-liked-banner__content">
+                <span className="sp-liked-banner__heart" aria-hidden>
+                  <IconHeart size={72} filled />
+                </span>
+                <p className="sp-liked-banner__eyebrow">Lista especial</p>
+                <h1 className="sp-liked-banner__title">{title}</h1>
               </div>
-            ) : (
+            </div>
+            <div className="sp-hero__meta sp-hero__meta--liked">
+              <div className="sp-hero__title-row">
+                <p className="sp-hero__stats">
+                  <span className="sp-hero__owner">
+                    <UserAvatar user={user} size={22} className="sp-hero__avatar" />
+                    {user?.displayName || 'Tú'}
+                  </span>
+                  <span className="dot">·</span>
+                  <span>
+                    {tracks.length} cancion{tracks.length === 1 ? '' : 'es'}
+                  </span>
+                  <span className="dot">·</span>
+                  <span>{durationLabel}</span>
+                </p>
+                <button
+                  type="button"
+                  className="sp-play"
+                  disabled={!tracks.length}
+                  aria-label="Reproducir"
+                  onClick={() =>
+                    void playTracks(ids, undefined, {
+                      source: { kind: 'liked', title },
+                    })
+                  }
+                >
+                  <IconPlay size={22} />
+                </button>
+              </div>
+            </div>
+          </header>
+        ) : (
+          <header className="sp-hero">
+            <button
+              type="button"
+              className="sp-hero__cover"
+              onClick={() => onPickCover && coverInputRef.current?.click()}
+              disabled={!onPickCover}
+            >
               <CoverArt
                 trackId={heroCoverId}
                 hasCover={heroHasCover !== false}
@@ -239,64 +279,62 @@ export function PlaylistView({
                 rounded="md"
                 className="sp-hero__cover-img"
               />
-            )}
+              {onPickCover && (
+                <span className="sp-hero__cover-edit">
+                  <IconEdit size={18} />
+                  Foto
+                </span>
+              )}
+            </button>
             {onPickCover && (
-              <span className="sp-hero__cover-edit">
-                <IconEdit size={18} />
-                Foto
-              </span>
+              <input
+                ref={coverInputRef}
+                type="file"
+                accept="image/*"
+                hidden
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) setCropSource({ blob: file, name: file.name })
+                  e.target.value = ''
+                }}
+              />
             )}
-          </button>
-          {onPickCover && (
-            <input
-              ref={coverInputRef}
-              type="file"
-              accept="image/*"
-              hidden
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) setCropSource({ blob: file, name: file.name })
-                e.target.value = ''
-              }}
-            />
-          )}
 
-          <div className="sp-hero__meta">
-            <p className="sp-hero__type">Lista</p>
-            <div className="sp-hero__title-row">
-              <h1 className="sp-hero__title">{title}</h1>
-              <button
-                type="button"
-                className="sp-play"
-                disabled={!tracks.length}
-                aria-label="Reproducir"
-                onClick={() =>
-                  void playTracks(ids, undefined, {
-                    source: playlistId
-                      ? { kind: 'playlist', id: playlistId, title }
-                      : likedStyle
-                        ? { kind: 'liked', title }
+            <div className="sp-hero__meta">
+              <p className="sp-hero__type">Lista</p>
+              <div className="sp-hero__title-row">
+                <h1 className="sp-hero__title">{title}</h1>
+                <button
+                  type="button"
+                  className="sp-play"
+                  disabled={!tracks.length}
+                  aria-label="Reproducir"
+                  onClick={() =>
+                    void playTracks(ids, undefined, {
+                      source: playlistId
+                        ? { kind: 'playlist', id: playlistId, title }
                         : null,
-                  })
-                }
-              >
-                <IconPlay size={22} />
-              </button>
+                    })
+                  }
+                >
+                  <IconPlay size={22} />
+                </button>
+              </div>
+              <p className="sp-hero__stats">
+                <span className="sp-hero__owner">
+                  <UserAvatar user={user} size={22} className="sp-hero__avatar" />
+                  {user?.displayName || 'Tú'}
+                </span>
+                <span className="dot">·</span>
+                <span>
+                  {tracks.length} cancion{tracks.length === 1 ? '' : 'es'}
+                </span>
+                <span className="dot">·</span>
+                <span>{durationLabel}</span>
+              </p>
             </div>
-            <p className="sp-hero__stats">
-              <span className="sp-hero__owner">
-                <UserAvatar user={user} size={22} className="sp-hero__avatar" />
-                {user?.displayName || 'Tú'}
-              </span>
-              <span className="dot">·</span>
-              <span>
-                {tracks.length} cancion{tracks.length === 1 ? '' : 'es'}
-              </span>
-              <span className="dot">·</span>
-              <span>{durationLabel}</span>
-            </p>
-          </div>
-        </header>
+          </header>
+        )}
       </div>
 
       <div className="sp-actions">

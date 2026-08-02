@@ -19,7 +19,170 @@
 }
 
 .sp-playlist--liked {
-  background: linear-gradient(180deg, #5038a0 0%, #121212 36%);
+  background: #121212;
+}
+
+.sp-hero--liked {
+  gap: 0;
+  padding: 0;
+}
+
+.sp-liked-banner {
+  position: relative;
+  width: 100%;
+  min-height: clamp(220px, 42vw, 300px);
+  overflow: hidden;
+  display: flex;
+  align-items: flex-end;
+  padding: calc(var(--safe-top-pad) + 28px) 20px 28px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgba(245, 166, 35, 0.38) 0%, transparent 55%),
+    linear-gradient(165deg, #2a1c08 0%, #121212 72%);
+}
+
+.sp-liked-banner__wash {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, transparent 35%, rgba(18, 18, 18, 0.88) 100%),
+    repeating-linear-gradient(
+      -18deg,
+      transparent 0 14px,
+      rgba(245, 166, 35, 0.035) 14px 15px
+    );
+  pointer-events: none;
+}
+
+.sp-liked-banner__orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(28px);
+  pointer-events: none;
+  opacity: 0.55;
+  animation: sp-liked-orb 8s ease-in-out infinite alternate;
+}
+
+.sp-liked-banner__orb--a {
+  width: 180px;
+  height: 180px;
+  top: -40px;
+  right: -30px;
+  background: rgba(245, 166, 35, 0.45);
+}
+
+.sp-liked-banner__orb--b {
+  width: 140px;
+  height: 140px;
+  bottom: 20px;
+  left: -40px;
+  background: rgba(201, 168, 76, 0.28);
+  animation-delay: -2.5s;
+}
+
+@keyframes sp-liked-orb {
+  from {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  to {
+    transform: translate3d(12px, 10px, 0) scale(1.08);
+  }
+}
+
+.sp-liked-banner__content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.sp-liked-banner__heart {
+  display: grid;
+  place-items: center;
+  width: 88px;
+  height: 88px;
+  margin-bottom: 6px;
+  border-radius: 28px;
+  background: linear-gradient(145deg, rgba(245, 166, 35, 0.28), rgba(245, 166, 35, 0.08));
+  border: 1px solid rgba(245, 166, 35, 0.35);
+  color: #f5a623;
+  box-shadow:
+    0 12px 36px rgba(245, 166, 35, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  animation: sp-liked-heart 2.8s ease-in-out infinite;
+}
+
+@keyframes sp-liked-heart {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.045);
+  }
+}
+
+.sp-liked-banner__eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(245, 166, 35, 0.9);
+}
+
+.sp-liked-banner__title {
+  margin: 0;
+  max-width: 16ch;
+  font-size: clamp(2rem, 8vw, 3.1rem);
+  font-weight: 900;
+  letter-spacing: -0.045em;
+  line-height: 0.98;
+  color: #fff;
+  text-shadow: 0 8px 28px rgba(0, 0, 0, 0.45);
+}
+
+.sp-hero__meta--liked {
+  padding: 14px 16px 4px;
+}
+
+.sp-hero__meta--liked .sp-hero__title-row {
+  margin-bottom: 0;
+  align-items: center;
+}
+
+.sp-hero__meta--liked .sp-hero__stats {
+  flex: 1;
+  min-width: 0;
+}
+
+@media (min-width: 700px) {
+  .sp-hero--liked {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .sp-liked-banner {
+    min-height: 320px;
+    padding: calc(var(--safe-top-pad) + 40px) 36px 36px;
+  }
+
+  .sp-liked-banner__title {
+    max-width: 18ch;
+  }
+
+  .sp-hero__meta--liked {
+    padding: 16px 28px 6px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-liked-banner__orb,
+  .sp-liked-banner__heart {
+    animation: none;
+  }
 }
 
 .sp-hero {
@@ -67,8 +230,8 @@
   height: 100%;
   display: grid;
   place-items: center;
-  background: linear-gradient(135deg, #450af5, #c4efd9);
-  color: #fff;
+  background: linear-gradient(135deg, #f5a623, #c9a84c);
+  color: #121212;
 }
 
 .sp-hero__cover-edit {

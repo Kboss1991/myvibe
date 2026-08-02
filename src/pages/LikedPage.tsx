@@ -13,8 +13,6 @@ export function LikedPage() {
         title="Canciones que te gustan"
         tracks={liked}
         likedStyle
-        coverTrackId={liked[0]?.id}
-        hasCover={liked[0]?.hasCover}
         onRemoveTrack={async (trackId) => {
           const track = liked.find((t) => t.id === trackId)
           if (track?.liked) await toggleLike(trackId)

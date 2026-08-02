@@ -436,8 +436,8 @@
   display: grid;
   place-items: center;
   flex-shrink: 0;
-  background: linear-gradient(135deg, #450af5, #c4efd9 99%);
-  color: #fff;
+  background: linear-gradient(145deg, #f5a623, #c9a84c);
+  color: #121212;
 }
 
 .playlist-list strong,
