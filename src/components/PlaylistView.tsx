@@ -270,7 +270,15 @@ export function PlaylistView({
                 className="sp-play"
                 disabled={!tracks.length}
                 aria-label="Reproducir"
-                onClick={() => void playTracks(ids)}
+                onClick={() =>
+                  void playTracks(ids, undefined, {
+                    source: playlistId
+                      ? { kind: 'playlist', id: playlistId, title }
+                      : likedStyle
+                        ? { kind: 'liked', title }
+                        : null,
+                  })
+                }
               >
                 <IconPlay size={22} />
               </button>
@@ -490,6 +498,13 @@ export function PlaylistView({
                         void playTracks(
                           displayTracks.map((t) => t.id),
                           track.id,
+                          {
+                            source: playlistId
+                              ? { kind: 'playlist', id: playlistId, title }
+                              : likedStyle
+                                ? { kind: 'liked', title }
+                                : null,
+                          },
                         )
                       }
                     >
@@ -507,6 +522,13 @@ export function PlaylistView({
                       void playTracks(
                         displayTracks.map((t) => t.id),
                         track.id,
+                        {
+                          source: playlistId
+                            ? { kind: 'playlist', id: playlistId, title }
+                            : likedStyle
+                              ? { kind: 'liked', title }
+                              : null,
+                        },
                       )
                     }}
                   >

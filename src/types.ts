@@ -1,5 +1,10 @@
 export type RepeatMode = 'off' | 'all'
 
+/** Origen de la cola actual (solo UI MyVibe; no va a CarPlay). */
+export type PlaybackSource =
+  | { kind: 'playlist'; id: string; title: string }
+  | { kind: 'liked'; title: string }
+
 export interface Track {
   id: string
   title: string

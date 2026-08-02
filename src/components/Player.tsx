@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { audioEngine } from '../lib/audioEngine'
 import { formatTime, refreshMediaPlaybackState } from '../lib/mediaSession'
 import { formatRadioDelay, getRadioStation } from '../lib/radios'
@@ -325,13 +326,16 @@ export function PlayerBar() {
 }
 
 export function NowPlaying() {
+  const navigate = useNavigate()
   const tracks = useLibraryStore((s) => s.tracks)
+  const playlists = useLibraryStore((s) => s.playlists)
   const toggleLike = useLibraryStore((s) => s.toggleLike)
   const open = usePlayerStore((s) => s.nowPlayingOpen)
   const setOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
   const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
+  const playbackSource = usePlayerStore((s) => s.playbackSource)
   const isPlaying = usePlayerStore((s) => s.isPlaying)
   const position = usePlayerStore((s) => s.position)
   const duration = usePlayerStore((s) => s.duration)
@@ -357,6 +361,20 @@ export function NowPlaying() {
   const maxDelay = audioEngine.maxRadioDelay
   const displayDelay = useDisplayedRadioDelay(radioDelay, radioPauseStartedAt, maxDelay)
   const seekRef = useRef<HTMLInputElement>(null)
+
+  const sourceTitle =
+    playbackSource?.kind === 'playlist'
+      ? playlists.find((p) => p.id === playbackSource.id)?.name || playbackSource.title
+      : playbackSource?.kind === 'liked'
+        ? playbackSource.title
+        : null
+
+  const goToSource = () => {
+    if (!playbackSource) return
+    setOpen(false)
+    if (playbackSource.kind === 'liked') navigate('/liked')
+    else navigate(`/playlist/${playbackSource.id}`)
+  }
 
   if (!open) return null
   if (!track && !radio && !podcastEp) return null
@@ -557,10 +575,22 @@ export function NowPlaying() {
         <button className="icon-btn" aria-label="Cerrar" onClick={() => setOpen(false)}>
           <IconChevronDown size={28} />
         </button>
-        <div>
-          <p className="now-playing__eyebrow">Reproduciendo</p>
-          <p className="now-playing__album">{track!.album}</p>
-        </div>
+        {sourceTitle && playbackSource ? (
+          <button
+            type="button"
+            className="now-playing__source"
+            onClick={goToSource}
+            aria-label={`Volver a ${sourceTitle}`}
+          >
+            <p className="now-playing__eyebrow">Escuchando de</p>
+            <p className="now-playing__album now-playing__album--link">{sourceTitle}</p>
+          </button>
+        ) : (
+          <div>
+            <p className="now-playing__eyebrow">Reproduciendo</p>
+            <p className="now-playing__album">{track!.album}</p>
+          </div>
+        )}
         <span aria-hidden className="now-playing__header-spacer" />
       </header>
 

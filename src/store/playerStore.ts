@@ -4,7 +4,7 @@ import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
 import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, claimNowPlaying, setPlaybackStateResolver } from '../lib/mediaSession'
-import type { RepeatMode, Track } from '../types'
+import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
 import { roundRadioDelayMs } from '../lib/radios'
@@ -40,6 +40,8 @@ interface PlayerState {
   queueOpen: boolean
   coverUrl: string | null
   hydrated: boolean
+  /** Lista/origen desde el que se lanzó la cola (Now Playing expandido). */
+  playbackSource: PlaybackSource | null
   /** Se incrementa al guardar progreso de podcast (para refrescar la UI). */
   podcastProgressTick: number
   /** Timestamp performance.now() al pausar radio para sumar al delay; null si no está midiendo */
@@ -50,7 +52,7 @@ interface PlayerState {
   playTracks: (
     trackIds: string[],
     startId?: string,
-    options?: { shuffle?: boolean },
+    options?: { shuffle?: boolean; source?: PlaybackSource | null },
   ) => Promise<void>
   playRadio: (stationId: string) => Promise<void>
   playPodcastEpisode: (
@@ -721,6 +723,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   queueOpen: false,
   coverUrl: null,
   hydrated: false,
+  playbackSource: null,
   podcastProgressTick: 0,
 
   hydrate: async () => {
@@ -922,6 +925,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioPauseStartedAt: null,
       radioDelay: 0,
       isPlaying: true,
+      playbackSource: null,
     })
     setMediaPlaybackState(true)
     try {
@@ -981,6 +985,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       duration: episode.durationSec || 0,
       radioPauseStartedAt: null,
       queueOpen: false,
+      playbackSource: null,
     })
 
     try {
@@ -1036,6 +1041,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       originalQueue,
       index,
       shuffle: shuffleOn,
+      playbackSource: null,
     })
     persistSoon({
       queue: nextQueue,
@@ -1061,6 +1067,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     audioEngine.clearStandby()
     prefetchedNextId = null
     const forceShuffle = options?.shuffle
+    const source =
+      options && 'source' in options ? (options.source ?? null) : null
     const shuffleOn =
       forceShuffle === true
         ? true
@@ -1084,6 +1092,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       index,
       currentTrackId: queue[index] ?? null,
       shuffle: shuffleOn,
+      playbackSource: source,
     })
     persistSoon({
       queue,
