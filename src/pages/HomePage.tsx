@@ -103,30 +103,14 @@ export function HomePage() {
           )}
         </div>
 
-        {(playlists.length > 0 || !tracks.length) && (
+        {!tracks.length && (
           <div className="home-quick-grid">
-            {playlists.slice(0, 5).map((p) => {
-              const cover = playlistCoverArtProps(p)
-              return (
-              <Link key={p.id} to={`/playlist/${p.id}`} className="home-quick">
-                <CoverArt
-                  trackId={cover.trackId}
-                  hasCover={cover.hasCover}
-                  refreshKey={cover.refreshKey}
-                  size={56}
-                />
-                <span>{p.name}</span>
-              </Link>
-              )
-            })}
-            {!tracks.length && (
-              <Link to="/upload" className="home-quick">
-                <span className="home-quick__liked" style={{ background: 'var(--accent)' }}>
-                  +
-                </span>
-                <span>Subir tu primera carpeta MP3</span>
-              </Link>
-            )}
+            <Link to="/upload" className="home-quick">
+              <span className="home-quick__liked" style={{ background: 'var(--accent)' }}>
+                +
+              </span>
+              <span>Subir tu primera carpeta MP3</span>
+            </Link>
           </div>
         )}
       </header>
