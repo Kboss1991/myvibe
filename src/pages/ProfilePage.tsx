@@ -3,7 +3,15 @@ import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { hasRealEmail, isCloudAuthEnabled } from '../lib/auth'
-import { IconEdit } from '../components/Icons'
+import { CoverArt } from '../components/CoverArt'
+import {
+  IconEdit,
+  IconFlame,
+  IconHeadphones,
+  IconMusicNote,
+  IconPerson,
+  IconShare,
+} from '../components/Icons'
 import { UserAvatar } from '../components/UserAvatar'
 import {
   claimLibraryHost,
@@ -26,7 +34,11 @@ import {
   type CircleFriend,
   type SharedPlaylistCard,
 } from '../lib/friends'
-import { computeListenStats, formatListenMinutes } from '../lib/listenStats'
+import {
+  computeListenStats,
+  formatPlayCountLabel,
+  formatStatsMonthLabel,
+} from '../lib/listenStats'
 import { checkTasteTablesReady, TASTE_SQL_HINT } from '../lib/cloudLibrary'
 import { TASTE_SYNC_SQL } from '../lib/tasteSyncSql'
 import './pages.css'
@@ -226,53 +238,183 @@ export function ProfilePage() {
       </div>
 
       {/* Estadísticas */}
-      <section className="profile-card">
-        <h2 className="profile-card__title">Tu escucha</h2>
-        <div className="profile-stats-grid">
-          <div>
-            <strong>{formatListenMinutes(stats.estimatedMinutes)}</strong>
-            <span>tiempo estimado</span>
-          </div>
-          <div>
-            <strong>{stats.totalPlays}</strong>
-            <span>reproducciones</span>
-          </div>
-          <div>
-            <strong>{stats.streakDays}</strong>
-            <span>días de racha</span>
-          </div>
-          <div>
-            <strong>{stats.uniqueTracksPlayed}</strong>
-            <span>canciones tocadas</span>
+      <section className="stats-panel" aria-labelledby="stats-heading">
+        <header className="stats-panel__header">
+          <h2 id="stats-heading" className="stats-panel__title">
+            Estadísticas
+          </h2>
+          <p className="stats-panel__eyebrow">Resumen</p>
+          <p className="stats-panel__period">{formatStatsMonthLabel()}</p>
+        </header>
+
+        <div className="stats-section">
+          <h3 className="stats-section__label">Tus números</h3>
+          <div className="stats-numbers" role="list">
+            <article className="stats-number-card" role="listitem">
+              <span className="stats-number-card__icon stats-number-card__icon--purple">
+                <IconHeadphones size={22} />
+              </span>
+              <span className="stats-number-card__label">Minutos de música</span>
+              <strong className="stats-number-card__value">{stats.estimatedMinutes}</strong>
+            </article>
+            <article className="stats-number-card" role="listitem">
+              <span className="stats-number-card__icon stats-number-card__icon--red">
+                <IconPerson size={22} />
+              </span>
+              <span className="stats-number-card__label">Artistas escuchados</span>
+              <strong className="stats-number-card__value">{stats.uniqueArtists}</strong>
+            </article>
+            <article className="stats-number-card" role="listitem">
+              <span className="stats-number-card__icon stats-number-card__icon--violet">
+                <IconMusicNote size={22} />
+              </span>
+              <span className="stats-number-card__label">Canciones escuchadas</span>
+              <strong className="stats-number-card__value">{stats.uniqueTracksPlayed}</strong>
+            </article>
+            <article className="stats-number-card" role="listitem">
+              <span className="stats-number-card__icon stats-number-card__icon--amber">
+                <IconFlame size={22} />
+              </span>
+              <span className="stats-number-card__label">Días de racha</span>
+              <strong className="stats-number-card__value">{stats.streakDays}</strong>
+            </article>
+            <article className="stats-number-card" role="listitem">
+              <span className="stats-number-card__icon stats-number-card__icon--teal">
+                <IconMusicNote size={22} />
+              </span>
+              <span className="stats-number-card__label">Reproducciones</span>
+              <strong className="stats-number-card__value">{stats.totalPlays}</strong>
+            </article>
           </div>
         </div>
-        {stats.topArtists.length > 0 && (
-          <div className="profile-tops">
-            <h3>Top artistas</h3>
-            <ol>
-              {stats.topArtists.map((a) => (
-                <li key={a.name}>
-                  <span>{a.name}</span>
-                  <em>{a.plays}</em>
-                </li>
-              ))}
-            </ol>
-          </div>
-        )}
-        {stats.topTracks.length > 0 && (
-          <div className="profile-tops">
-            <h3>Top canciones</h3>
-            <ol>
-              {stats.topTracks.map((t) => (
-                <li key={t.id}>
-                  <span>
-                    {t.title}
-                    <small>{t.artist}</small>
-                  </span>
-                  <em>{t.plays}</em>
-                </li>
-              ))}
-            </ol>
+
+        {(stats.topArtists.length > 0 || stats.topTracks.length > 0) && (
+          <div className="stats-section">
+            <h3 className="stats-section__label">Lo más escuchado</h3>
+            <div className="stats-tops" role="list">
+              {stats.topArtists.length > 0 && (
+                <article className="stats-top-card" role="listitem">
+                  <div className="stats-top-card__head">
+                    <h4>Artistas</h4>
+                    <button
+                      type="button"
+                      className="stats-top-card__share"
+                      aria-label="Compartir top artistas"
+                      onClick={() => {
+                        const text = [
+                          'Mis artistas más escuchados en MyVibe',
+                          ...stats.topArtists.map(
+                            (a, i) => `${i + 1}. ${a.name} · ${a.minutes} min`,
+                          ),
+                        ].join('\n')
+                        if (navigator.share) {
+                          void navigator.share({ title: 'Top artistas · MyVibe', text }).catch(() => {})
+                        } else if (navigator.clipboard?.writeText) {
+                          void navigator.clipboard.writeText(text)
+                          setOkMsg('Top artistas copiado')
+                        }
+                      }}
+                    >
+                      <IconShare size={18} />
+                    </button>
+                  </div>
+                  <ol className="stats-rank-list">
+                    {stats.topArtists.map((a, i) => (
+                      <li
+                        key={a.name}
+                        className={
+                          i === 0 ? 'stats-rank-list__item is-featured' : 'stats-rank-list__item'
+                        }
+                      >
+                        <div className="stats-rank-list__art stats-rank-list__art--round">
+                          <CoverArt
+                            trackId={a.coverTrackId}
+                            hasCover={a.hasCover}
+                            refreshKey={a.coverUpdatedAt}
+                            size={i === 0 ? 72 : 44}
+                            rounded="full"
+                          />
+                          <span className="stats-rank-badge">{i + 1}</span>
+                        </div>
+                        <div className="stats-rank-list__meta">
+                          <span className="stats-rank-list__title">{a.name}</span>
+                          {i === 0 ? (
+                            <span className="stats-rank-list__sub">{a.minutes} min</span>
+                          ) : null}
+                        </div>
+                        {i > 0 ? (
+                          <span className="stats-rank-list__metric">{a.minutes} min</span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                </article>
+              )}
+
+              {stats.topTracks.length > 0 && (
+                <article className="stats-top-card" role="listitem">
+                  <div className="stats-top-card__head">
+                    <h4>Canciones</h4>
+                    <button
+                      type="button"
+                      className="stats-top-card__share"
+                      aria-label="Compartir top canciones"
+                      onClick={() => {
+                        const text = [
+                          'Mis canciones más escuchadas en MyVibe',
+                          ...stats.topTracks.map(
+                            (t, i) => `${i + 1}. ${t.title} — ${t.artist} · ${formatPlayCountLabel(t.plays)}`,
+                          ),
+                        ].join('\n')
+                        if (navigator.share) {
+                          void navigator.share({ title: 'Top canciones · MyVibe', text }).catch(() => {})
+                        } else if (navigator.clipboard?.writeText) {
+                          void navigator.clipboard.writeText(text)
+                          setOkMsg('Top canciones copiado')
+                        }
+                      }}
+                    >
+                      <IconShare size={18} />
+                    </button>
+                  </div>
+                  <ol className="stats-rank-list">
+                    {stats.topTracks.map((t, i) => (
+                      <li
+                        key={t.id}
+                        className={
+                          i === 0 ? 'stats-rank-list__item is-featured' : 'stats-rank-list__item'
+                        }
+                      >
+                        <div className="stats-rank-list__art">
+                          <CoverArt
+                            trackId={t.id}
+                            hasCover={t.hasCover}
+                            refreshKey={t.coverUpdatedAt}
+                            size={i === 0 ? 72 : 44}
+                            rounded="md"
+                          />
+                          <span className="stats-rank-badge">{i + 1}</span>
+                        </div>
+                        <div className="stats-rank-list__meta">
+                          <span className="stats-rank-list__title">{t.title}</span>
+                          <span className="stats-rank-list__sub">{t.artist}</span>
+                          {i === 0 ? (
+                            <span className="stats-rank-list__sub">
+                              {formatPlayCountLabel(t.plays)}
+                            </span>
+                          ) : null}
+                        </div>
+                        {i > 0 ? (
+                          <span className="stats-rank-list__metric">
+                            {formatPlayCountLabel(t.plays)}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ol>
+                </article>
+              )}
+            </div>
           </div>
         )}
       </section>

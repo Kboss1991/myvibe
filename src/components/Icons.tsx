@@ -236,6 +236,39 @@ export function IconShare(p: IconProps) {
   )
 }
 
+export function IconHeadphones(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M4 13v2.5A2.5 2.5 0 0 0 6.5 18H8v-5H6.5A2.5 2.5 0 0 0 4 15.5V13a8 8 0 0 1 16 0v2.5A2.5 2.5 0 0 1 17.5 18H16v-5h1.5A2.5 2.5 0 0 1 20 15.5" />
+    </svg>
+  )
+}
+
+export function IconPerson(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <circle cx="12" cy="8" r="3.5" />
+      <path d="M5 19.5c1.6-3.2 4-4.8 7-4.8s5.4 1.6 7 4.8" />
+    </svg>
+  )
+}
+
+export function IconMusicNote(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M9 5v11.2A3.2 3.2 0 1 0 11 19V9l8-1.6V14a3.2 3.2 0 1 0 2 2.9V5.6L9 5z" />
+    </svg>
+  )
+}
+
+export function IconFlame(p: IconProps) {
+  return (
+    <svg {...base(p)}>
+      <path d="M12 3c1.8 2.4 3 4.2 3 6.2a3 3 0 0 1-6 0c0-.7.2-1.4.5-2C8 9.5 7 11.2 7 13a5 5 0 0 0 10 0c0-3.2-2.2-5.8-5-10z" />
+    </svg>
+  )
+}
+
 export function IconClock(p: IconProps) {
   return (
     <svg {...base(p)}>

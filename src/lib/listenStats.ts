@@ -1,11 +1,31 @@
 import type { Track } from '../types'
 
+export type TopArtistStat = {
+  name: string
+  plays: number
+  minutes: number
+  /** Pista representativa para portada */
+  coverTrackId: string | null
+  hasCover: boolean
+  coverUpdatedAt?: number
+}
+
+export type TopTrackStat = {
+  id: string
+  title: string
+  artist: string
+  plays: number
+  hasCover: boolean
+  coverUpdatedAt?: number
+}
+
 export type ListenStats = {
   totalPlays: number
   uniqueTracksPlayed: number
+  uniqueArtists: number
   estimatedMinutes: number
-  topArtists: { name: string; plays: number }[]
-  topTracks: { id: string; title: string; artist: string; plays: number }[]
+  topArtists: TopArtistStat[]
+  topTracks: TopTrackStat[]
   streakDays: number
   lastListenAt: number | null
 }
@@ -19,19 +39,61 @@ export function computeListenStats(tracks: Track[]): ListenStats {
   const played = tracks.filter((t) => t.playCount > 0 || t.lastPlayedAt)
   let totalPlays = 0
   let estimatedSec = 0
-  const artistMap = new Map<string, number>()
+  const artistMap = new Map<
+    string,
+    {
+      plays: number
+      seconds: number
+      coverTrackId: string | null
+      hasCover: boolean
+      coverUpdatedAt?: number
+      bestPlays: number
+    }
+  >()
 
   for (const t of played) {
     const plays = Math.max(0, t.playCount || 0)
+    const duration = t.duration > 0 ? t.duration : 180
     totalPlays += plays
-    estimatedSec += plays * (t.duration > 0 ? t.duration : 180)
+    estimatedSec += plays * duration
     const artist = (t.artist || 'Desconocido').trim() || 'Desconocido'
-    artistMap.set(artist, (artistMap.get(artist) || 0) + plays)
+    const prev = artistMap.get(artist)
+    const seconds = plays * duration
+    if (!prev) {
+      artistMap.set(artist, {
+        plays,
+        seconds,
+        coverTrackId: t.id,
+        hasCover: Boolean(t.hasCover),
+        coverUpdatedAt: t.coverUpdatedAt,
+        bestPlays: plays,
+      })
+    } else {
+      prev.plays += plays
+      prev.seconds += seconds
+      if (plays > prev.bestPlays || (plays === prev.bestPlays && t.hasCover && !prev.hasCover)) {
+        prev.coverTrackId = t.id
+        prev.hasCover = Boolean(t.hasCover)
+        prev.coverUpdatedAt = t.coverUpdatedAt
+        prev.bestPlays = plays
+      }
+    }
   }
 
   const topArtists = [...artistMap.entries()]
-    .map(([name, plays]) => ({ name, plays }))
-    .sort((a, b) => b.plays - a.plays)
+    .map(([name, a]) => {
+      const minutes =
+        a.plays <= 0 ? 0 : Math.max(1, Math.round(a.seconds / 60))
+      return {
+        name,
+        plays: a.plays,
+        minutes,
+        coverTrackId: a.coverTrackId,
+        hasCover: a.hasCover,
+        coverUpdatedAt: a.coverUpdatedAt,
+      }
+    })
+    .sort((a, b) => b.plays - a.plays || b.minutes - a.minutes)
     .slice(0, 5)
 
   const topTracks = [...played]
@@ -42,6 +104,8 @@ export function computeListenStats(tracks: Track[]): ListenStats {
       title: t.title,
       artist: t.artist,
       plays: t.playCount,
+      hasCover: Boolean(t.hasCover),
+      coverUpdatedAt: t.coverUpdatedAt,
     }))
 
   const listenDays = new Set(
@@ -80,6 +144,7 @@ export function computeListenStats(tracks: Track[]): ListenStats {
   return {
     totalPlays,
     uniqueTracksPlayed: played.length,
+    uniqueArtists: artistMap.size,
     estimatedMinutes: Math.round(estimatedSec / 60),
     topArtists,
     topTracks,
@@ -93,4 +158,13 @@ export function formatListenMinutes(mins: number): string {
   const h = Math.floor(mins / 60)
   const m = mins % 60
   return m ? `${h} h ${m} min` : `${h} h`
+}
+
+export function formatStatsMonthLabel(date = new Date()): string {
+  const raw = new Intl.DateTimeFormat('es-ES', { month: 'long', year: 'numeric' }).format(date)
+  return raw.charAt(0).toUpperCase() + raw.slice(1)
+}
+
+export function formatPlayCountLabel(plays: number): string {
+  return plays === 1 ? '1 reproducción' : `${plays} reproducciones`
 }
