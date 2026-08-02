@@ -197,6 +197,8 @@ export async function updateMediaSession(
   })
 
   bindMediaHandlers(handlers)
+  // iOS pone Play al cambiar MediaMetadata
+  refreshMediaPlaybackState()
 
   const artwork =
     track.hasLocalAudio !== false
@@ -221,6 +223,8 @@ export async function updateMediaSession(
   })
 
   bindMediaHandlers(handlers)
+  // El 2º write (con carátula) vuelve a resetear el botón en CarPlay
+  refreshMediaPlaybackState()
 }
 
 export async function updateRadioMediaSession(
@@ -249,6 +253,7 @@ export async function updateRadioMediaSession(
     getPosition: undefined,
     seekSkip: false,
   })
+  refreshMediaPlaybackState()
 }
 
 export function setMediaPlaybackState(playing: boolean) {
@@ -260,16 +265,37 @@ export function setMediaPlaybackState(playing: boolean) {
   }
 }
 
-/**
- * Tras actualizar metadatos, iOS a veces resetea el botón a Play.
- * Volver a aplicar el estado real del audio.
- */
-export function refreshMediaPlaybackState(playing: boolean) {
-  setMediaPlaybackState(playing)
-  // Segunda pasada: Safari/iOS a veces ignora el primer write tras MediaMetadata
+/** Estado vivo play/pause (el store lo registra). Evita que reintentos tardíos pisen un pause del usuario. */
+let playbackStateResolver: (() => boolean) | null = null
+let playbackRefreshTimers: number[] = []
+
+export function setPlaybackStateResolver(fn: (() => boolean) | null) {
+  playbackStateResolver = fn
+}
+
+function resolvePlaybackState(fallback?: boolean): boolean {
   try {
-    window.setTimeout(() => setMediaPlaybackState(playing), 0)
-    window.setTimeout(() => setMediaPlaybackState(playing), 120)
+    if (playbackStateResolver) return playbackStateResolver()
+  } catch {
+    /* ignore */
+  }
+  return Boolean(fallback)
+}
+
+/**
+ * Tras actualizar metadatos, iOS/CarPlay a menudo deja el botón en Play aunque suene.
+ * Reaplica el estado real en varias pasadas (el artwork asíncrono también lo resetea).
+ */
+export function refreshMediaPlaybackState(playing?: boolean) {
+  const apply = () => setMediaPlaybackState(resolvePlaybackState(playing))
+  apply()
+  try {
+    for (const t of playbackRefreshTimers) window.clearTimeout(t)
+    playbackRefreshTimers = []
+    // CarPlay tarda más que el lock screen en “comerse” el playbackState
+    for (const delay of [0, 40, 120, 280, 600, 1200, 2200]) {
+      playbackRefreshTimers.push(window.setTimeout(apply, delay))
+    }
   } catch {
     // ignore
   }
@@ -279,7 +305,7 @@ export function refreshMediaPlaybackState(playing: boolean) {
  * Reclama Now Playing / CarPlay frente a Spotify u otras apps.
  * Reescribir metadata + playbackState es lo que iOS usa para decidir quién “manda”.
  */
-export function claimNowPlaying(playing = true) {
+export function claimNowPlaying(playing?: boolean) {
   if (!('mediaSession' in navigator)) return
   try {
     const meta = navigator.mediaSession.metadata

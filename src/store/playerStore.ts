@@ -3,7 +3,7 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, claimNowPlaying } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, claimNowPlaying, setPlaybackStateResolver } from '../lib/mediaSession'
 import type { RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
@@ -196,7 +196,15 @@ async function refreshMediaSessionForTrackId(trackId: string) {
     getPosition: () => usePlayerStore.getState().position,
     seekSkip: false,
   })
-  refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
+  refreshMediaPlaybackState()
+}
+
+function mediaIsEffectivelyPlaying() {
+  return (
+    pendingBackgroundPlay ||
+    !audioEngine.paused ||
+    usePlayerStore.getState().isPlaying
+  )
 }
 
 /**
@@ -617,22 +625,27 @@ async function loadAndMaybePlay(
         // En bloqueo el play del siguiente track a veces falla: marcar reintento
         pendingBackgroundPlay = true
         set({ isPlaying: true })
-        setMediaPlaybackState(true)
+        void refreshMediaSessionForTrackId(trackId)
+        refreshMediaPlaybackState(true)
         return true
       }
     }
     pendingBackgroundPlay = false
-    set({ isPlaying: !audioEngine.paused })
-    setMediaPlaybackState(!audioEngine.paused)
-    if (!audioEngine.paused) {
+    const playing = !audioEngine.paused
+    set({ isPlaying: playing })
+    if (playing) {
       await recordPlay(trackId)
       await persistRecent(trackId)
       prefetchNextForCurrent(usePlayerStore.getState)
+      void refreshMediaSessionForTrackId(trackId)
+      refreshMediaPlaybackState(true)
+    } else {
+      refreshMediaPlaybackState(false)
     }
   } else {
     pendingBackgroundPlay = false
     set({ isPlaying: false })
-    setMediaPlaybackState(false)
+    refreshMediaPlaybackState(false)
   }
   return true
 }
@@ -711,6 +724,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   podcastProgressTick: 0,
 
   hydrate: async () => {
+    setPlaybackStateResolver(() => mediaIsEffectivelyPlaying())
     const snap = await ensurePlaybackSnapshot()
     audioEngine.setVolume(snap.volume)
 
@@ -1110,7 +1124,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ? { radioPauseStartedAt: performance.now() }
         : {}),
     })
-    setMediaPlaybackState(false)
+    refreshMediaPlaybackState(false)
   },
 
   play: async () => {
@@ -1124,7 +1138,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioDelay,
     } = get()
     audioEngine.applyPlaybackSession()
-    void bindMediaSession([])
     if (currentRadioId) {
       const station = getRadioStation(currentRadioId)
       if (!station) return
@@ -1153,8 +1166,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ok = await audioEngine.play()
       }
       // Si falla el play, NO resintonizar: playRadio vuelve al vivo y borra el retraso
-      set({ isPlaying: !audioEngine.paused, radioPauseStartedAt: null })
-      setMediaPlaybackState(!audioEngine.paused)
+      const playing = !audioEngine.paused
+      set({ isPlaying: playing, radioPauseStartedAt: null })
+      // Metadatos DESPUÉS del play: si van antes, CarPlay deja el botón en Play
+      await bindMediaSession([])
+      refreshMediaPlaybackState(playing)
       return
     }
     if (currentPodcastEpisodeId) {
@@ -1182,8 +1198,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         }
         return
       }
-      set({ isPlaying: !audioEngine.paused })
-      setMediaPlaybackState(!audioEngine.paused)
+      set({ isPlaying: true })
+      await bindMediaSession([])
+      refreshMediaPlaybackState(true)
       return
     }
     if (radioPauseStartedAt != null) set({ radioPauseStartedAt: null })
@@ -1211,7 +1228,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return
     }
     set({ isPlaying: true })
-    setMediaPlaybackState(true)
+    await bindMediaSession([])
+    refreshMediaPlaybackState(true)
   },
 
   next: async (opts) => {
@@ -1296,25 +1314,30 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     })
 
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
-    if (ok) prefetchNextForCurrent(get)
-    if (!ok) {
-      // Evitar quedarse en silencio en una pista rota
-      for (let i = nextIndex + 1; i < queue.length; i++) {
+    if (ok) {
+      prefetchNextForCurrent(get)
+      // Skip manual: iOS/CarPlay deja Play tras cambiar metadatos
+      void refreshMediaSessionForTrackId(trackId).then(() => refreshMediaPlaybackState(true))
+      return
+    }
+    // Evitar quedarse en silencio en una pista rota
+    for (let i = nextIndex + 1; i < queue.length; i++) {
+      const id = queue[i]!
+      set({ index: i, currentTrackId: id })
+      if (await loadAndMaybePlay(id, 0, true, set)) {
+        prefetchNextForCurrent(get)
+        void refreshMediaSessionForTrackId(id).then(() => refreshMediaPlaybackState(true))
+        return
+      }
+    }
+    if (repeat === 'all') {
+      for (let i = 0; i < nextIndex; i++) {
         const id = queue[i]!
         set({ index: i, currentTrackId: id })
         if (await loadAndMaybePlay(id, 0, true, set)) {
           prefetchNextForCurrent(get)
+          void refreshMediaSessionForTrackId(id).then(() => refreshMediaPlaybackState(true))
           return
-        }
-      }
-      if (repeat === 'all') {
-        for (let i = 0; i < nextIndex; i++) {
-          const id = queue[i]!
-          set({ index: i, currentTrackId: id })
-          if (await loadAndMaybePlay(id, 0, true, set)) {
-            prefetchNextForCurrent(get)
-            return
-          }
         }
       }
     }
@@ -1578,7 +1601,7 @@ export async function bindMediaSession(tracks: Track[]) {
         nexttrack: () => void usePlayerStore.getState().next(),
       })
     }
-    refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
+    refreshMediaPlaybackState()
     return
   }
   if (state.currentPodcastEpisodeId) {
@@ -1602,7 +1625,7 @@ export async function bindMediaSession(tracks: Track[]) {
         },
       )
     }
-    refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
+    refreshMediaPlaybackState()
     return
   }
   let track = tracks.find((t) => t.id === state.currentTrackId) ?? null
@@ -1624,5 +1647,5 @@ export async function bindMediaSession(tracks: Track[]) {
     seekSkip: false,
   })
   // Tras MediaMetadata, iOS resetea el botón — reafirmar play/pause real
-  refreshMediaPlaybackState(!audioEngine.paused || pendingBackgroundPlay)
+  refreshMediaPlaybackState()
 }
