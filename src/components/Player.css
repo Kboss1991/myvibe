@@ -721,9 +721,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  text-decoration: underline;
-  text-decoration-color: rgba(245, 166, 35, 0.45);
-  text-underline-offset: 3px;
+  text-decoration: none;
 }
 
 .now-playing__art-wrap {
