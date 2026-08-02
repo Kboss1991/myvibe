@@ -3,8 +3,30 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { registerSW } from 'virtual:pwa-register'
 import App from './App'
+import { PortraitGate } from './components/PortraitGate'
 import { audioEngine } from './lib/audioEngine'
 import './styles/tokens.css'
+
+function tryLockPortrait() {
+  try {
+    const orientation = screen.orientation as ScreenOrientation & {
+      lock?: (orientation: string) => Promise<void>
+    }
+    if (typeof orientation?.lock === 'function') {
+      void orientation.lock('portrait').catch(() => {
+        void orientation.lock?.('portrait-primary').catch(() => undefined)
+      })
+    }
+  } catch {
+    // iOS no permite lock; PortraitGate cubre el caso
+  }
+}
+
+tryLockPortrait()
+window.addEventListener('orientationchange', tryLockPortrait)
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') tryLockPortrait()
+})
 
 function shouldDeferReload() {
   try {
@@ -76,6 +98,7 @@ window.addEventListener('vite:preloadError', (event) => {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
+      <PortraitGate />
       <App />
     </BrowserRouter>
   </StrictMode>,
