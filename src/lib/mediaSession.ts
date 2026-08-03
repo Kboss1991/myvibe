@@ -396,8 +396,15 @@ export function setPlaybackStateResolver(fn: (() => boolean) | null) {
 }
 
 function resolvePlaybackState(fallback?: boolean): boolean {
+  // Pause explícito: no dejar que el resolver / pending finge "playing"
+  if (fallback === false) return false
   try {
-    if (playbackStateResolver) return playbackStateResolver()
+    if (playbackStateResolver) {
+      const live = playbackStateResolver()
+      // Play explícito solo si de verdad suena o el resolver lo afirma
+      if (fallback === true) return live || false
+      return live
+    }
   } catch {
     /* ignore */
   }

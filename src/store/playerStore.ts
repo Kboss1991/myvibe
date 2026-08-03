@@ -277,6 +277,8 @@ async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = fal
 function mediaIsEffectivelyPlaying() {
   // Audio real manda.
   if (!audioEngine.paused) return true
+  // Tras pause explícito del usuario no fingir "playing"
+  if (!usePlayerStore.getState().isPlaying && !pendingBackgroundPlay) return false
   // Ventana tras salto de pista: metadata/posición resetean CarPlay a Play
   if (Date.now() < mediaPlayingHoldUntil) return true
   // Avance de pista / play remoto: el <audio> puede ir un instante en pause
@@ -290,8 +292,9 @@ function mediaIsEffectivelyPlaying() {
 }
 
 /**
- * Play remoto (CarPlay / bloqueo).
- * NUNCA hardResume / recargar src desde aquí: es lo que “rompe” hasta abrir el móvil.
+ * Play remoto (CarPlay / bloqueo / AirPods).
+ * Usar play() del store (podcasts necesitan ensureAudible / hardResume).
+ * Nunca marcar "playing" en Now Playing si el <audio> sigue en pause.
  */
 function handleRemotePlay() {
   stopInterruptionResumeWatcher()
@@ -301,55 +304,48 @@ function handleRemotePlay() {
   }
 
   if (!audioEngine.paused) {
+    pendingBackgroundPlay = false
     usePlayerStore.setState({ isPlaying: true })
-    beginTrackChangeMediaGuard(2500)
-    setMediaPlaybackState(true)
     refreshMediaPlaybackState(true, { strong: true })
     return
   }
 
   pendingBackgroundPlay = true
-  beginTrackChangeMediaGuard(5000)
   usePlayerStore.setState({ isPlaying: true })
-  void softRemoteResume()
-}
-
-async function softRemoteResume() {
-  try {
-    audioEngine.applyPlaybackSession()
-    await audioEngine.ensureAudible()
-    let ok = await audioEngine.play()
-    if (!ok || audioEngine.paused) {
-      await new Promise<void>((r) => window.setTimeout(r, 120))
-      ok = await audioEngine.play()
-    }
-    const playing = !audioEngine.paused
-    usePlayerStore.setState({ isPlaying: playing || pendingBackgroundPlay })
-    setMediaPlaybackState(playing || pendingBackgroundPlay)
-    refreshMediaPlaybackState(playing || pendingBackgroundPlay, { strong: true })
-  } catch {
-    setMediaPlaybackState(true)
-    refreshMediaPlaybackState(true, { strong: true })
-  }
+  void usePlayerStore
+    .getState()
+    .play()
+    .then(() => {
+      const playing = !audioEngine.paused
+      pendingBackgroundPlay = playing
+      if (!playing) {
+        clearMediaPlayingHold()
+        usePlayerStore.setState({ isPlaying: false })
+      }
+      refreshMediaPlaybackState(playing, { strong: playing })
+    })
+    .catch(() => {
+      pendingBackgroundPlay = false
+      clearMediaPlayingHold()
+      usePlayerStore.setState({ isPlaying: false })
+      refreshMediaPlaybackState(false)
+    })
 }
 
 function handleRemotePause() {
-  // AirPods / CarPlay / bloqueo: pause de usuario, no interrupción de llamada
+  // AirPods / CarPlay / bloqueo: pause de usuario → pausar el audio de verdad
   audioEngine.markIntentionalPause(2000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
   pendingBackgroundPlay = false
-  if (
-    audioEngine.paused &&
-    Date.now() >= mediaPlayingHoldUntil &&
-    !usePlayerStore.getState().isPlaying
-  ) {
-    refreshMediaPlaybackState(false)
-    // Mantener tarjeta en Now Playing aunque ya estuviera en pause
-    claimNowPlaying(false)
-    return
-  }
+  clearMediaPlayingHold()
   usePlayerStore.getState().pause()
+  // Por si pause() no llegó a aplicar el estado visual
+  if (!audioEngine.paused) {
+    audioEngine.pause()
+  }
+  usePlayerStore.setState({ isPlaying: false })
+  refreshMediaPlaybackState(false)
 }
 
 /**
@@ -1392,20 +1388,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         await new Promise<void>((r) => window.setTimeout(r, 100))
         ok = await audioEngine.play()
       }
-      const visible =
-        typeof document === 'undefined' || document.visibilityState === 'visible'
-      if ((!ok || audioEngine.paused) && visible) {
+      // Desde bloqueo el gesto de Media Session debe bastar; si falla, reintentar
+      // sin fingir "playing" (eso dejaba el icono en pause y el audio mudo/suelto).
+      if (!ok || audioEngine.paused) {
         ok = await audioEngine.hardResume(resumeAt)
       }
       if (!ok || audioEngine.paused) {
-        if (!visible) {
-          pendingBackgroundPlay = true
-          beginTrackChangeMediaGuard(5000)
-          set({ isPlaying: true })
-          setMediaPlaybackState(true)
-          refreshMediaPlaybackState(true, { strong: true })
-          return
-        }
         const ep = getPodcastEpisode(currentPodcastEpisodeId)
         const show = ep ? getPodcastShow(ep.showId) : null
         if (ep && show) {
@@ -1413,9 +1401,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
             .map((id) => getPodcastEpisode(id))
             .filter((e): e is PodcastEpisode => Boolean(e))
           await get().playPodcastEpisode(ep, show, siblings)
+          return
         }
+        pendingBackgroundPlay = false
+        clearMediaPlayingHold()
+        set({ isPlaying: false })
+        refreshMediaPlaybackState(false)
         return
       }
+      pendingBackgroundPlay = false
       set({ isPlaying: true })
       await bindMediaSession([])
       refreshMediaPlaybackState(true, { strong: true })

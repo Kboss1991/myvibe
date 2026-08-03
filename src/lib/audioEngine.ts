@@ -933,7 +933,34 @@ class AudioEngine {
     this.applyPlaybackSession()
     await this.resumeContext()
     if (this.sourceNode && !this.live) {
+      // Sustituir el <audio> (MediaElementSource solo una vez) pero conservar src/posición
+      // para no dejar podcasts/canciones mudos tras radio con delay.
+      const src = this.audio.getAttribute('src') || this.audio.currentSrc || this.objectUrl
+      const t = this.audio.currentTime
+      const wasPaused = this.audio.paused
       this.ensureElementAudioRoute()
+      if (src && !src.startsWith('data:')) {
+        this.markIntentionalPause(1200)
+        this.audio.src = src
+        if (Number.isFinite(t) && t > 0.25) {
+          const seek = () => {
+            try {
+              this.audio.currentTime = t
+            } catch {
+              /* ignore */
+            }
+          }
+          if (this.audio.readyState >= 1) seek()
+          else this.audio.addEventListener('loadedmetadata', seek, { once: true })
+        }
+        if (!wasPaused) {
+          try {
+            await this.audio.play()
+          } catch {
+            /* caller reintenta */
+          }
+        }
+      }
     }
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
