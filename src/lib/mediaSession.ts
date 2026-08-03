@@ -87,13 +87,8 @@ async function resizeCoverToJpeg(blob: Blob, size: number, quality: number): Pro
  * Genera artwork grande para iOS (lock screen / Now Playing).
  * Sin esto, iPhone muestra el icono de MyVibe en pequeño.
  */
-export async function buildLockScreenArtwork(trackId: string): Promise<MediaImage[]> {
-  const cached = artworkCache.get(trackId)
-  if (cached?.length) return cached
-
-  const blob = await getCoverBlob(trackId)
+async function mediaImagesFromBlob(blob: Blob, cacheKey: string): Promise<MediaImage[]> {
   if (!blob || blob.size < 32) return []
-
   try {
     // iOS elige el tamaño más grande disponible para la carátula a pantalla completa
     const [xl, lg, md] = await Promise.all([
@@ -108,11 +103,66 @@ export async function buildLockScreenArtwork(trackId: string): Promise<MediaImag
       { src: lg, sizes: '512x512', type: 'image/jpeg' },
       { src: md, sizes: '256x256', type: 'image/jpeg' },
     ]
-    artworkCache.set(trackId, images)
+    artworkCache.set(cacheKey, images)
     return images
   } catch {
     return []
   }
+}
+
+export async function buildLockScreenArtwork(trackId: string): Promise<MediaImage[]> {
+  const cached = artworkCache.get(trackId)
+  if (cached?.length) return cached
+
+  const blob = await getCoverBlob(trackId)
+  if (!blob || blob.size < 32) return []
+  return mediaImagesFromBlob(blob, trackId)
+}
+
+/** Descarga una imagen remota (CORS directo o proxy) para Media Session. */
+async function fetchRemoteImageBlob(url: string): Promise<Blob | null> {
+  const tryFetch = async (src: string) => {
+    const res = await fetch(src, { mode: 'cors', credentials: 'omit' })
+    if (!res.ok) return null
+    const blob = await res.blob()
+    return blob.size > 32 ? blob : null
+  }
+
+  try {
+    const direct = await tryFetch(url)
+    if (direct) return direct
+  } catch {
+    /* proxy */
+  }
+
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const proxied = `/api/image-proxy?url=${encodeURIComponent(url)}`
+      const viaProxy = await tryFetch(proxied)
+      if (viaProxy) return viaProxy
+    } catch {
+      /* ignore */
+    }
+  }
+
+  return null
+}
+
+/**
+ * Portadas remotas (podcasts / radio): iOS no usa bien URLs http(s) en
+ * MediaMetadata; hay que pasar data URLs JPEG como con la música local.
+ */
+export async function buildLockScreenArtworkFromUrl(
+  url: string,
+  cacheKey: string,
+): Promise<MediaImage[]> {
+  const key = cacheKey || `url:${url}`
+  const cached = artworkCache.get(key)
+  if (cached?.length) return cached
+
+  const blob = await fetchRemoteImageBlob(url)
+  if (!blob) return []
+  return mediaImagesFromBlob(blob, key)
 }
 
 function bindMediaHandlers(handlers: {
@@ -233,12 +283,35 @@ export async function updateMediaSession(
   if (playingHint === false) setMediaPlaybackState(false)
   refreshMediaPlaybackState(playingHint)
 
-  const artwork =
-    track.hasLocalAudio !== false
-      ? await buildLockScreenArtwork(track.id)
-      : _coverUrl
-        ? [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
-        : []
+  const remoteCover =
+    typeof _coverUrl === 'string' &&
+    (_coverUrl.startsWith('http://') ||
+      _coverUrl.startsWith('https://') ||
+      _coverUrl.startsWith('/api/') ||
+      _coverUrl.startsWith('blob:') ||
+      _coverUrl.startsWith('data:'))
+
+  let artwork: MediaImage[] = []
+  if (remoteCover && _coverUrl) {
+    if (_coverUrl.startsWith('data:')) {
+      artwork = [
+        { src: _coverUrl, sizes: '1200x1200', type: 'image/jpeg' },
+        { src: _coverUrl, sizes: '512x512', type: 'image/jpeg' },
+      ]
+    } else {
+      artwork = await buildLockScreenArtworkFromUrl(
+        _coverUrl,
+        `remote:${track.id}:${_coverUrl}`,
+      )
+    }
+  } else if (track.hasLocalAudio !== false) {
+    artwork = await buildLockScreenArtwork(track.id)
+  } else if (_coverUrl) {
+    artwork = await buildLockScreenArtworkFromUrl(
+      _coverUrl,
+      `remote:${track.id}:${_coverUrl}`,
+    )
+  }
 
   try {
     const currentTitle = navigator.mediaSession.metadata?.title
@@ -275,9 +348,36 @@ export async function updateRadioMediaSession(
     title: station.name,
     artist: 'En directo',
     album: station.tagline || 'Radio',
-    artwork: station.logoUrl
-      ? [{ src: station.logoUrl, sizes: '200x200', type: 'image/png' }]
-      : [],
+    artwork: [],
+  })
+
+  bindMediaHandlers({
+    ...handlers,
+    seekto: undefined,
+    getPosition: undefined,
+    seekSkip: false,
+  })
+
+  let artwork: MediaImage[] = []
+  if (station.logoUrl) {
+    artwork = await buildLockScreenArtworkFromUrl(
+      station.logoUrl,
+      `radio:${station.id}:${station.logoUrl}`,
+    )
+  }
+
+  try {
+    const currentTitle = navigator.mediaSession.metadata?.title
+    if (currentTitle && currentTitle !== station.name) return
+  } catch {
+    /* ignore */
+  }
+
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: station.name,
+    artist: 'En directo',
+    album: station.tagline || 'Radio',
+    artwork,
   })
 
   bindMediaHandlers({

@@ -1185,6 +1185,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           seekSkip: true,
         },
       )
+      refreshMediaPlaybackState(!audioEngine.paused)
     } catch (e) {
       if (epoch !== podcastPlayEpoch) return
       console.warn('Podcast', e)
