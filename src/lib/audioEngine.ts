@@ -73,8 +73,11 @@ class AudioEngine {
     })
     el.addEventListener('play', () => this.emit())
     el.addEventListener('pause', () => {
-      // Antes del emit: isPlaying aún refleja que sonábamos
-      if (!this.intentionalPause) {
+      // Pause de AirPods / bloqueo / CarPlay: NO es una llamada.
+      // Si tratamos ese pause como interrupción, pendingBackgroundPlay + watcher
+      // pelean el play, se pierde Now Playing y ya no se puede reanudar.
+      // Las llamadas reales llegan por audioSession/AudioContext "interrupted".
+      if (!this.intentionalPause && !this.audioSessionWired && !this.ctxStateWired) {
         for (const h of this.interruptionHandlers) h()
       }
       this.emit()
@@ -85,9 +88,9 @@ class AudioEngine {
 
   /**
    * Marca pause() / cambio de src como intencional (no interrupción).
-   * Ventana > 0: el evento `pause` de un reload de src llega en otro turno.
+   * Ventana larga: con AirPods el evento `pause` a veces llega mucho después.
    */
-  markIntentionalPause(ms = 400) {
+  markIntentionalPause(ms = 1500) {
     this.intentionalPause = true
     const token = ++this.intentionalPauseToken
     window.setTimeout(() => {
@@ -167,6 +170,11 @@ class AudioEngine {
 
   private leaveSystemInterruption() {
     if (!this.systemInterrupted) return
+    // Pause intencional (AirPods / UI): no auto-reanudar al volver "active"
+    if (this.intentionalPause) {
+      this.systemInterrupted = false
+      return
+    }
     this.systemInterrupted = false
     for (const h of this.interruptionEndHandlers) {
       try {

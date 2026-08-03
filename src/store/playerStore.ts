@@ -334,13 +334,19 @@ async function softRemoteResume() {
 }
 
 function handleRemotePause() {
+  // AirPods / CarPlay / bloqueo: pause de usuario, no interrupción de llamada
+  audioEngine.markIntentionalPause(2000)
+  interruptionBurstToken += 1
+  stopInterruptionResumeWatcher()
+  pendingBackgroundPlay = false
   if (
     audioEngine.paused &&
-    !pendingBackgroundPlay &&
     Date.now() >= mediaPlayingHoldUntil &&
     !usePlayerStore.getState().isPlaying
   ) {
     refreshMediaPlaybackState(false)
+    // Mantener tarjeta en Now Playing aunque ya estuviera en pause
+    claimNowPlaying(false)
     return
   }
   usePlayerStore.getState().pause()
@@ -1301,7 +1307,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     pendingBackgroundPlay = false
     clearMediaPlayingHold()
+    interruptionBurstToken += 1
     stopInterruptionResumeWatcher()
+    audioEngine.markIntentionalPause(2000)
     audioEngine.pause()
     set({
       isPlaying: false,
@@ -1309,7 +1317,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ? { radioPauseStartedAt: performance.now() }
         : {}),
     })
+    // Afirmar paused SIN reescribir metadata (reescribir a veces tira la tarjeta iOS)
     refreshMediaPlaybackState(false)
+    claimNowPlaying(false)
   },
 
   play: async () => {
