@@ -1043,6 +1043,34 @@ class AudioEngine {
     }
   }
 
+  /**
+   * Play en el mismo turno del gesto (Media Session / tap).
+   * En iOS, cualquier await antes de audio.play() pierde el permiso y el
+   * resume tras pause en bloqueo falla aunque el icono cambie.
+   */
+  playFromUserGesture(): Promise<boolean> {
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+    this.audio.muted = false
+    if (!this.gainNode) this.audio.volume = this.volumeValue
+    void this.resumeContext()
+    try {
+      const p = this.audio.play()
+      return Promise.resolve(p)
+        .then(() => {
+          this.emit()
+          return !this.audio.paused
+        })
+        .catch(() => {
+          this.emit()
+          return false
+        })
+    } catch {
+      this.emit()
+      return Promise.resolve(false)
+    }
+  }
+
   pause() {
     this.markIntentionalPause()
     this.audio.pause()
