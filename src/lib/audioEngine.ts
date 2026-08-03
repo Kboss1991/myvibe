@@ -5,6 +5,32 @@ type Listener = () => void
 
 const MAX_RADIO_DELAY = 30
 
+/** WAV silencioso en memoria (loop). Evita que iOS mate la PWA tras ~30s en pause. */
+function createSilentWavObjectUrl(durationSec = 1): string {
+  const sampleRate = 8000
+  const numSamples = Math.max(1, Math.floor(sampleRate * durationSec))
+  const dataSize = numSamples * 2
+  const buffer = new ArrayBuffer(44 + dataSize)
+  const view = new DataView(buffer)
+  const writeStr = (offset: number, s: string) => {
+    for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i))
+  }
+  writeStr(0, 'RIFF')
+  view.setUint32(4, 36 + dataSize, true)
+  writeStr(8, 'WAVE')
+  writeStr(12, 'fmt ')
+  view.setUint32(16, 16, true)
+  view.setUint16(20, 1, true)
+  view.setUint16(22, 1, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * 2, true)
+  view.setUint16(32, 2, true)
+  view.setUint16(34, 16, true)
+  writeStr(36, 'data')
+  view.setUint32(40, dataSize, true)
+  return URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }))
+}
+
 class AudioEngine {
   private audio = new Audio()
   private listeners = new Set<Listener>()
@@ -42,6 +68,14 @@ class AudioEngine {
   private standby: HTMLAudioElement | null = null
   private standbyUrl: string | null = null
   private standbyTrackId: string | null = null
+  /**
+   * Loop silencioso mientras el usuario tiene pause.
+   * Sin esto, iOS suspende la PWA ~30s después del pause y el play
+   * de bloqueo deja de funcionar hasta abrir la app.
+   */
+  private keepAliveAudio: HTMLAudioElement | null = null
+  private keepAliveUrl: string | null = null
+  private keepAliveActive = false
 
   constructor() {
     this.configureElement(this.audio)
@@ -1023,6 +1057,7 @@ class AudioEngine {
   }
 
   async play(): Promise<boolean> {
+    this.stopKeepAlive()
     this.mountIntoDom()
     this.applyPlaybackSession()
     await this.resumeContext()
@@ -1052,56 +1087,16 @@ class AudioEngine {
 
   /**
    * Play en el mismo turno del gesto (Media Session / tap).
-   * En iOS, cualquier await antes de audio.play() pierde el permiso y el
-   * resume tras pause en bloqueo falla aunque el icono cambie.
-   *
-   * `reload`: reasigna src en este mismo turno. Tras pause, Safari a menudo
-   * deja el stream remoto en un estado en el que play() “arranca” sin sonido
-   * o rechaza; hay que recrear la carga DENTRO del gesto.
+   * En iOS, cualquier await antes de audio.play() pierde el permiso.
+   * NO recargar src aquí: en segundo plano iOS no puede refetch y
+   * vaciar src deja el reproductor roto.
    */
-  playFromUserGesture(opts?: { reload?: boolean; resumeAt?: number }): Promise<boolean> {
+  playFromUserGesture(): Promise<boolean> {
+    this.stopKeepAlive()
     this.mountIntoDom()
     this.applyPlaybackSession()
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
-
-    if (opts?.reload && !this.live) {
-      const src =
-        this.lastMediaUrl ||
-        this.objectUrl ||
-        this.audio.getAttribute('src') ||
-        this.audio.currentSrc
-      if (src && !src.startsWith('data:')) {
-        const t =
-          typeof opts.resumeAt === 'number' && Number.isFinite(opts.resumeAt) && opts.resumeAt > 0
-            ? opts.resumeAt
-            : this.audio.currentTime || 0
-        // El cambio de src dispara pause: no tratarlo como interrupción
-        this.markIntentionalPause(2000)
-        this.audio.removeAttribute('crossorigin')
-        // Misma URL: Safari no recarga si solo reasignas src → hay que vaciar antes
-        try {
-          this.audio.removeAttribute('src')
-          this.audio.load()
-        } catch {
-          /* ignore */
-        }
-        this.audio.src = src
-        // No llamar load() otra vez: abortaría el play() inmediato
-        if (t > 0.25) {
-          const seek = () => {
-            try {
-              this.audio.currentTime = t
-            } catch {
-              /* ignore */
-            }
-          }
-          if (this.audio.readyState >= 1) seek()
-          else this.audio.addEventListener('loadedmetadata', seek, { once: true })
-        }
-      }
-    }
-
     void this.resumeContext()
     try {
       const p = this.audio.play()
@@ -1120,9 +1115,51 @@ class AudioEngine {
     }
   }
 
+  /** Arranca loop silencioso para que iOS no suspenda la sesión tras pause. */
+  startKeepAlive() {
+    if (this.keepAliveActive && this.keepAliveAudio && !this.keepAliveAudio.paused) return
+    try {
+      if (!this.keepAliveAudio) {
+        const a = new Audio()
+        a.loop = true
+        a.preload = 'auto'
+        a.volume = 1 // las samples son silencio; volume 0 a veces lo suspende iOS
+        a.setAttribute('playsinline', 'true')
+        a.setAttribute('webkit-playsinline', 'true')
+        a.setAttribute('aria-hidden', 'true')
+        a.style.cssText =
+          'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none;left:-9999px'
+        this.keepAliveUrl = createSilentWavObjectUrl(1)
+        a.src = this.keepAliveUrl
+        document.body.appendChild(a)
+        this.keepAliveAudio = a
+      }
+      this.keepAliveActive = true
+      void this.keepAliveAudio.play().catch(() => {
+        this.keepAliveActive = false
+      })
+    } catch {
+      this.keepAliveActive = false
+    }
+  }
+
+  stopKeepAlive() {
+    this.keepAliveActive = false
+    const a = this.keepAliveAudio
+    if (!a) return
+    try {
+      a.pause()
+      a.currentTime = 0
+    } catch {
+      /* ignore */
+    }
+  }
+
   pause() {
     this.markIntentionalPause()
     this.audio.pause()
+    // Mismo gesto del pause: arrancar keep-alive antes de que iOS suspenda
+    this.startKeepAlive()
     this.emit()
   }
 

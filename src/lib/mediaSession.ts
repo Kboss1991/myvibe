@@ -230,6 +230,7 @@ function bindMediaHandlers(handlers: {
   /** ±15 s en pantalla de bloqueo — solo podcasts */
   seekSkip?: boolean
 }) {
+  // play/pause: invocar en el mismo turno del gesto de Media Session
   navigator.mediaSession.setActionHandler('play', () => {
     handlers.play()
   })
@@ -415,6 +416,16 @@ function resolvePlaybackState(fallback?: boolean): boolean {
   return Boolean(fallback)
 }
 
+/** Cancela reintentos de playbackState (p. ej. al pasar de pause → play). */
+export function clearMediaPlaybackRefresh() {
+  try {
+    for (const t of playbackRefreshTimers) window.clearTimeout(t)
+    playbackRefreshTimers = []
+  } catch {
+    /* ignore */
+  }
+}
+
 /**
  * Tras actualizar metadatos, iOS/CarPlay a menudo deja el botón en Play aunque suene.
  * Reaplica el estado real en varias pasadas.
@@ -423,7 +434,22 @@ export function refreshMediaPlaybackState(
   playing?: boolean,
   opts?: { strong?: boolean },
 ) {
-  const apply = () => setMediaPlaybackState(resolvePlaybackState(playing))
+  const apply = () => {
+    // Timers de pause NO deben forzar paused si el usuario ya reanudó
+    if (playing === false) {
+      try {
+        if (playbackStateResolver?.()) {
+          setMediaPlaybackState(true)
+          return
+        }
+      } catch {
+        /* ignore */
+      }
+      setMediaPlaybackState(false)
+      return
+    }
+    setMediaPlaybackState(resolvePlaybackState(playing))
+  }
   apply()
   try {
     queueMicrotask(apply)
@@ -431,8 +457,7 @@ export function refreshMediaPlaybackState(
     /* ignore */
   }
   try {
-    for (const t of playbackRefreshTimers) window.clearTimeout(t)
-    playbackRefreshTimers = []
+    clearMediaPlaybackRefresh()
     const delays = opts?.strong
       ? [0, 16, 50, 100, 200, 400, 700, 1100, 1800, 2800, 4000, 6000, 8000]
       : [0, 40, 120, 280, 600, 1200, 2200]

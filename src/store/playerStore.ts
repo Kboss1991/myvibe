@@ -3,7 +3,7 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, claimNowPlaying, setPlaybackStateResolver } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, clearMediaPlaybackRefresh, claimNowPlaying, setPlaybackStateResolver } from '../lib/mediaSession'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
@@ -293,9 +293,8 @@ function mediaIsEffectivelyPlaying() {
 
 /**
  * Play remoto (CarPlay / bloqueo / AirPods).
- * iOS: hay que llamar audio.play() EN ESTE TURNO (sin await previo) o el
- * gesto de Media Session caduca y el icono cambia pero no hay sonido.
- * Podcasts/pistas: además hay que reasignar src en ese mismo turno.
+ * iOS: audio.play() EN ESTE TURNO (sin await previo). No recargar src
+ * en background (iOS no refetch y deja el motor sin media).
  */
 function handleRemotePlay() {
   const state = usePlayerStore.getState()
@@ -304,6 +303,7 @@ function handleRemotePlay() {
   }
 
   stopInterruptionResumeWatcher()
+  clearMediaPlaybackRefresh()
 
   if (!audioEngine.paused) {
     pendingBackgroundPlay = false
@@ -312,17 +312,8 @@ function handleRemotePlay() {
     return
   }
 
-  // Play YA — antes de setState/refresh (no mentir al icono ni gastar el gesto)
-  const resumeAt =
-    state.position > 0.25
-      ? state.position
-      : Number.isFinite(audioEngine.currentTime)
-        ? audioEngine.currentTime
-        : 0
-  const needsReload = Boolean(state.currentPodcastEpisodeId) || Boolean(state.currentTrackId)
-  const kicked = needsReload
-    ? audioEngine.playFromUserGesture({ reload: true, resumeAt })
-    : audioEngine.playFromUserGesture()
+  // Play YA — mismo turno que el tap de bloqueo (sin setState/refresh antes)
+  const kicked = audioEngine.playFromUserGesture()
 
   pendingBackgroundPlay = true
   usePlayerStore.setState({ isPlaying: true })
@@ -339,7 +330,7 @@ function handleRemotePlay() {
       playing = !audioEngine.paused
     }
 
-    // Podcast: si sigue parado, relanzar el episodio (conserva progreso guardado)
+    // Podcast: si sigue parado y estamos en primer plano, relanzar episodio
     if (!playing) {
       const podId = usePlayerStore.getState().currentPodcastEpisodeId
       if (podId) {
@@ -363,6 +354,8 @@ function handleRemotePlay() {
     if (!playing) {
       clearMediaPlayingHold()
       usePlayerStore.setState({ isPlaying: false })
+      // Seguir en keep-alive para el próximo intento de bloqueo
+      audioEngine.startKeepAlive()
       refreshMediaPlaybackState(false)
     } else {
       usePlayerStore.setState({ isPlaying: true })
@@ -1341,6 +1334,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     clearMediaPlayingHold()
     interruptionBurstToken += 1
     stopInterruptionResumeWatcher()
+    clearMediaPlaybackRefresh()
     audioEngine.markIntentionalPause(2000)
     audioEngine.pause()
     set({
@@ -1349,9 +1343,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         ? { radioPauseStartedAt: performance.now() }
         : {}),
     })
-    // Afirmar paused SIN reescribir metadata (reescribir a veces tira la tarjeta iOS)
+    // Afirmar paused y reclamar Now Playing frente al keep-alive silencioso
     refreshMediaPlaybackState(false)
-    claimNowPlaying(false)
+    claimNowPlaying(false, { reclaim: true })
+    void bindMediaSession([])
   },
 
   play: async () => {
@@ -1415,31 +1410,34 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     if (currentPodcastEpisodeId) {
       if (radioPauseStartedAt != null) set({ radioPauseStartedAt: null })
+      clearMediaPlaybackRefresh()
       audioEngine.applyPlaybackSession()
       const resumeAt =
         Number.isFinite(audioEngine.currentTime) && audioEngine.currentTime > 0
           ? audioEngine.currentTime
           : get().position
 
-      // 1) Reload src + play en el mismo gesto — iOS traspausa deja el stream muerto
-      let ok = await audioEngine.playFromUserGesture({ reload: true, resumeAt })
+      // 1) Play inmediato sobre el mismo src (sin destruir el buffer)
+      let ok = await audioEngine.playFromUserGesture()
 
-      // 2) Si no arrancó (gesto aún vivo en primer plano), ensureAudible + play
+      // 2) ensureAudible + play (primer plano)
       if (!ok || audioEngine.paused) {
         await audioEngine.ensureAudible()
-        ok = await audioEngine.playFromUserGesture({ reload: true, resumeAt })
+        ok = await audioEngine.play()
       }
       if (!ok || audioEngine.paused) {
         await new Promise<void>((r) => window.setTimeout(r, 80))
         ok = await audioEngine.play()
       }
-      // 3) hardResume solo si el elemento sigue vivo con src
-      if (!ok || audioEngine.paused) {
+      // 3) hardResume solo en primer plano
+      const visible =
+        typeof document === 'undefined' || document.visibilityState === 'visible'
+      if ((!ok || audioEngine.paused) && visible) {
         const src = audioEngine.element.getAttribute('src') || audioEngine.element.currentSrc
         if (src) ok = await audioEngine.hardResume(resumeAt)
       }
-      // 4) Último recurso: recargar el episodio
-      if (!ok || audioEngine.paused) {
+      // 4) Último recurso: recargar el episodio (solo visible)
+      if ((!ok || audioEngine.paused) && visible) {
         const ep = getPodcastEpisode(currentPodcastEpisodeId)
         const show = ep ? getPodcastShow(ep.showId) : null
         if (ep && show) {
@@ -1449,9 +1447,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           await get().playPodcastEpisode(ep, show, siblings)
           return
         }
+      }
+      if (!ok || audioEngine.paused) {
         pendingBackgroundPlay = false
         clearMediaPlayingHold()
         set({ isPlaying: false })
+        audioEngine.startKeepAlive()
         refreshMediaPlaybackState(false)
         return
       }
