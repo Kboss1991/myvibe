@@ -119,20 +119,16 @@ export async function buildLockScreenArtwork(trackId: string): Promise<MediaImag
   return mediaImagesFromBlob(blob, trackId)
 }
 
-/** Descarga una imagen remota (CORS directo o proxy) para Media Session. */
+/** Descarga una imagen remota (proxy primero: muchos CDN de podcasts bloquean CORS). */
 async function fetchRemoteImageBlob(url: string): Promise<Blob | null> {
   const tryFetch = async (src: string) => {
-    const res = await fetch(src, { mode: 'cors', credentials: 'omit' })
+    const res = await fetch(src, { mode: 'cors', credentials: 'omit', cache: 'force-cache' })
     if (!res.ok) return null
     const blob = await res.blob()
-    return blob.size > 32 ? blob : null
-  }
-
-  try {
-    const direct = await tryFetch(url)
-    if (direct) return direct
-  } catch {
-    /* proxy */
+    if (blob.size < 32) return null
+    // Algunos proxies/CDN devuelven JSON de error con 200
+    if (/json|text\/|html/i.test(blob.type)) return null
+    return blob
   }
 
   if (/^https?:\/\//i.test(url)) {
@@ -141,8 +137,15 @@ async function fetchRemoteImageBlob(url: string): Promise<Blob | null> {
       const viaProxy = await tryFetch(proxied)
       if (viaProxy) return viaProxy
     } catch {
-      /* ignore */
+      /* direct */
     }
+  }
+
+  try {
+    const direct = await tryFetch(url)
+    if (direct) return direct
+  } catch {
+    /* ignore */
   }
 
   return null
@@ -163,6 +166,58 @@ export async function buildLockScreenArtworkFromUrl(
   const blob = await fetchRemoteImageBlob(url)
   if (!blob) return []
   return mediaImagesFromBlob(blob, key)
+}
+
+/** Resuelve carátula local o remota → data URLs para iOS. */
+async function resolveLockScreenArtwork(
+  track: Track,
+  coverUrl: string | null | undefined,
+): Promise<MediaImage[]> {
+  const url = typeof coverUrl === 'string' ? coverUrl.trim() : ''
+  const isRemote =
+    url.startsWith('http://') ||
+    url.startsWith('https://') ||
+    url.startsWith('/api/') ||
+    url.startsWith('blob:') ||
+    url.startsWith('data:')
+
+  // Podcasts / stubs: siempre convertir URL remota (nunca pasar http crudo a iOS)
+  if (isRemote) {
+    if (url.startsWith('data:')) {
+      return [
+        { src: url, sizes: '1200x1200', type: 'image/jpeg' },
+        { src: url, sizes: '512x512', type: 'image/jpeg' },
+      ]
+    }
+    try {
+      const remote = await buildLockScreenArtworkFromUrl(
+        url,
+        `remote:${track.id}:${url}`,
+      )
+      if (remote.length) return remote
+    } catch {
+      /* fall through to local */
+    }
+  }
+
+  if (track.hasLocalAudio !== false && track.hasCover !== false) {
+    try {
+      const local = await buildLockScreenArtwork(track.id)
+      if (local.length) return local
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (url && !isRemote) {
+    try {
+      return await buildLockScreenArtworkFromUrl(url, `remote:${track.id}:${url}`)
+    } catch {
+      return []
+    }
+  }
+
+  return []
 }
 
 function bindMediaHandlers(handlers: {
@@ -220,8 +275,9 @@ function bindMediaHandlers(handlers: {
 
 /**
  * Now Playing / CarPlay.
- * Si `playing: true` (salto de pista): UNA sola escritura de metadata (con artwork)
- * porque cada MediaMetadata en iOS resetea el botón a Play.
+ * Siempre espera la carátula (local o remota convertida a data URL) y hace
+ * UNA sola escritura de MediaMetadata — iOS ignora http(s) y un 2º write
+ * con artwork se estaba saltando si ya sonaba (podcasts → logo MyVibe).
  */
 export async function updateMediaSession(
   track: Track | null,
@@ -245,83 +301,7 @@ export async function updateMediaSession(
   }
 
   const playingHint = opts?.playing
-
-  // Salto / reproducción: UN solo write, con carátula lista (sin 2º write que pone Play).
-  if (playingHint === true) {
-    let artwork: MediaImage[] = []
-    if (track.hasLocalAudio !== false) {
-      try {
-        artwork = await buildLockScreenArtwork(track.id)
-      } catch {
-        artwork = []
-      }
-    }
-    if (!artwork.length && _coverUrl) {
-      artwork = [{ src: _coverUrl, sizes: '512x512', type: 'image/jpeg' }]
-    }
-
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-      artwork,
-    })
-    bindMediaHandlers(handlers)
-    setMediaPlaybackState(true)
-    refreshMediaPlaybackState(true, { strong: true })
-    return
-  }
-
-  // Pausa / idle: metadata rápida sin esperar artwork
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title: track.title,
-    artist: track.artist,
-    album: track.album,
-    artwork: [],
-  })
-  bindMediaHandlers(handlers)
-  if (playingHint === false) setMediaPlaybackState(false)
-  refreshMediaPlaybackState(playingHint)
-
-  const remoteCover =
-    typeof _coverUrl === 'string' &&
-    (_coverUrl.startsWith('http://') ||
-      _coverUrl.startsWith('https://') ||
-      _coverUrl.startsWith('/api/') ||
-      _coverUrl.startsWith('blob:') ||
-      _coverUrl.startsWith('data:'))
-
-  let artwork: MediaImage[] = []
-  if (remoteCover && _coverUrl) {
-    if (_coverUrl.startsWith('data:')) {
-      artwork = [
-        { src: _coverUrl, sizes: '1200x1200', type: 'image/jpeg' },
-        { src: _coverUrl, sizes: '512x512', type: 'image/jpeg' },
-      ]
-    } else {
-      artwork = await buildLockScreenArtworkFromUrl(
-        _coverUrl,
-        `remote:${track.id}:${_coverUrl}`,
-      )
-    }
-  } else if (track.hasLocalAudio !== false) {
-    artwork = await buildLockScreenArtwork(track.id)
-  } else if (_coverUrl) {
-    artwork = await buildLockScreenArtworkFromUrl(
-      _coverUrl,
-      `remote:${track.id}:${_coverUrl}`,
-    )
-  }
-
-  try {
-    const currentTitle = navigator.mediaSession.metadata?.title
-    if (currentTitle && currentTitle !== track.title) return
-  } catch {
-    /* ignore */
-  }
-
-  // Solo actualizar carátula si seguimos en pause (si ya suena, no tocar metadata)
-  if (resolvePlaybackState(playingHint)) return
+  const artwork = await resolveLockScreenArtwork(track, _coverUrl)
 
   navigator.mediaSession.metadata = new MediaMetadata({
     title: track.title,
@@ -330,7 +310,16 @@ export async function updateMediaSession(
     artwork,
   })
   bindMediaHandlers(handlers)
-  refreshMediaPlaybackState(playingHint)
+
+  if (playingHint === true) {
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+  } else if (playingHint === false) {
+    setMediaPlaybackState(false)
+    refreshMediaPlaybackState(false)
+  } else {
+    refreshMediaPlaybackState(playingHint)
+  }
 }
 
 export async function updateRadioMediaSession(

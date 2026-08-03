@@ -29,28 +29,42 @@ module.exports = async function handler(req, res) {
   try {
     const upstream = await fetch(target, {
       headers: {
-        Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-        'User-Agent': 'MyVibePodcast/1.0',
+        Accept: 'image/avif,image/webp,image/apng,image/jpeg,image/png,image/*,*/*;q=0.8',
+        // UA de navegador: algunos CDN de podcasts rechazan bots
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1',
+        Referer: 'https://www.apple.com/',
       },
       redirect: 'follow',
     })
     if (!upstream.ok) {
+      res.setHeader('Access-Control-Allow-Origin', '*')
       return res.status(upstream.status).json({ error: 'Upstream error' })
     }
     const buf = Buffer.from(await upstream.arrayBuffer())
     if (!buf.length) {
+      res.setHeader('Access-Control-Allow-Origin', '*')
       return res.status(502).json({ error: 'Empty image' })
     }
-    const type = upstream.headers.get('content-type') || 'image/jpeg'
-    if (!/^image\//i.test(type) && !/octet-stream/i.test(type)) {
-      return res.status(415).json({ error: 'Not an image' })
+    let type = upstream.headers.get('content-type') || ''
+    if (!/^image\//i.test(type)) {
+      // Inferir por magic bytes si el CDN manda octet-stream
+      if (buf[0] === 0xff && buf[1] === 0xd8) type = 'image/jpeg'
+      else if (buf[0] === 0x89 && buf[1] === 0x50) type = 'image/png'
+      else if (buf[0] === 0x52 && buf[1] === 0x49) type = 'image/webp'
+      else if (buf[0] === 0x47 && buf[1] === 0x49) type = 'image/gif'
+      else {
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        return res.status(415).json({ error: 'Not an image' })
+      }
     }
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Content-Type', type.startsWith('image/') ? type : 'image/jpeg')
-    res.setHeader('Cache-Control', 'public, max-age=86400')
+    res.setHeader('Content-Type', type)
+    res.setHeader('Cache-Control', 'public, max-age=86400, immutable')
     return res.status(200).send(buf)
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Fetch failed'
+    res.setHeader('Access-Control-Allow-Origin', '*')
     return res.status(502).json({ error: msg })
   }
 }

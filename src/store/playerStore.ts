@@ -1177,19 +1177,17 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       setMediaPlaybackState(!audioEngine.paused)
       await updateMediaSession(
         podcastSyntheticTrack(episode, show),
-        episode.artworkUrl || show.artworkUrl,
+        episode.artworkUrl || show.artworkUrl || null,
         {
-          play: () => {
-            pendingBackgroundPlay = true
-            void usePlayerStore.getState().play()
-          },
-          pause: () => usePlayerStore.getState().pause(),
+          play: () => handleRemotePlay(),
+          pause: () => handleRemotePause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
           seekto: (time) => usePlayerStore.getState().seek(time),
           getPosition: () => usePlayerStore.getState().position,
           seekSkip: true,
         },
+        { playing: !audioEngine.paused },
       )
       refreshMediaPlaybackState(!audioEngine.paused)
     } catch (e) {
@@ -1842,7 +1840,7 @@ export async function bindMediaSession(tracks: Track[]) {
     if (ep && show) {
       await updateMediaSession(
         podcastSyntheticTrack(ep, show),
-        ep.artworkUrl || show.artworkUrl || state.coverUrl,
+        ep.artworkUrl || show.artworkUrl || state.coverUrl || null,
         {
           play: () => handleRemotePlay(),
           pause: () => handleRemotePause(),
@@ -1852,6 +1850,7 @@ export async function bindMediaSession(tracks: Track[]) {
           getPosition: () => usePlayerStore.getState().position,
           seekSkip: true,
         },
+        { playing: mediaIsEffectivelyPlaying() },
       )
     }
     refreshMediaPlaybackState()
