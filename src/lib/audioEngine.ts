@@ -38,7 +38,9 @@ class AudioEngine {
   private delayApplyToken = 0
   /** true si el grafo de delay está activo de verdad */
   private delayGraphActive = false
-  /** Siguiente pista precargada (gapless / auto-next sin gesto) */
+  /** Pause de UI/bloqueo sin audio.pause(): iOS luego no reanuda con sonido. */
+  private suspendedForUi = false
+  private suspendFreezeAt = 0
   private standby: HTMLAudioElement | null = null
   private standbyUrl: string | null = null
   private standbyTrackId: string | null = null
@@ -475,6 +477,7 @@ class AudioEngine {
   }
 
   get currentTime() {
+    if (this.suspendedForUi) return this.suspendFreezeAt
     return this.audio.currentTime
   }
 
@@ -484,7 +487,12 @@ class AudioEngine {
   }
 
   get paused() {
-    return this.audio.paused
+    // Soft-pause cuenta como pausado para UI/store
+    return this.suspendedForUi || this.audio.paused
+  }
+
+  get isSuspendedForUi() {
+    return this.suspendedForUi
   }
 
   get volume() {
@@ -782,6 +790,12 @@ class AudioEngine {
     // No revocar blob URLs: library.ts los cachea
     this.objectUrl = options?.isObjectUrl ? url : null
     this.lastMediaUrl = url
+    this.suspendedForUi = false
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
+    }
 
     if (options?.isObjectUrl || options?.skipCors || (nextLive && !needsDelayGraph)) {
       this.audio.removeAttribute('crossorigin')
@@ -1046,6 +1060,9 @@ class AudioEngine {
   }
 
   async play(): Promise<boolean> {
+    if (this.suspendedForUi) {
+      return this.resumeFromUiGesture()
+    }
     this.mountIntoDom()
     this.applyPlaybackSession()
     await this.resumeContext()
@@ -1055,6 +1072,11 @@ class AudioEngine {
       this.audio.volume = 1
     } else {
       this.audio.volume = this.volumeValue
+    }
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
     }
     try {
       await this.audio.play()
@@ -1084,6 +1106,9 @@ class AudioEngine {
    */
   playFromUserGesture(): Promise<boolean> {
     this.scrubOrphanKeepAlives()
+    if (this.suspendedForUi) {
+      return this.resumeFromUiGesture()
+    }
     this.mountIntoDom()
     this.applyPlaybackSession()
     this.audio.muted = false
@@ -1092,6 +1117,11 @@ class AudioEngine {
       this.audio.volume = 1
     } else {
       this.audio.volume = this.volumeValue
+    }
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
     }
     void this.resumeContext()
     try {
@@ -1111,9 +1141,220 @@ class AudioEngine {
     }
   }
 
+  /**
+   * Pause de bloqueo/AirPods: NO llama audio.pause().
+   * En PWA iOS, tras pause real el play de bloqueo deja el icono en
+   * "playing" sin sonido. Mantenemos el elemento "sonando" muteado a
+   * velocidad casi 0 para no perder la sesión de audio.
+   */
+  suspendForUi() {
+    this.scrubOrphanKeepAlives()
+    this.markIntentionalPause(4000)
+    this.suspendFreezeAt = Number.isFinite(this.audio.currentTime)
+      ? this.audio.currentTime
+      : this.suspendFreezeAt
+    this.suspendedForUi = true
+    this.audio.muted = true
+    try {
+      this.audio.playbackRate = 0.0001
+    } catch {
+      try {
+        this.audio.playbackRate = 0
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.gainNode) {
+      this.gainNode.gain.value = 0
+    }
+    // Si estaba en pause real, hay que play() en este gesto (el del pause)
+    if (this.audio.paused) {
+      void this.audio.play().catch(() => {
+        // Fallback: pause real (peor en bloqueo, mejor que nada en app)
+        this.suspendedForUi = false
+        try {
+          this.audio.playbackRate = 1
+        } catch {
+          /* ignore */
+        }
+        this.audio.muted = false
+        try {
+          this.audio.pause()
+        } catch {
+          /* ignore */
+        }
+      })
+    }
+    this.emit()
+  }
+
+  /** Reanuda tras suspendForUi — sin await, mismo gesto de Media Session. */
+  resumeFromUiGesture(): Promise<boolean> {
+    this.scrubOrphanKeepAlives()
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+    this.suspendedForUi = false
+    this.audio.muted = false
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.volumeValue
+      this.audio.volume = 1
+    } else {
+      this.audio.volume = this.volumeValue
+    }
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
+    }
+    if (
+      Number.isFinite(this.suspendFreezeAt) &&
+      this.suspendFreezeAt > 0.25 &&
+      !this.live
+    ) {
+      try {
+        this.audio.currentTime = this.suspendFreezeAt
+      } catch {
+        /* ignore */
+      }
+    }
+    void this.resumeContext()
+    if (!this.audio.paused) {
+      this.emit()
+      return Promise.resolve(true)
+    }
+    try {
+      const p = this.audio.play()
+      return Promise.resolve(p)
+        .then(() => {
+          this.emit()
+          return !this.audio.paused
+        })
+        .catch(() => {
+          this.emit()
+          return false
+        })
+    } catch {
+      this.emit()
+      return Promise.resolve(false)
+    }
+  }
+
+  /**
+   * Nuevo <audio> + play() en el mismo gesto.
+   * Cuando el elemento pausado no reanuda con sonido en iOS (bloqueo).
+   */
+  playFreshFromGesture(
+    url: string,
+    resumeAt = 0,
+    opts?: { skipCors?: boolean },
+  ): Promise<boolean> {
+    this.scrubOrphanKeepAlives()
+    this.suspendedForUi = false
+    this.mountIntoDom()
+    this.applyPlaybackSession()
+
+    const next = new Audio()
+    this.configureElement(next)
+    if (opts?.skipCors) next.removeAttribute('crossorigin')
+    else next.crossOrigin = 'anonymous'
+    next.muted = false
+    next.volume = this.volumeValue
+    try {
+      next.playbackRate = 1
+    } catch {
+      /* ignore */
+    }
+    next.src = url
+    if (resumeAt > 0.25) {
+      const seek = () => {
+        try {
+          next.currentTime = resumeAt
+        } catch {
+          /* ignore */
+        }
+      }
+      next.addEventListener('loadedmetadata', seek, { once: true })
+    }
+
+    // Montar YA para que iOS acepte el play del gesto
+    try {
+      document.body?.appendChild(next)
+    } catch {
+      /* ignore */
+    }
+
+    let playPromise: Promise<void>
+    try {
+      playPromise = Promise.resolve(next.play()).then(() => undefined)
+    } catch {
+      try {
+        next.remove()
+      } catch {
+        /* ignore */
+      }
+      return Promise.resolve(false)
+    }
+
+    return playPromise
+      .then(() => {
+        if (next.paused) {
+          try {
+            next.remove()
+          } catch {
+            /* ignore */
+          }
+          return false
+        }
+        // Promover a motor principal
+        this.markIntentionalPause(1500)
+        const old = this.audio
+        try {
+          old.pause()
+        } catch {
+          /* ignore */
+        }
+        this.destroyHls()
+        this.disconnectGraphNodes()
+        this.live = false
+        this.liveStreamUrl = null
+        this.delayGraphActive = false
+        this.objectUrl = null
+        this.lastMediaUrl = url
+        this.wireElement(next)
+        this.audio = next
+        this.mountIntoDom()
+        try {
+          old.removeAttribute('src')
+          old.remove()
+        } catch {
+          /* ignore */
+        }
+        this.emit()
+        return !this.audio.paused
+      })
+      .catch(() => {
+        try {
+          next.remove()
+        } catch {
+          /* ignore */
+        }
+        return false
+      })
+  }
+
   pause() {
     this.scrubOrphanKeepAlives()
+    this.suspendedForUi = false
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
+    }
     this.markIntentionalPause()
+    this.audio.muted = false
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.audio.muted ? 0 : this.volumeValue
+    }
     try {
       this.audio.pause()
     } catch {
@@ -1125,7 +1366,9 @@ class AudioEngine {
   seek(time: number) {
     if (this.live) return
     if (!Number.isFinite(time)) return
-    this.audio.currentTime = Math.max(0, Math.min(time, this.duration || time))
+    const t = Math.max(0, Math.min(time, this.duration || time))
+    if (this.suspendedForUi) this.suspendFreezeAt = t
+    this.audio.currentTime = t
     this.emit()
   }
 

@@ -290,7 +290,9 @@ function mediaIsEffectivelyPlaying() {
 
 /**
  * Play remoto (CarPlay / bloqueo / AirPods).
- * iOS: audio.play() EN ESTE TURNO (sin await previo).
+ * Podcasts en iOS PWA: tras pause real, play() del mismo <audio> deja el
+ * icono en playing sin sonido. Usamos soft-resume o un <audio> fresco
+ * en el MISMO gesto; no marcar playing hasta confirmar audio.
  */
 function handleRemotePlay() {
   const state = usePlayerStore.getState()
@@ -301,6 +303,17 @@ function handleRemotePlay() {
   stopInterruptionResumeWatcher()
   clearMediaPlaybackRefresh()
 
+  // Soft-pause de bloqueo: solo desmutear + rate 1 (sigue “sonando” para iOS)
+  if (audioEngine.isSuspendedForUi) {
+    const kicked = audioEngine.resumeFromUiGesture()
+    void kicked.then((playing) => {
+      pendingBackgroundPlay = playing
+      usePlayerStore.setState({ isPlaying: playing })
+      refreshMediaPlaybackState(playing, { strong: playing })
+    })
+    return
+  }
+
   if (!audioEngine.paused) {
     pendingBackgroundPlay = false
     usePlayerStore.setState({ isPlaying: true })
@@ -308,9 +321,23 @@ function handleRemotePlay() {
     return
   }
 
-  const kicked = audioEngine.playFromUserGesture()
-  pendingBackgroundPlay = true
-  usePlayerStore.setState({ isPlaying: true })
+  const resumeAt =
+    state.position > 0.25
+      ? state.position
+      : Number.isFinite(audioEngine.currentTime)
+        ? audioEngine.currentTime
+        : 0
+
+  // Podcast: nuevo <audio> en el gesto (el pausado a menudo “play” mudo)
+  let kicked: Promise<boolean>
+  if (state.currentPodcastEpisodeId) {
+    const ep = getPodcastEpisode(state.currentPodcastEpisodeId)
+    kicked = ep?.audioUrl
+      ? audioEngine.playFreshFromGesture(ep.audioUrl, resumeAt, { skipCors: true })
+      : audioEngine.playFromUserGesture()
+  } else {
+    kicked = audioEngine.playFromUserGesture()
+  }
 
   void (async () => {
     let playing = await kicked
@@ -323,25 +350,36 @@ function handleRemotePlay() {
       playing = !audioEngine.paused
     }
     pendingBackgroundPlay = playing
-    if (!playing) {
-      clearMediaPlayingHold()
-      usePlayerStore.setState({ isPlaying: false })
-      refreshMediaPlaybackState(false)
-    } else {
-      usePlayerStore.setState({ isPlaying: true })
-      refreshMediaPlaybackState(true, { strong: true })
-    }
+    usePlayerStore.setState({ isPlaying: playing })
+    if (!playing) clearMediaPlayingHold()
+    refreshMediaPlaybackState(playing, { strong: playing })
   })()
 }
 
 function handleRemotePause() {
-  audioEngine.markIntentionalPause(2000)
+  // Soft-pause: NO audio.pause() — si no, el play de bloqueo queda mudo en iOS PWA
+  audioEngine.markIntentionalPause(4000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
   pendingBackgroundPlay = false
   clearMediaPlayingHold()
   clearMediaPlaybackRefresh()
-  usePlayerStore.getState().pause()
+
+  const state = usePlayerStore.getState()
+  if (state.currentPodcastEpisodeId) {
+    persistPodcastProgressNow(usePlayerStore.setState, usePlayerStore.getState)
+  }
+
+  audioEngine.suspendForUi()
+
+  usePlayerStore.setState({
+    isPlaying: false,
+    ...(state.currentRadioId && state.radioPauseStartedAt == null
+      ? { radioPauseStartedAt: performance.now() }
+      : {}),
+  })
+  setMediaPlaybackState(false)
+  refreshMediaPlaybackState(false)
 }
 
 /**
