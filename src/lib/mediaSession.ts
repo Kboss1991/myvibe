@@ -434,22 +434,7 @@ export function refreshMediaPlaybackState(
   playing?: boolean,
   opts?: { strong?: boolean },
 ) {
-  const apply = () => {
-    // Timers de pause NO deben forzar paused si el usuario ya reanudó
-    if (playing === false) {
-      try {
-        if (playbackStateResolver?.()) {
-          setMediaPlaybackState(true)
-          return
-        }
-      } catch {
-        /* ignore */
-      }
-      setMediaPlaybackState(false)
-      return
-    }
-    setMediaPlaybackState(resolvePlaybackState(playing))
-  }
+  const apply = () => setMediaPlaybackState(resolvePlaybackState(playing))
   apply()
   try {
     queueMicrotask(apply)
