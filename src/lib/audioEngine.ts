@@ -33,6 +33,8 @@ class AudioEngine {
   private volumeValue = 1
   /** URL original del directo (para recargar al activar/desactivar delay). */
   private liveStreamUrl: string | null = null
+  /** Última URL de media (podcast/pista) para reanudar tras pause en iOS. */
+  private lastMediaUrl: string | null = null
   private delayApplyToken = 0
   /** true si el grafo de delay está activo de verdad */
   private delayGraphActive = false
@@ -756,6 +758,7 @@ class AudioEngine {
     this.live = nextLive
     // No revocar blob URLs: library.ts los cachea
     this.objectUrl = options?.isObjectUrl ? url : null
+    this.lastMediaUrl = url
 
     if (options?.isObjectUrl || options?.skipCors || (nextLive && !needsDelayGraph)) {
       this.audio.removeAttribute('crossorigin')
@@ -984,7 +987,11 @@ class AudioEngine {
     if (this.sourceNode && !this.live) {
       this.ensureElementAudioRoute()
     }
-    const src = this.audio.getAttribute('src') || this.audio.currentSrc || this.objectUrl
+    const src =
+      this.lastMediaUrl ||
+      this.audio.getAttribute('src') ||
+      this.audio.currentSrc ||
+      this.objectUrl
     if (!src || src.startsWith('data:')) return false
 
     const t =
@@ -1047,12 +1054,54 @@ class AudioEngine {
    * Play en el mismo turno del gesto (Media Session / tap).
    * En iOS, cualquier await antes de audio.play() pierde el permiso y el
    * resume tras pause en bloqueo falla aunque el icono cambie.
+   *
+   * `reload`: reasigna src en este mismo turno. Tras pause, Safari a menudo
+   * deja el stream remoto en un estado en el que play() “arranca” sin sonido
+   * o rechaza; hay que recrear la carga DENTRO del gesto.
    */
-  playFromUserGesture(): Promise<boolean> {
+  playFromUserGesture(opts?: { reload?: boolean; resumeAt?: number }): Promise<boolean> {
     this.mountIntoDom()
     this.applyPlaybackSession()
     this.audio.muted = false
     if (!this.gainNode) this.audio.volume = this.volumeValue
+
+    if (opts?.reload && !this.live) {
+      const src =
+        this.lastMediaUrl ||
+        this.objectUrl ||
+        this.audio.getAttribute('src') ||
+        this.audio.currentSrc
+      if (src && !src.startsWith('data:')) {
+        const t =
+          typeof opts.resumeAt === 'number' && Number.isFinite(opts.resumeAt) && opts.resumeAt > 0
+            ? opts.resumeAt
+            : this.audio.currentTime || 0
+        // El cambio de src dispara pause: no tratarlo como interrupción
+        this.markIntentionalPause(2000)
+        this.audio.removeAttribute('crossorigin')
+        // Misma URL: Safari no recarga si solo reasignas src → hay que vaciar antes
+        try {
+          this.audio.removeAttribute('src')
+          this.audio.load()
+        } catch {
+          /* ignore */
+        }
+        this.audio.src = src
+        // No llamar load() otra vez: abortaría el play() inmediato
+        if (t > 0.25) {
+          const seek = () => {
+            try {
+              this.audio.currentTime = t
+            } catch {
+              /* ignore */
+            }
+          }
+          if (this.audio.readyState >= 1) seek()
+          else this.audio.addEventListener('loadedmetadata', seek, { once: true })
+        }
+      }
+    }
+
     void this.resumeContext()
     try {
       const p = this.audio.play()

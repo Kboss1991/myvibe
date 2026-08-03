@@ -275,9 +275,9 @@ function bindMediaHandlers(handlers: {
 
 /**
  * Now Playing / CarPlay.
- * Siempre espera la carátula (local o remota convertida a data URL) y hace
- * UNA sola escritura de MediaMetadata — iOS ignora http(s) y un 2º write
- * con artwork se estaba saltando si ya sonaba (podcasts → logo MyVibe).
+ * Handlers YA (antes de artwork): si esperamos la carátula, pause/play de
+ * bloqueo no tienen handler y el icono cambia sin audio.
+ * Luego UNA escritura de MediaMetadata con carátula (iOS ignora http(s)).
  */
 export async function updateMediaSession(
   track: Track | null,
@@ -300,6 +300,9 @@ export async function updateMediaSession(
     return
   }
 
+  // Crítico: registrar play/pause antes de cualquier await
+  bindMediaHandlers(handlers)
+
   const playingHint = opts?.playing
   const artwork = await resolveLockScreenArtwork(track, _coverUrl)
 
@@ -309,6 +312,7 @@ export async function updateMediaSession(
     album: track.album,
     artwork,
   })
+  // Re-bind tras metadata (algunos iOS sueltan handlers al reescribir)
   bindMediaHandlers(handlers)
 
   if (playingHint === true) {

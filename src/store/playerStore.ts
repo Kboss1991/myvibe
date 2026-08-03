@@ -295,13 +295,15 @@ function mediaIsEffectivelyPlaying() {
  * Play remoto (CarPlay / bloqueo / AirPods).
  * iOS: hay que llamar audio.play() EN ESTE TURNO (sin await previo) o el
  * gesto de Media Session caduca y el icono cambia pero no hay sonido.
+ * Podcasts/pistas: además hay que reasignar src en ese mismo turno.
  */
 function handleRemotePlay() {
-  stopInterruptionResumeWatcher()
   const state = usePlayerStore.getState()
   if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
     return
   }
+
+  stopInterruptionResumeWatcher()
 
   if (!audioEngine.paused) {
     pendingBackgroundPlay = false
@@ -310,12 +312,20 @@ function handleRemotePlay() {
     return
   }
 
+  // Play YA — antes de setState/refresh (no mentir al icono ni gastar el gesto)
+  const resumeAt =
+    state.position > 0.25
+      ? state.position
+      : Number.isFinite(audioEngine.currentTime)
+        ? audioEngine.currentTime
+        : 0
+  const needsReload = Boolean(state.currentPodcastEpisodeId) || Boolean(state.currentTrackId)
+  const kicked = needsReload
+    ? audioEngine.playFromUserGesture({ reload: true, resumeAt })
+    : audioEngine.playFromUserGesture()
+
   pendingBackgroundPlay = true
   usePlayerStore.setState({ isPlaying: true })
-  refreshMediaPlaybackState(true)
-
-  // Play YA — mismo turno que el tap de bloqueo
-  const kicked = audioEngine.playFromUserGesture()
 
   void (async () => {
     let playing = await kicked
@@ -340,13 +350,8 @@ function handleRemotePlay() {
             .map((id) => getPodcastEpisode(id))
             .filter((e): e is PodcastEpisode => Boolean(e))
           try {
-            // Segundo intento de play en cadena del gesto (a veces iOS aún lo acepta)
-            const retry = audioEngine.playFromUserGesture()
-            playing = await retry
-            if (!playing) {
-              await usePlayerStore.getState().playPodcastEpisode(ep, show, siblings)
-              playing = !audioEngine.paused
-            }
+            await usePlayerStore.getState().playPodcastEpisode(ep, show, siblings)
+            playing = !audioEngine.paused
           } catch {
             /* ignore */
           }
@@ -358,10 +363,11 @@ function handleRemotePlay() {
     if (!playing) {
       clearMediaPlayingHold()
       usePlayerStore.setState({ isPlaying: false })
+      refreshMediaPlaybackState(false)
     } else {
       usePlayerStore.setState({ isPlaying: true })
+      refreshMediaPlaybackState(true, { strong: true })
     }
-    refreshMediaPlaybackState(playing, { strong: playing })
   })()
 }
 
@@ -1415,13 +1421,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           ? audioEngine.currentTime
           : get().position
 
-      // 1) Play inmediato (sin await previo) — vital tras pause en bloqueo
-      let ok = await audioEngine.playFromUserGesture()
+      // 1) Reload src + play en el mismo gesto — iOS traspausa deja el stream muerto
+      let ok = await audioEngine.playFromUserGesture({ reload: true, resumeAt })
 
-      // 2) Si no arrancó, ensureAudible + play
+      // 2) Si no arrancó (gesto aún vivo en primer plano), ensureAudible + play
       if (!ok || audioEngine.paused) {
         await audioEngine.ensureAudible()
-        ok = await audioEngine.play()
+        ok = await audioEngine.playFromUserGesture({ reload: true, resumeAt })
       }
       if (!ok || audioEngine.paused) {
         await new Promise<void>((r) => window.setTimeout(r, 80))
