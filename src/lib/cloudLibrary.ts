@@ -40,25 +40,37 @@ const TRACK_CATALOG_SELECT_LEGACY =
 
 async function fetchCloudTrackRows(userId: string): Promise<CloudTrackRow[]> {
   const supabase = getSupabase()
-  const select =
-    trackAudioUpdatedColumnOk === false
-      ? TRACK_CATALOG_SELECT_LEGACY
-      : TRACK_CATALOG_SELECT
-  const { data, error } = await supabase
-    .from('library_tracks')
-    .select(select)
-    .eq('user_id', userId)
-  if (error && isMissingAudioUpdatedAtColumn(error.message)) {
-    trackAudioUpdatedColumnOk = false
-    const retry = await supabase
+  let data: unknown[] | null = null
+  let error: { message: string } | null = null
+
+  if (trackAudioUpdatedColumnOk !== false) {
+    const res = await supabase
+      .from('library_tracks')
+      .select(TRACK_CATALOG_SELECT)
+      .eq('user_id', userId)
+    data = res.data as unknown[] | null
+    error = res.error
+    if (error && isMissingAudioUpdatedAtColumn(error.message)) {
+      trackAudioUpdatedColumnOk = false
+      const retry = await supabase
+        .from('library_tracks')
+        .select(TRACK_CATALOG_SELECT_LEGACY)
+        .eq('user_id', userId)
+      data = retry.data as unknown[] | null
+      error = retry.error
+    } else if (!error) {
+      trackAudioUpdatedColumnOk = true
+    }
+  } else {
+    const res = await supabase
       .from('library_tracks')
       .select(TRACK_CATALOG_SELECT_LEGACY)
       .eq('user_id', userId)
-    if (retry.error) throw new Error(retry.error.message)
-    return (retry.data || []) as CloudTrackRow[]
+    data = res.data as unknown[] | null
+    error = res.error
   }
+
   if (error) throw new Error(error.message)
-  if (trackAudioUpdatedColumnOk == null) trackAudioUpdatedColumnOk = true
   return (data || []) as CloudTrackRow[]
 }
 
