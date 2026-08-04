@@ -531,6 +531,8 @@ export async function downloadTracksFromPc(
             origin: 'cloud',
             audioUpdatedAt: now,
             needsAudioUpdate: false,
+            cloudAudioSeenAt: now,
+            audioBytes: libraryBlob.size,
           })
           savedVisible.push({
             fileName: myVibeDownloadName(meta.artist, meta.title, meta.fileName),

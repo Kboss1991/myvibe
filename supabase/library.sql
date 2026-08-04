@@ -23,6 +23,9 @@ create index if not exists library_tracks_user_idx on public.library_tracks (use
 alter table public.library_tracks
   add column if not exists audio_updated_at timestamptz;
 
+alter table public.library_tracks
+  add column if not exists audio_bytes bigint;
+
 update public.library_tracks
 set audio_updated_at = updated_at
 where audio_updated_at is null;

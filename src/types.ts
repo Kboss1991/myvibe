@@ -42,6 +42,10 @@ export interface Track {
    * El móvil sigue reproduciendo la copia vieja hasta pulsar Actualizar.
    */
   needsAudioUpdate?: boolean
+  /** Último audio_updated_at de la nube que este móvil ya ha tenido en cuenta. */
+  cloudAudioSeenAt?: number
+  /** Tamaño del MP3 local (bytes); se compara con la nube. */
+  audioBytes?: number
 }
 
 export interface Playlist {

@@ -333,6 +333,27 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       }
     }
 
+    // PC: avisar al móvil de audio nuevo (versión + tamaño) antes del sync completo
+    if (imported.length && isLibraryHostDevice() && isCloudAuthEnabled()) {
+      const userId = useAuthStore.getState().user?.id
+      if (userId) {
+        const now = Date.now()
+        for (const t of imported) {
+          const blob = await library.getAudioBlob(t.id)
+          await library.markLocalAudioFresh(t.id, now, blob?.size)
+        }
+        try {
+          const { pushTracksMetadata } = await import('../lib/cloudLibrary')
+          await pushTracksMetadata(
+            userId,
+            imported.map((t) => t.id),
+          )
+        } catch (e) {
+          console.warn('Push audio version', e)
+        }
+      }
+    }
+
     void get()
       .syncCloudCatalog()
       .catch(() => {})
@@ -534,13 +555,14 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         (tasteError ? ' · ' : '') +
         `Local: ${localCount} · Nube: ${cloudCount}` +
         ` · Me gusta: ${likedCount} · Listas: ${playlistCount}` +
+        (isLibraryHostDevice() ? ' · Este dispositivo: PC/host' : ' · Este dispositivo: móvil') +
         (pushed ? ` · Subidas ahora: ${pushed}` : '') +
         (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
         (get().tracks.filter((t) => t.needsAudioUpdate).length
-          ? ` · Audio nuevo en PC: ${get().tracks.filter((t) => t.needsAudioUpdate).length}`
+          ? ` · Por actualizar: ${get().tracks.filter((t) => t.needsAudioUpdate).length}`
           : '') +
         (getAudioUpdatedAtColumnStatus() === false
-          ? ' · ⚠ Falta columna audio_updated_at (ejecuta library.sql en Supabase)'
+          ? ' · ⚠ Falta audio_updated_at (SQL)'
           : '') +
         (taste.likesIn || taste.playlistsIn
           ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`

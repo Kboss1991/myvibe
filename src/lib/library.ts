@@ -45,18 +45,31 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
     await deleteBinary('audio', id).catch(() => undefined)
   }
   await db.audio.put({ id, blob: safe })
+  // Sincronizar tamaño en metadatos si la pista ya existe
+  try {
+    const row = await db.tracks.get(id)
+    if (row) {
+      await db.tracks.update(id, { audioBytes: safe.size })
+    }
+  } catch {
+    // ignore
+  }
 }
 
 /** Marca el audio local como fresco (tras importar / reemplazar / descargar). */
 export async function markLocalAudioFresh(
   id: string,
   at: number = Date.now(),
+  bytes?: number,
 ): Promise<void> {
-  await db.tracks.update(id, {
+  const patch: Partial<Track> = {
     hasLocalAudio: true,
     audioUpdatedAt: at,
     needsAudioUpdate: false,
-  })
+    cloudAudioSeenAt: at,
+  }
+  if (typeof bytes === 'number' && bytes > 0) patch.audioBytes = bytes
+  await db.tracks.update(id, patch)
 }
 
 export async function saveCoverBlob(id: string, blob: Blob): Promise<void> {
@@ -206,6 +219,8 @@ export async function importAudioFiles(
         origin: dup?.origin === 'cloud' ? 'cloud' : 'local',
         audioUpdatedAt: now,
         needsAudioUpdate: false,
+        cloudAudioSeenAt: now,
+        audioBytes: file.size,
       }
 
       await db.tracks.put(track)
@@ -675,6 +690,8 @@ export async function replaceTrackAudio(id: string, file: File): Promise<Track> 
     hasCover,
     audioUpdatedAt: Date.now(),
     needsAudioUpdate: false,
+    cloudAudioSeenAt: Date.now(),
+    audioBytes: audio.size,
   }
   await db.tracks.update(id, patch)
   const updated = await db.tracks.get(id)
