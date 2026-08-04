@@ -29,6 +29,20 @@ export function shuffleArray<T>(items: T[], stayIndex?: number): T[] {
 /** Cache de carátulas ya convertidas para la pantalla de bloqueo. */
 const artworkCache = new Map<string, MediaImage[]>()
 
+/** Última carátula publicada — iOS borra Now Playing si reescribimos artwork: []. */
+let lastPublishedArtwork: MediaImage[] = []
+let lastPublishedMeta: { title: string; artist: string; album: string } | null = null
+let softPauseGuardTimer: number | null = null
+let softPauseHandlers: {
+  play: () => void
+  pause: () => void
+  previoustrack: () => void
+  nexttrack: () => void
+  seekto?: (time: number) => void
+  getPosition?: () => number
+  seekSkip?: boolean
+} | null = null
+
 export function clearMediaArtworkCache(trackId?: string) {
   if (trackId) artworkCache.delete(trackId)
   else artworkCache.clear()
@@ -230,6 +244,7 @@ function bindMediaHandlers(handlers: {
   /** ±15 s en pantalla de bloqueo — solo podcasts */
   seekSkip?: boolean
 }) {
+  softPauseHandlers = handlers
   // play/pause: invocar en el mismo turno del gesto de Media Session
   navigator.mediaSession.setActionHandler('play', () => {
     handlers.play()
@@ -274,6 +289,112 @@ function bindMediaHandlers(handlers: {
   }
 }
 
+function artworkOrLast(artwork: MediaImage[]): MediaImage[] {
+  if (artwork.length) {
+    lastPublishedArtwork = artwork
+    return artwork
+  }
+  return lastPublishedArtwork
+}
+
+function publishMetadata(opts: {
+  title: string
+  artist: string
+  album: string
+  artwork: MediaImage[]
+}) {
+  const artwork = artworkOrLast(opts.artwork)
+  lastPublishedMeta = {
+    title: opts.title,
+    artist: opts.artist,
+    album: opts.album,
+  }
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: opts.title,
+    artist: opts.artist,
+    album: opts.album,
+    artwork,
+  })
+}
+
+/**
+ * Reafirma ficha + handlers sin borrar artwork.
+ * Tras soft-pause iOS a veces deja "Sin contenido" si no se reescribe.
+ */
+export function reaffirmMediaSession(opts?: { playing?: boolean }) {
+  if (!('mediaSession' in navigator)) return
+  try {
+    const meta = navigator.mediaSession.metadata
+    const title = meta?.title || lastPublishedMeta?.title
+    if (title) {
+      publishMetadata({
+        title,
+        artist: meta?.artist || lastPublishedMeta?.artist || 'MyVibe',
+        album: meta?.album || lastPublishedMeta?.album || 'MyVibe',
+        artwork: meta?.artwork?.length
+          ? Array.from(meta.artwork)
+          : lastPublishedArtwork,
+      })
+    }
+    if (softPauseHandlers) bindMediaHandlers(softPauseHandlers)
+  } catch {
+    /* ignore */
+  }
+  if (opts?.playing === false) {
+    setMediaPlaybackState(false)
+    refreshMediaPlaybackState(false)
+  } else if (opts?.playing === true) {
+    stopSoftPauseSessionGuard()
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+  }
+}
+
+/**
+ * Tras soft-pause: reafirmar la misma ficha (sin artwork vacío) y estado paused.
+ * Si no, iOS a veces deja "Sin contenido" y el Play de bloqueo no llega.
+ */
+export function keepMediaSessionAlivePaused() {
+  reaffirmMediaSession({ playing: false })
+}
+
+/** Mientras soft-pause: reafirmar paused y recuperar ficha si iOS la borró. */
+export function startSoftPauseSessionGuard() {
+  stopSoftPauseSessionGuard()
+  if (typeof window === 'undefined') return
+  softPauseGuardTimer = window.setInterval(() => {
+    try {
+      if (!playbackStateResolver || playbackStateResolver()) {
+        stopSoftPauseSessionGuard()
+        return
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const title = navigator.mediaSession.metadata?.title
+      if (!title && lastPublishedMeta) {
+        keepMediaSessionAlivePaused()
+        return
+      }
+      setMediaPlaybackState(false)
+    } catch {
+      /* ignore */
+    }
+  }, 1800)
+}
+
+export function stopSoftPauseSessionGuard() {
+  if (softPauseGuardTimer != null) {
+    try {
+      window.clearInterval(softPauseGuardTimer)
+    } catch {
+      /* ignore */
+    }
+    softPauseGuardTimer = null
+  }
+}
+
 /**
  * Now Playing / CarPlay.
  * Handlers YA (antes de artwork): si esperamos la carátula, pause/play de
@@ -307,7 +428,8 @@ export async function updateMediaSession(
   const playingHint = opts?.playing
   const artwork = await resolveLockScreenArtwork(track, _coverUrl)
 
-  navigator.mediaSession.metadata = new MediaMetadata({
+  // Nunca artwork: [] — limpia la ficha en iOS ("Sin contenido")
+  publishMetadata({
     title: track.title,
     artist: track.artist,
     album: track.album,
@@ -317,6 +439,7 @@ export async function updateMediaSession(
   bindMediaHandlers(handlers)
 
   if (playingHint === true) {
+    stopSoftPauseSessionGuard()
     setMediaPlaybackState(true)
     refreshMediaPlaybackState(true, { strong: true })
   } else if (playingHint === false) {
@@ -338,18 +461,19 @@ export async function updateRadioMediaSession(
 ) {
   if (!('mediaSession' in navigator)) return
 
-  navigator.mediaSession.metadata = new MediaMetadata({
-    title: station.name,
-    artist: 'En directo',
-    album: station.tagline || 'Radio',
-    artwork: [],
-  })
-
   bindMediaHandlers({
     ...handlers,
     seekto: undefined,
     getPosition: undefined,
     seekSkip: false,
+  })
+
+  // No publicar artwork vacío primero (borra Now Playing en iOS)
+  publishMetadata({
+    title: station.name,
+    artist: 'En directo',
+    album: station.tagline || 'Radio',
+    artwork: lastPublishedArtwork,
   })
 
   let artwork: MediaImage[] = []
@@ -367,7 +491,7 @@ export async function updateRadioMediaSession(
     /* ignore */
   }
 
-  navigator.mediaSession.metadata = new MediaMetadata({
+  publishMetadata({
     title: station.name,
     artist: 'En directo',
     album: station.tagline || 'Radio',
@@ -385,6 +509,7 @@ export async function updateRadioMediaSession(
 
 export function setMediaPlaybackState(playing: boolean) {
   if (!('mediaSession' in navigator)) return
+  if (playing) stopSoftPauseSessionGuard()
   try {
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   } catch {
@@ -468,26 +593,22 @@ export function claimNowPlaying(
   if (reclaim) {
     try {
       const meta = navigator.mediaSession.metadata
-      if (meta) {
-        const artwork = meta.artwork ? Array.from(meta.artwork) : []
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: meta.title || 'MyVibe',
-          artist: meta.artist || 'MyVibe',
-          album: meta.album || 'MyVibe',
-          artwork,
-        })
-      } else {
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: 'MyVibe',
-          artist: 'MyVibe',
-          album: 'MyVibe',
-          artwork: [],
+      if (meta?.title || lastPublishedMeta) {
+        publishMetadata({
+          title: meta?.title || lastPublishedMeta?.title || 'MyVibe',
+          artist: meta?.artist || lastPublishedMeta?.artist || 'MyVibe',
+          album: meta?.album || lastPublishedMeta?.album || 'MyVibe',
+          artwork: meta?.artwork?.length
+            ? Array.from(meta.artwork)
+            : lastPublishedArtwork,
         })
       }
+      // Sin metadata previa: no publicar ficha vacía (iOS → "Sin contenido")
     } catch {
       // ignore
     }
   }
+  if (playing === true) stopSoftPauseSessionGuard()
   refreshMediaPlaybackState(playing)
 }
 

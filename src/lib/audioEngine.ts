@@ -90,9 +90,39 @@ class AudioEngine {
   }
 
   private wireElement(el: HTMLAudioElement) {
-    el.addEventListener('timeupdate', () => this.emit())
+    el.addEventListener('timeupdate', () => {
+      // Soft-pause: congelar posición (rate 1 + mute). Si no, iOS avanza
+      // en silencio y un rate≈0 suelta Now Playing → "Sin contenido".
+      if (this.suspendedForUi && !this.live && el === this.audio) {
+        const target = this.suspendFreezeAt
+        if (Number.isFinite(target) && target >= 0) {
+          const drift = Math.abs(el.currentTime - target)
+          if (drift > 0.3) {
+            try {
+              el.currentTime = target
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+      }
+      this.emit()
+    })
     el.addEventListener('durationchange', () => this.emit())
     el.addEventListener('ended', () => {
+      // Soft-pause: no avanzar / no tratar como fin real
+      if (this.suspendedForUi) {
+        try {
+          if (Number.isFinite(this.suspendFreezeAt) && this.suspendFreezeAt >= 0) {
+            el.currentTime = this.suspendFreezeAt
+          }
+          void el.play().catch(() => {})
+        } catch {
+          /* ignore */
+        }
+        this.emit()
+        return
+      }
       // Primero avanzar de pista (play en el mismo elemento), luego emitir estado.
       // Si emit va antes, la UI marca pause y se pierde la continuidad de reproducción.
       for (const h of this.endedHandlers) h()
@@ -500,6 +530,8 @@ class AudioEngine {
   }
 
   get muted() {
+    // Soft-pause mutea por dentro; no lo muestres como mute del usuario
+    if (this.suspendedForUi) return false
     return this.audio.muted
   }
 
@@ -1143,9 +1175,9 @@ class AudioEngine {
 
   /**
    * Pause de bloqueo/AirPods: NO llama audio.pause().
-   * En PWA iOS, tras pause real el play de bloqueo deja el icono en
-   * "playing" sin sonido. Mantenemos el elemento "sonando" muteado a
-   * velocidad casi 0 para no perder la sesión de audio.
+   * En PWA iOS, tras pause real Now Playing cae a "Sin contenido" y el play
+   * de bloqueo no reanuda. Mantener el <audio> sonando (rate 1) muteado y
+   * congelar la posición: rate≈0 también suelta la sesión de iOS.
    */
   suspendForUi() {
     this.scrubOrphanKeepAlives()
@@ -1156,16 +1188,14 @@ class AudioEngine {
     this.suspendedForUi = true
     this.audio.muted = true
     try {
-      this.audio.playbackRate = 0.0001
+      this.audio.playbackRate = 1
     } catch {
-      try {
-        this.audio.playbackRate = 0
-      } catch {
-        /* ignore */
-      }
+      /* ignore */
     }
     if (this.gainNode) {
       this.gainNode.gain.value = 0
+    } else {
+      this.audio.volume = 0
     }
     // Si estaba en pause real, hay que play() en este gesto (el del pause)
     if (this.audio.paused) {
@@ -1178,6 +1208,7 @@ class AudioEngine {
           /* ignore */
         }
         this.audio.muted = false
+        this.audio.volume = this.volumeValue
         try {
           this.audio.pause()
         } catch {

@@ -3,7 +3,7 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, clearMediaPlaybackRefresh, claimNowPlaying, setPlaybackStateResolver } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, clearMediaPlaybackRefresh, claimNowPlaying, setPlaybackStateResolver, keepMediaSessionAlivePaused, reaffirmMediaSession, startSoftPauseSessionGuard, stopSoftPauseSessionGuard } from '../lib/mediaSession'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
@@ -302,14 +302,25 @@ function handleRemotePlay() {
 
   stopInterruptionResumeWatcher()
   clearMediaPlaybackRefresh()
+  stopSoftPauseSessionGuard()
 
   // Soft-pause de bloqueo: solo desmutear + rate 1 (sigue “sonando” para iOS)
   if (audioEngine.isSuspendedForUi) {
     const kicked = audioEngine.resumeFromUiGesture()
+    pendingBackgroundPlay = true
+    usePlayerStore.setState({ isPlaying: true })
+    reaffirmMediaSession({ playing: true })
     void kicked.then((playing) => {
       pendingBackgroundPlay = playing
       usePlayerStore.setState({ isPlaying: playing })
-      refreshMediaPlaybackState(playing, { strong: playing })
+      if (playing) {
+        stopSoftPauseSessionGuard()
+        refreshMediaPlaybackState(true, { strong: true })
+        void bindMediaSession([])
+      } else {
+        refreshMediaPlaybackState(false)
+        startSoftPauseSessionGuard()
+      }
     })
     return
   }
@@ -353,11 +364,12 @@ function handleRemotePlay() {
     usePlayerStore.setState({ isPlaying: playing })
     if (!playing) clearMediaPlayingHold()
     refreshMediaPlaybackState(playing, { strong: playing })
+    if (playing) void bindMediaSession([])
   })()
 }
 
 function handleRemotePause() {
-  // Soft-pause: NO audio.pause() — si no, el play de bloqueo queda mudo en iOS PWA
+  // Soft-pause: NO audio.pause() — si no, iOS deja "Sin contenido" y no reanuda
   audioEngine.markIntentionalPause(4000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
@@ -378,8 +390,8 @@ function handleRemotePause() {
       ? { radioPauseStartedAt: performance.now() }
       : {}),
   })
-  setMediaPlaybackState(false)
-  refreshMediaPlaybackState(false)
+  keepMediaSessionAlivePaused()
+  startSoftPauseSessionGuard()
 }
 
 /**
@@ -1342,16 +1354,28 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     interruptionBurstToken += 1
     stopInterruptionResumeWatcher()
     clearMediaPlaybackRefresh()
-    audioEngine.markIntentionalPause(2000)
-    audioEngine.pause()
+    audioEngine.markIntentionalPause(4000)
+    // iOS PWA: pause real → "Sin contenido" en bloqueo. Soft-pause mantiene la ficha.
+    const soft =
+      typeof navigator !== 'undefined' &&
+      (/iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
+    if (soft) {
+      audioEngine.suspendForUi()
+      keepMediaSessionAlivePaused()
+      startSoftPauseSessionGuard()
+    } else {
+      stopSoftPauseSessionGuard()
+      audioEngine.pause()
+      setMediaPlaybackState(false)
+      refreshMediaPlaybackState(false)
+    }
     set({
       isPlaying: false,
       ...(currentRadioId && radioPauseStartedAt == null
         ? { radioPauseStartedAt: performance.now() }
         : {}),
     })
-    setMediaPlaybackState(false)
-    refreshMediaPlaybackState(false)
   },
 
   play: async () => {
