@@ -13,6 +13,11 @@ import {
 import { AppIcon } from './AppIcon'
 import { BrandWordmark } from './BrandWordmark'
 import { playlistCoverArtProps } from '../lib/library'
+import {
+  canDragTracksToPlaylists,
+  dataTransferHasTracks,
+  getTrackDragIds,
+} from '../lib/trackDrag'
 import { CoverArt } from './CoverArt'
 import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
 import { UserAvatar } from './UserAvatar'
@@ -34,7 +39,56 @@ export function Sidebar() {
   const playlists = useLibraryStore((s) => s.playlists)
   const getLiked = useLibraryStore((s) => s.getLiked)
   const liked = getLiked()
+  const addToPlaylist = useLibraryStore((s) => s.addToPlaylist)
+  const setLiked = useLibraryStore((s) => s.setLiked)
   const [creating, setCreating] = useState(false)
+  const [dropOver, setDropOver] = useState<'liked' | string | null>(null)
+  const [dropHint, setDropHint] = useState<string | null>(null)
+  const allowDrop = canDragTracksToPlaylists()
+
+  function clearDrop() {
+    setDropOver(null)
+  }
+
+  function onDragOverTarget(
+    e: React.DragEvent,
+    target: 'liked' | string,
+  ) {
+    if (!allowDrop || !dataTransferHasTracks(e.dataTransfer)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+    setDropOver(target)
+  }
+
+  async function onDropLiked(e: React.DragEvent) {
+    e.preventDefault()
+    clearDrop()
+    if (!allowDrop) return
+    const ids = getTrackDragIds(e.dataTransfer)
+    if (!ids.length) return
+    await setLiked(ids, true)
+    setDropHint(
+      ids.length === 1
+        ? 'Añadida a Me gusta'
+        : `${ids.length} añadidas a Me gusta`,
+    )
+    window.setTimeout(() => setDropHint(null), 2500)
+  }
+
+  async function onDropPlaylist(e: React.DragEvent, playlistId: string, name: string) {
+    e.preventDefault()
+    clearDrop()
+    if (!allowDrop) return
+    const ids = getTrackDragIds(e.dataTransfer)
+    if (!ids.length) return
+    await addToPlaylist(playlistId, ids)
+    setDropHint(
+      ids.length === 1
+        ? `Añadida a “${name}”`
+        : `${ids.length} añadidas a “${name}”`,
+    )
+    window.setTimeout(() => setDropHint(null), 2500)
+  }
 
   return (
     <aside className="sidebar">
@@ -71,12 +125,21 @@ export function Sidebar() {
           </button>
         </div>
 
+        {dropHint ? (
+          <p className="sidebar__drop-toast" role="status">
+            {dropHint}
+          </p>
+        ) : null}
+
         <div className="sidebar__library-list">
           <NavLink
             to="/liked"
             className={({ isActive }) =>
-              `sidebar__item ${isActive ? 'is-active' : ''}`
+              `sidebar__item ${isActive ? 'is-active' : ''} ${dropOver === 'liked' ? 'is-drop-over' : ''}`
             }
+            onDragOver={(e) => onDragOverTarget(e, 'liked')}
+            onDragLeave={clearDrop}
+            onDrop={(e) => void onDropLiked(e)}
           >
             <span className="sidebar__liked-thumb">
               <IconHeart size={16} filled />
@@ -96,8 +159,11 @@ export function Sidebar() {
               key={p.id}
               to={`/playlist/${p.id}`}
               className={({ isActive }) =>
-                `sidebar__item ${isActive ? 'is-active' : ''}`
+                `sidebar__item ${isActive ? 'is-active' : ''} ${dropOver === p.id ? 'is-drop-over' : ''}`
               }
+              onDragOver={(e) => onDragOverTarget(e, p.id)}
+              onDragLeave={clearDrop}
+              onDrop={(e) => void onDropPlaylist(e, p.id, p.name)}
             >
               <CoverArt
                 trackId={cover.trackId}

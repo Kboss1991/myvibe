@@ -372,6 +372,15 @@
   background: rgba(245, 166, 35, 0.12);
 }
 
+.track-row.is-draggable {
+  cursor: grab;
+}
+
+.track-row.is-draggable:active {
+  cursor: grabbing;
+  opacity: 0.85;
+}
+
 .bulk-bar {
   position: sticky;
   bottom: calc(12px + var(--safe-bottom, 0px));
@@ -396,6 +405,16 @@
   background: #282828;
   border: 1px solid #3e3e3e;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+.bulk-bar__hint {
+  flex: 0 0 auto;
+  align-self: center;
+  padding: 0 4px 0 6px;
+  color: var(--accent);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .bulk-bar__inner button {

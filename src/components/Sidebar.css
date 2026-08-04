@@ -218,3 +218,19 @@
   color: var(--text-muted);
   font-size: 0.75rem;
 }
+
+.sidebar__item.is-drop-over {
+  background: var(--accent-dim);
+  outline: 1px solid var(--accent);
+  color: #fff;
+}
+
+.sidebar__drop-toast {
+  margin: 0 10px 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+}

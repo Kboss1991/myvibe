@@ -25,6 +25,7 @@ import {
   IconUpload,
 } from './Icons'
 import { getCoverBlob } from '../lib/library'
+import { canDragTracksToPlaylists, setTrackDragData } from '../lib/trackDrag'
 import './TrackList.css'
 
 /** Evita que el dock (reproductor) tape el menú en móvil. */
@@ -125,6 +126,7 @@ export function TrackList({
     [selectedTracks],
   )
   const allSelected = tracks.length > 0 && selected.size === tracks.length
+  const desktopDrag = canDragTracksToPlaylists()
 
   useEffect(() => {
     if (!selectMode) setSelected(new Set())
@@ -372,8 +374,24 @@ export function TrackList({
           return (
             <li
               key={track.id}
-              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''}`}
+              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''} ${desktopDrag && selectMode && isSelected ? 'is-draggable' : ''}`}
               style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}
+              draggable={desktopDrag && selectMode && isSelected}
+              title={
+                desktopDrag && selectMode && isSelected
+                  ? 'Arrastra a una playlist de la barra lateral'
+                  : undefined
+              }
+              onDragStart={(e) => {
+                if (!(desktopDrag && selectMode && isSelected)) {
+                  e.preventDefault()
+                  return
+                }
+                const ids = selected.has(track.id)
+                  ? [...selected]
+                  : [track.id]
+                setTrackDragData(e.dataTransfer, ids)
+              }}
             >
               {selectMode && (
                 <button
@@ -387,14 +405,47 @@ export function TrackList({
                   </span>
                 </button>
               )}
+              {selectMode ? (
+                <div
+                  className="track-row__main track-col--title"
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => toggleSelect(track.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      toggleSelect(track.id)
+                    }
+                  }}
+                >
+                  <CoverArt
+                    trackId={track.id}
+                    hasCover={track.hasCover}
+                    refreshKey={`${track.artist}|${track.album}|${track.externalUrl ?? ''}|${track.coverUpdatedAt ?? 0}`}
+                    size={48}
+                  />
+                  <div className="track-row__meta">
+                    <span className="track-row__title">
+                      {active && isPlaying ? <IconPlay size={12} /> : null}
+                      {track.title}
+                      {remote && !downloading ? (
+                        <em className="track-remote-tag"> · sin audio</em>
+                      ) : null}
+                      {needsUpdate && !downloading ? (
+                        <em className="track-update-tag"> · actualizar</em>
+                      ) : null}
+                      {downloading && downloadProgress?.trackId === track.id ? (
+                        <em className="track-dl-tag"> · {dlPercent}%</em>
+                      ) : null}
+                    </span>
+                    <span className="track-row__sub">{track.artist}</span>
+                  </div>
+                </div>
+              ) : (
               <button
                 type="button"
                 className="track-row__main track-col--title"
                 onClick={() => {
-                  if (selectMode) {
-                    toggleSelect(track.id)
-                    return
-                  }
                   if (remote) {
                     void downloadIds([track.id])
                     return
@@ -428,6 +479,7 @@ export function TrackList({
                   <span className="track-row__sub">{track.artist}</span>
                 </div>
               </button>
+              )}
               {showColumns && (
                 <>
                   <span className="track-col track-col--album">{track.album || '—'}</span>
@@ -578,6 +630,11 @@ export function TrackList({
       {selectMode && selected.size > 0 && (
         <div className="bulk-bar">
           <div className="bulk-bar__inner">
+            {desktopDrag ? (
+              <span className="bulk-bar__hint">
+                Arrastra la selección a una playlist (barra lateral)
+              </span>
+            ) : null}
             {selectedRemote.length > 0 && (
               <>
                 <button
