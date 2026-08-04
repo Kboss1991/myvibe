@@ -419,7 +419,7 @@ export function TrackList({
                       <em className="track-remote-tag"> · sin audio</em>
                     ) : null}
                     {needsUpdate && !downloading ? (
-                      <em className="track-update-tag"> · nueva en PC</em>
+                      <em className="track-update-tag"> · actualizar</em>
                     ) : null}
                     {downloading && downloadProgress?.trackId === track.id ? (
                       <em className="track-dl-tag"> · {dlPercent}%</em>
@@ -449,7 +449,7 @@ export function TrackList({
                       title={
                         pcOnline === false
                           ? 'PC no detectado'
-                          : 'Borrar copia antigua y poner la nueva'
+                          : 'Descargar: borra la antigua y pone la nueva'
                       }
                       disabled={bulkBusy || Boolean(downloadProgress)}
                       onClick={(e) => {

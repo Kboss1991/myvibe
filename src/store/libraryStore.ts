@@ -19,6 +19,7 @@ import {
   syncLibraryTaste,
   checkTasteTablesReady,
   TASTE_SQL_HINT,
+  getAudioUpdatedAtColumnStatus,
 } from '../lib/cloudLibrary'
 import { isLibraryHostDevice } from '../lib/devices'
 import { downloadTracksFromPc } from '../lib/libraryHost'
@@ -537,6 +538,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
         (get().tracks.filter((t) => t.needsAudioUpdate).length
           ? ` · Audio nuevo en PC: ${get().tracks.filter((t) => t.needsAudioUpdate).length}`
+          : '') +
+        (getAudioUpdatedAtColumnStatus() === false
+          ? ' · ⚠ Falta columna audio_updated_at (ejecuta library.sql en Supabase)'
           : '') +
         (taste.likesIn || taste.playlistsIn
           ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`

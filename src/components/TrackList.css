@@ -606,28 +606,39 @@
   color: #888;
 }
 
+/* Audio nuevo en el PC: mismo gesto que “sin audio”, en ámbar de la app */
 .track-row.is-update {
-  background: rgba(245, 166, 35, 0.12);
-  box-shadow: inset 3px 0 0 #f5a623;
+  opacity: 0.88;
+  background: var(--accent-dim);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.track-row.is-update.is-downloading,
+.track-row.is-update.is-active {
+  opacity: 1;
 }
 
 .track-row.is-update .track-row__title {
-  color: #fff;
+  color: var(--accent);
+}
+
+.track-row.is-update .track-row__sub {
+  color: var(--brand-amber);
 }
 
 .track-update-tag {
   font-style: normal;
   font-weight: 700;
   font-size: 0.75rem;
-  color: #f5a623;
+  color: var(--accent);
 }
 
 .track-row__update {
-  color: #f5a623;
+  color: var(--accent) !important;
 }
 
 .sheet__item--update {
-  color: #f5a623;
+  color: var(--accent);
 }
 
 .track-dl-tag {
