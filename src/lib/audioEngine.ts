@@ -29,6 +29,10 @@ class AudioEngine {
   private sourceNode: MediaElementAudioSourceNode | null = null
   private delayNode: DelayNode | null = null
   private gainNode: GainNode | null = null
+  /** Analizador de nivel (diagnóstico: ¿suena de verdad?). */
+  private analyserNode: AnalyserNode | null = null
+  private meterCtx: AudioContext | null = null
+  private meterStreamSource: MediaStreamAudioSourceNode | null = null
   private radioDelaySec = 0
   private volumeValue = 1
   /** URL original del directo (para recargar al activar/desactivar delay). */
@@ -664,13 +668,186 @@ class AudioEngine {
     } catch {
       /* ignore */
     }
+    try {
+      this.analyserNode?.disconnect()
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.meterStreamSource?.disconnect()
+    } catch {
+      /* ignore */
+    }
     this.sourceNode = null
     this.delayNode = null
     this.gainNode = null
+    this.analyserNode = null
+    this.meterStreamSource = null
+    if (this.meterCtx) {
+      void this.meterCtx.close().catch(() => undefined)
+      this.meterCtx = null
+    }
     if (this.ctx) {
       void this.ctx.close().catch(() => undefined)
       this.ctx = null
       this.ctxStateWired = false
+    }
+  }
+
+  /**
+   * Engancha un AnalyserNode para medir si hay señal de audio.
+   * Prefiere captureStream (no toca el grafo del <audio>). Si no, tap al gain existente.
+   * No crea MediaElementSource solo para medir: en iOS eso puede silenciar el podcast.
+   */
+  ensureOutputMeter(): 'stream' | 'graph' | 'none' {
+    try {
+      if (this.analyserNode) {
+        return this.meterStreamSource ? 'stream' : 'graph'
+      }
+
+      const el = this.audio as HTMLAudioElement & { captureStream?: () => MediaStream }
+      if (typeof el.captureStream === 'function') {
+        const AC =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+        if (!AC) return 'none'
+        if (!this.meterCtx) {
+          this.meterCtx = new AC()
+          void this.meterCtx.resume().catch(() => {})
+        }
+        const stream = el.captureStream()
+        this.meterStreamSource = this.meterCtx.createMediaStreamSource(stream)
+        this.analyserNode = this.meterCtx.createAnalyser()
+        this.analyserNode.fftSize = 2048
+        this.analyserNode.smoothingTimeConstant = 0.3
+        this.meterStreamSource.connect(this.analyserNode)
+        return 'stream'
+      }
+
+      // Tap al grafo ya existente (radio / delay)
+      if (this.ctx && this.gainNode) {
+        this.analyserNode = this.ctx.createAnalyser()
+        this.analyserNode.fftSize = 2048
+        this.analyserNode.smoothingTimeConstant = 0.3
+        this.gainNode.connect(this.analyserNode)
+        return 'graph'
+      }
+    } catch {
+      /* ignore */
+    }
+    return 'none'
+  }
+
+  /** Pico RMS 0..1 del analizador (0 si no hay meter). */
+  sampleOutputLevel(): { peak: number; rms: number } {
+    if (!this.analyserNode) return { peak: 0, rms: 0 }
+    try {
+      const data = new Uint8Array(this.analyserNode.fftSize)
+      this.analyserNode.getByteTimeDomainData(data)
+      let sum = 0
+      let peak = 0
+      for (let i = 0; i < data.length; i++) {
+        const v = Math.abs((data[i]! - 128) / 128)
+        sum += v * v
+        if (v > peak) peak = v
+      }
+      return { peak, rms: Math.sqrt(sum / data.length) }
+    } catch {
+      return { peak: 0, rms: 0 }
+    }
+  }
+
+  /**
+   * ¿Suena de verdad tras un play remoto?
+   * - sounds=yes: el medidor vio señal
+   * - sounds=no: mute/vol 0 / stall / medidor en silencio con reloj vivo
+   * - sounds=likely: reloj avanza y no está mute, pero sin medidor (típico iOS)
+   * - sounds=unknown: no se pudo juzgar
+   */
+  async probeOutput(
+    t0: number,
+    durationMs = 700,
+  ): Promise<{
+    advancing: boolean
+    dt: number
+    peak: number
+    rms: number
+    muted: boolean
+    volume: number
+    gain: number
+    meter: 'stream' | 'graph' | 'none'
+    sounds: 'yes' | 'no' | 'likely' | 'unknown'
+    reason: string
+  }> {
+    const meter = this.ensureOutputMeter()
+    if (this.meterCtx) {
+      try {
+        await this.meterCtx.resume()
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.ctx) {
+      try {
+        await this.ctx.resume()
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const started = performance.now()
+    let peak = 0
+    let rms = 0
+    while (performance.now() - started < durationMs) {
+      const s = this.sampleOutputLevel()
+      if (s.peak > peak) peak = s.peak
+      if (s.rms > rms) rms = s.rms
+      await new Promise<void>((r) => window.setTimeout(r, 50))
+    }
+
+    const t1 = this.currentTime
+    const dt = t1 - t0
+    const advancing = dt > 0.08
+    const muted = this.audio.muted
+    const volume = this.audio.volume
+    const gain = this.gainNode ? this.gainNode.gain.value : 1
+    const gated = muted || volume < 0.01 || gain < 0.01 || this.audio.paused
+
+    let sounds: 'yes' | 'no' | 'likely' | 'unknown' = 'unknown'
+    let reason = 'n/a'
+
+    if (gated) {
+      sounds = 'no'
+      reason = muted ? 'muted' : this.audio.paused ? 'paused' : volume < 0.01 ? 'vol0' : 'gain0'
+    } else if (!advancing) {
+      sounds = 'no'
+      reason = 'stalled'
+    } else if (meter !== 'none') {
+      // Umbral bajo: voz/podcast a veces es suave
+      if (peak >= 0.02 || rms >= 0.01) {
+        sounds = 'yes'
+        reason = 'signal'
+      } else {
+        sounds = 'no'
+        reason = 'silent-signal'
+      }
+    } else {
+      // Sin medidor (iOS sin captureStream): solo podemos decir "likely"
+      sounds = 'likely'
+      reason = 'no-meter'
+    }
+
+    return {
+      advancing,
+      dt,
+      peak,
+      rms,
+      muted,
+      volume,
+      gain,
+      meter,
+      sounds,
+      reason,
     }
   }
 

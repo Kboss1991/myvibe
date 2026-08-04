@@ -349,9 +349,7 @@ function handleRemotePlay() {
   // Logs: tras pause, inplace → ok pero advancing=false dt=0. El <audio>
   // pausado en background queda muerto; hay que crear uno nuevo en el gesto.
   const useFresh = Boolean(
-    freshUrl &&
-      !state.currentRadioId &&
-      (elementPaused || forceFresh || audioEngine.hasWebAudioGraph),
+    freshUrl && !state.currentRadioId && (elementPaused || forceFresh),
   )
   const strategy = useFresh ? 'fresh' : 'inplace'
 
@@ -421,29 +419,35 @@ function handleRemotePlay() {
         : `FAIL strategy=${strategy} elPaused=${snap1.elementPaused} err=${snap1.playErr ?? '-'} ready=${snap1.readyState}`,
     })
 
-    // Medir avance DESPUÉS del promote (fresh), no con el <audio> viejo
+    // Medir avance + nivel de audio DESPUÉS del promote (fresh)
     const t0 = audioEngine.currentTime
 
-    // Detectar play fantasma: paused=false pero el tiempo no avanza
     if (playing) {
-      window.setTimeout(() => {
-        const t1 = audioEngine.currentTime
-        const advancing = t1 > t0 + 0.08
+      void (async () => {
+        const probe = await audioEngine.probeOutput(t0, 700)
         const s = audioEngine.debugSnapshot()
         logPlayback('remote-play-clock', {
           paused: s.paused,
-          muted: s.muted,
+          muted: probe.muted,
           isPlaying: !s.paused,
           podcast: isPodcast,
-          detail: `advancing=${advancing} dt=${(t1 - t0).toFixed(2)} vol=${s.volume} muted=${s.muted}`,
+          audible: probe.sounds,
+          detail: `advancing=${probe.advancing} dt=${probe.dt.toFixed(2)} peak=${probe.peak.toFixed(3)} rms=${probe.rms.toFixed(3)} sounds=${probe.sounds} why=${probe.reason} meter=${probe.meter} vol=${probe.volume.toFixed(2)}`,
         })
-        if (!advancing) {
-          // ok-inplace mentía: marcar fresh para el próximo play
+
+        const dead =
+          !probe.advancing ||
+          probe.sounds === 'no' ||
+          probe.reason === 'stalled' ||
+          probe.reason === 'silent-signal'
+
+        if (dead) {
           preferFreshRemotePlayUntil = Date.now() + 20000
           logPlayback('remote-play-stalled', {
             paused: s.paused,
             podcast: isPodcast,
-            detail: `strategy=${strategy} dt=${(t1 - t0).toFixed(2)}`,
+            audible: probe.sounds,
+            detail: `strategy=${strategy} why=${probe.reason} dt=${probe.dt.toFixed(2)} peak=${probe.peak.toFixed(3)}`,
           })
           pendingBackgroundPlay = false
           usePlayerStore.setState({ isPlaying: false })
@@ -456,7 +460,7 @@ function handleRemotePlay() {
           audioEngine.applyPlaybackSession()
           audioEngine.forceAudibleOutput()
         }
-      }, 450)
+      })()
     }
 
     pendingBackgroundPlay = playing

@@ -1,5 +1,7 @@
 /** Log de pause/play (bloqueo) para diagnosticar en el móvil. */
 
+export type AudibleVerdict = 'yes' | 'no' | 'likely' | 'unknown'
+
 export type PlaybackDebugEntry = {
   t: number
   event: string
@@ -9,6 +11,8 @@ export type PlaybackDebugEntry = {
   suspended?: boolean
   isPlaying?: boolean
   podcast?: boolean
+  /** ¿Hay señal de audio real? (medidor o heurística) */
+  audible?: AudibleVerdict
   detail?: string
 }
 
@@ -24,6 +28,7 @@ export function logPlayback(
     suspended?: boolean
     isPlaying?: boolean
     podcast?: boolean
+    audible?: AudibleVerdict
     detail?: string
   },
 ) {
@@ -74,6 +79,7 @@ export function formatPlaybackDebugLine(e: PlaybackDebugEntry): string {
     e.podcast ? 'pod' : null,
     e.rate != null ? `rate=${e.rate}` : null,
     e.isPlaying == null ? null : e.isPlaying ? 'uiPlay' : 'uiPause',
+    e.audible ? `sounds=${e.audible}` : null,
   ]
     .filter(Boolean)
     .join(' ')
