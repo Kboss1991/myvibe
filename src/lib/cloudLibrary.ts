@@ -1677,3 +1677,45 @@ export function subscribeLibraryTaste(
     void supabase.removeChannel(channel)
   }
 }
+
+/**
+ * Escucha cambios del catálogo (library_tracks) para sync automático PC ↔ móvil.
+ * Requiere Realtime en esa tabla (ver library.sql).
+ */
+export function subscribeLibraryCatalog(
+  userId: string,
+  onRemoteChange: () => void,
+): () => void {
+  if (!isCloudAuthEnabled()) return () => undefined
+  const supabase = getSupabase()
+  let timer: number | null = null
+  const notify = () => {
+    if (timer != null) window.clearTimeout(timer)
+    timer = window.setTimeout(() => {
+      timer = null
+      onRemoteChange()
+    }, 400)
+  }
+  const channel = supabase
+    .channel(`library-catalog:${userId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'library_tracks',
+        filter: `user_id=eq.${userId}`,
+      },
+      notify,
+    )
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('Realtime catálogo no disponible; se usará sync periódico')
+      }
+    })
+
+  return () => {
+    if (timer != null) window.clearTimeout(timer)
+    void supabase.removeChannel(channel)
+  }
+}

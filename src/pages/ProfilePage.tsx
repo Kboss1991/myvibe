@@ -477,6 +477,10 @@ export function ProfilePage() {
           <p className="profile-card__hint">Supabase no configurado — todo es local en este dispositivo.</p>
         ) : (
           <>
+            <p className="profile-card__hint">
+              Se sincroniza solo: al subir/borrar en el PC, al abrir la app y cada pocos segundos
+              (Realtime). El botón es por si quieres forzar ahora.
+            </p>
             {tasteReady === false ? (
               <div className="profile-card__alert" role="alert">
                 <p>

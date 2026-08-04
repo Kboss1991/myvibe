@@ -21,7 +21,7 @@ import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
 import { useAuthStore } from './store/authStore'
-import { startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
+import { scheduleCatalogSync, startLibraryCatalogAutoSync, startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
 import { usePlayerStore } from './store/playerStore'
 import './App.css'
 
@@ -63,7 +63,6 @@ export default function App() {
   const authReady = useAuthStore((s) => s.ready)
   const user = useAuthStore((s) => s.user)
   const initLibrary = useLibraryStore((s) => s.init)
-  const syncCloudCatalog = useLibraryStore((s) => s.syncCloudCatalog)
   const hydratePlayer = usePlayerStore((s) => s.hydrate)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
@@ -97,13 +96,9 @@ export default function App() {
     if (!user || !isCloudAuthEnabled()) return
     let stopped = false
     let hostStop: (() => void) | null = null
-    let syncTimer: number | undefined
     let deviceTimer: number | undefined
     let stopTasteAuto: (() => void) | null = null
-
-    const runSync = () => {
-      void syncCloudCatalog().catch((e) => console.warn('Sync catálogo', e))
-    }
+    let stopCatalogAuto: (() => void) | null = null
 
     const runDevice = async () => {
       try {
@@ -116,18 +111,14 @@ export default function App() {
       }
     }
 
-    const onVis = () => {
-      if (document.visibilityState === 'visible') runSync()
-    }
-
     const run = async () => {
       await new Promise((r) => setTimeout(r, 800))
       if (stopped) return
       await runDevice()
       if (stopped) return
-      // Me gusta / playlists: push al instante en cada acción + realtime/poll
+      // Me gusta / playlists + catálogo: sync automático (realtime + poll)
       stopTasteAuto = startLibraryTasteAutoSync(user.id)
-      runSync()
+      stopCatalogAuto = startLibraryCatalogAutoSync(user.id)
       if (stopped) return
 
       if (isLibraryHostDevice()) {
@@ -143,34 +134,27 @@ export default function App() {
         }
       }
 
-      syncTimer = window.setInterval(runSync, 30_000)
       deviceTimer = window.setInterval(() => void runDevice(), 40_000)
-      document.addEventListener('visibilitychange', onVis)
-      window.addEventListener('focus', runSync)
     }
 
     void run()
     return () => {
       stopped = true
-      if (syncTimer) window.clearInterval(syncTimer)
       if (deviceTimer) window.clearInterval(deviceTimer)
-      document.removeEventListener('visibilitychange', onVis)
-      window.removeEventListener('focus', runSync)
       stopTasteAuto?.()
+      stopCatalogAuto?.()
       hostStop?.()
     }
-  }, [user, syncCloudCatalog])
+  }, [user])
 
   // Cuando aparecen canciones locales (p. ej. tras cargar IDB), vuelve a publicar
   const tracksLen = useLibraryStore((s) => s.tracks.length)
   useEffect(() => {
     if (!user || !isCloudAuthEnabled()) return
     if (tracksLen <= 0) return
-    const t = window.setTimeout(() => {
-      void syncCloudCatalog().catch(() => {})
-    }, 500)
+    const t = window.setTimeout(() => scheduleCatalogSync(500), 500)
     return () => window.clearTimeout(t)
-  }, [user, tracksLen, syncCloudCatalog])
+  }, [user, tracksLen])
 
   // Presencia “escuchando ahora” para el círculo
   useEffect(() => {

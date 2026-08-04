@@ -16,6 +16,7 @@ import {
   removeCloudPlaylist,
   removeCloudTracks,
   subscribeLibraryTaste,
+  subscribeLibraryCatalog,
   syncLibraryTaste,
   checkTasteTablesReady,
   TASTE_SQL_HINT,
@@ -29,6 +30,12 @@ let tasteSyncTimer: number | null = null
 let tastePullTimer: number | null = null
 let tasteRealtimeStop: (() => void) | null = null
 
+let catalogSyncTimer: number | null = null
+let catalogRealtimeStop: (() => void) | null = null
+let catalogSyncInFlight: Promise<{ pushed: number; pulled: number }> | null = null
+/** Evita que el push propio dispare otro sync en bucle inmediato. */
+let catalogSyncQuietUntil = 0
+
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let last: unknown
   for (let i = 0; i < attempts; i++) {
@@ -40,6 +47,63 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
     }
   }
   throw last
+}
+
+/** Encola sync de catálogo (debounce). Obliga push/pull sin pulsar Actualizar. */
+export function scheduleCatalogSync(delayMs = 500) {
+  if (!isCloudAuthEnabled()) return
+  if (!useAuthStore.getState().user?.id) return
+  if (catalogSyncTimer != null) window.clearTimeout(catalogSyncTimer)
+  catalogSyncTimer = window.setTimeout(() => {
+    catalogSyncTimer = null
+    void runCatalogSync().catch((e) => console.warn('Auto-sync catálogo', e))
+  }, delayMs)
+}
+
+async function runCatalogSync(): Promise<{ pushed: number; pulled: number }> {
+  if (catalogSyncInFlight) return catalogSyncInFlight
+  catalogSyncInFlight = useLibraryStore
+    .getState()
+    .syncCloudCatalog()
+    .finally(() => {
+      catalogSyncInFlight = null
+      // Tras un sync, ignora ecos realtime unos segundos
+      catalogSyncQuietUntil = Date.now() + 2500
+    })
+  return catalogSyncInFlight
+}
+
+/** Sync automático del catálogo: realtime + poll + al volver a la app. */
+export function startLibraryCatalogAutoSync(userId: string): () => void {
+  if (!isCloudAuthEnabled()) return () => undefined
+  catalogRealtimeStop?.()
+  catalogRealtimeStop = subscribeLibraryCatalog(userId, () => {
+    if (Date.now() < catalogSyncQuietUntil) return
+    scheduleCatalogSync(350)
+  })
+
+  const pullNow = () => scheduleCatalogSync(200)
+  // Por si Realtime no está activo en Supabase
+  const poll = window.setInterval(pullNow, 8_000)
+  pullNow()
+
+  const onVis = () => {
+    if (document.visibilityState === 'visible') pullNow()
+  }
+  document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('focus', pullNow)
+
+  return () => {
+    catalogRealtimeStop?.()
+    catalogRealtimeStop = null
+    window.clearInterval(poll)
+    document.removeEventListener('visibilitychange', onVis)
+    window.removeEventListener('focus', pullNow)
+    if (catalogSyncTimer != null) {
+      window.clearTimeout(catalogSyncTimer)
+      catalogSyncTimer = null
+    }
+  }
 }
 
 /** Tras una acción local: fusionar con la nube en breve (sin botón). */
@@ -354,9 +418,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       }
     }
 
-    void get()
-      .syncCloudCatalog()
-      .catch(() => {})
+    scheduleCatalogSync(400)
     return imported
   },
 
@@ -657,9 +719,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         console.warn('Borrar en nube', e)
       }
     }
-    void get()
-      .syncCloudCatalog()
-      .catch(() => {})
+    scheduleCatalogSync(400)
   },
 
   deleteTrack: async (id) => {
@@ -673,9 +733,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         console.warn('Borrar en nube', e)
       }
     }
-    void get()
-      .syncCloudCatalog()
-      .catch(() => {})
+    scheduleCatalogSync(400)
   },
 
   clearLocalMusic: async () => {
@@ -685,9 +743,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     // En el PC, sincronizar catálogo vacío vaciaría la nube: solo avisamos vía UI.
     // En el móvil, el próximo sync trae stubs grises otra vez.
     if (!isLibraryHostDevice() && isCloudAuthEnabled()) {
-      void get()
-        .syncCloudCatalog()
-        .catch(() => {})
+      scheduleCatalogSync(600)
     }
     return { tracks: result.tracks }
   },
@@ -708,9 +764,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   replaceTrackAudio: async (id, file) => {
     await library.replaceTrackAudio(id, file)
     if (isLibraryHostDevice() && isCloudAuthEnabled()) {
-      void get()
-        .syncCloudCatalog()
-        .catch(() => {})
+      scheduleCatalogSync(400)
     }
   },
   replaceMissingAudio: async (files, trackIds) => {
@@ -722,9 +776,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     } finally {
       set({ importProgress: null })
       if (isLibraryHostDevice() && isCloudAuthEnabled()) {
-        void get()
-          .syncCloudCatalog()
-          .catch(() => {})
+        scheduleCatalogSync(400)
       }
     }
   },
