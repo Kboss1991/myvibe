@@ -311,7 +311,7 @@ function settlePlayPromise(p: Promise<boolean>, ms = 900): Promise<boolean> {
   })
 }
 
-/** Si el in-place falló hace poco, el siguiente play remoto prueba fresh. */
+/** Si el in-place falló / quedó stall, el siguiente play remoto prueba fresh. */
 let preferFreshRemotePlayUntil = 0
 
 function handleRemotePlay() {
@@ -328,6 +328,7 @@ function handleRemotePlay() {
   const snap0 = audioEngine.debugSnapshot()
   const isPodcast = Boolean(state.currentPodcastEpisodeId)
   const ep = isPodcast ? getPodcastEpisode(state.currentPodcastEpisodeId!) : null
+  const elementPaused = audioEngine.element.paused
 
   const resumeAt =
     state.position > 0.25
@@ -336,15 +337,21 @@ function handleRemotePlay() {
         ? audioEngine.currentTime
         : 0
 
-  // ready>=3 + buffer → reanudar el mismo <audio>. Si no, o grafo Web Audio, fresh.
-  const canInPlace =
-    !audioEngine.hasWebAudioGraph &&
-    audioEngine.element.readyState >= 3 &&
-    Boolean(audioEngine.element.currentSrc || audioEngine.element.getAttribute('src'))
+  // URL para elemento fresco (obligatorio tras pause real en iOS)
+  const freshUrl =
+    (isPodcast && ep?.audioUrl) ||
+    (!isPodcast && !state.currentRadioId
+      ? peekAudioObjectUrl(state.currentTrackId || '') || audioEngine.mediaUrl
+      : null) ||
+    null
 
   const forceFresh = Date.now() < preferFreshRemotePlayUntil
+  // Logs: tras pause, inplace → ok pero advancing=false dt=0. El <audio>
+  // pausado en background queda muerto; hay que crear uno nuevo en el gesto.
   const useFresh = Boolean(
-    isPodcast && ep?.audioUrl && (!canInPlace || forceFresh || audioEngine.hasWebAudioGraph),
+    freshUrl &&
+      !state.currentRadioId &&
+      (elementPaused || forceFresh || audioEngine.hasWebAudioGraph),
   )
   const strategy = useFresh ? 'fresh' : 'inplace'
 
@@ -359,11 +366,12 @@ function handleRemotePlay() {
   })
 
   audioEngine.forceAudibleOutput()
-  audioEngine.unlockAudioRouteInGesture()
 
-  // UNA sola llamada play() en este gesto
+  // UNA sola llamada play() en este gesto (no dual current+fresh)
   const kicked = useFresh
-    ? audioEngine.playFreshFromGesture(ep!.audioUrl, resumeAt, { skipCors: true })
+    ? audioEngine.playFreshFromGesture(freshUrl!, resumeAt, {
+        skipCors: isPodcast,
+      })
     : audioEngine.isSuspendedForUi
       ? audioEngine.resumeFromUiGesture()
       : audioEngine.playFromUserGesture()
@@ -386,7 +394,6 @@ function handleRemotePlay() {
   }
 
   void (async () => {
-    const t0 = audioEngine.currentTime
     const ok = await settlePlayPromise(kicked, 900)
     audioEngine.forceAudibleOutput()
     audioEngine.applyPlaybackSession()
@@ -396,9 +403,9 @@ function handleRemotePlay() {
       audioEngine.forceAudibleOutput()
     }
 
-    if (!playing && strategy === 'inplace') {
-      preferFreshRemotePlayUntil = Date.now() + 8000
-    } else if (playing) {
+    if (!playing) {
+      preferFreshRemotePlayUntil = Date.now() + 15000
+    } else if (strategy === 'fresh') {
       preferFreshRemotePlayUntil = 0
     }
 
@@ -414,7 +421,10 @@ function handleRemotePlay() {
         : `FAIL strategy=${strategy} elPaused=${snap1.elementPaused} err=${snap1.playErr ?? '-'} ready=${snap1.readyState}`,
     })
 
-    // Detectar “reloj sí, sonido no”: el tiempo avanza pero el usuario no oye
+    // Medir avance DESPUÉS del promote (fresh), no con el <audio> viejo
+    const t0 = audioEngine.currentTime
+
+    // Detectar play fantasma: paused=false pero el tiempo no avanza
     if (playing) {
       window.setTimeout(() => {
         const t1 = audioEngine.currentTime
@@ -427,13 +437,26 @@ function handleRemotePlay() {
           podcast: isPodcast,
           detail: `advancing=${advancing} dt=${(t1 - t0).toFixed(2)} vol=${s.volume} muted=${s.muted}`,
         })
-        if (advancing && !audioEngine.paused) {
-          // Reclamar ruta otra vez por si el promote silenció la sesión
+        if (!advancing) {
+          // ok-inplace mentía: marcar fresh para el próximo play
+          preferFreshRemotePlayUntil = Date.now() + 20000
+          logPlayback('remote-play-stalled', {
+            paused: s.paused,
+            podcast: isPodcast,
+            detail: `strategy=${strategy} dt=${(t1 - t0).toFixed(2)}`,
+          })
+          pendingBackgroundPlay = false
+          usePlayerStore.setState({ isPlaying: false })
+          keepMediaSessionAlivePaused()
+          startSoftPauseSessionGuard()
+          refreshMediaPlaybackState(false)
+          return
+        }
+        if (!audioEngine.paused) {
           audioEngine.applyPlaybackSession()
           audioEngine.forceAudibleOutput()
-          void audioEngine.element.play().catch(() => {})
         }
-      }, 500)
+      }, 450)
     }
 
     pendingBackgroundPlay = playing
@@ -462,6 +485,8 @@ function handleRemotePause() {
   clearMediaPlayingHold()
   clearMediaPlaybackRefresh()
   stopSoftPauseSessionGuard()
+  // Tras pause real, el próximo play remoto DEBE usar <audio> fresco
+  preferFreshRemotePlayUntil = Date.now() + 120000
 
   const state = usePlayerStore.getState()
   const snap = audioEngine.debugSnapshot()

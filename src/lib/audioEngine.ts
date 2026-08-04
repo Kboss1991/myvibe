@@ -46,7 +46,6 @@ class AudioEngine {
   private standby: HTMLAudioElement | null = null
   private standbyUrl: string | null = null
   private standbyTrackId: string | null = null
-  private routeUnlockUrl: string | null = null
 
   constructor() {
     this.configureElement(this.audio)
@@ -215,55 +214,32 @@ class AudioEngine {
   }
 
   /**
-   * En el gesto de Media Session: “despertar” la ruta de audio de iOS.
-   * Sin esto, tras pause en bloqueo el podcast avanza el tiempo pero no se oye.
+   * En el gesto de Media Session: reclamar categoría playback.
+   * NO lanzar otro HTMLAudioElement.play() aquí: en iOS compite con el
+   * play del podcast y deja ok-inplace con reloj muerto (dt=0).
    */
   unlockAudioRouteInGesture() {
     this.applyPlaybackSession()
     try {
-      if (!this.routeUnlockUrl) {
-        const sampleRate = 22050
-        const numSamples = Math.floor(sampleRate * 0.04)
-        const dataSize = numSamples * 2
-        const buffer = new ArrayBuffer(44 + dataSize)
-        const view = new DataView(buffer)
-        const writeStr = (offset: number, s: string) => {
-          for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i))
-        }
-        writeStr(0, 'RIFF')
-        view.setUint32(4, 36 + dataSize, true)
-        writeStr(8, 'WAVE')
-        writeStr(12, 'fmt ')
-        view.setUint32(16, 16, true)
-        view.setUint16(20, 1, true)
-        view.setUint16(22, 1, true)
-        view.setUint32(24, sampleRate, true)
-        view.setUint32(28, sampleRate * 2, true)
-        view.setUint16(32, 2, true)
-        view.setUint16(34, 16, true)
-        writeStr(36, 'data')
-        view.setUint32(40, dataSize, true)
-        // Unos pocos samples no-cero casi inaudibles ayudan a reclamar la ruta
-        for (let i = 0; i < Math.min(32, numSamples); i++) {
-          view.setInt16(44 + i * 2, i % 2 === 0 ? 180 : -180, true)
-        }
-        this.routeUnlockUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }))
-      }
-      const unlock = new Audio(this.routeUnlockUrl)
-      unlock.volume = 0.03
-      const media = unlock as HTMLAudioElement & { playsInline?: boolean }
-      media.playsInline = true
-      unlock.setAttribute('playsinline', 'true')
-      void unlock.play().then(() => {
+      const AC =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+      if (!AC) return
+      // Contexto aparte (no el del delay de radio): no toca el <audio> principal
+      const ctx = new AC()
+      void ctx.resume().catch(() => {})
+      const buf = ctx.createBuffer(1, 1, ctx.sampleRate || 22050)
+      const src = ctx.createBufferSource()
+      src.buffer = buf
+      src.connect(ctx.destination)
+      src.start(0)
+      window.setTimeout(() => {
         try {
-          unlock.pause()
-          unlock.removeAttribute('src')
+          void ctx.close()
         } catch {
           /* ignore */
         }
-      }).catch(() => {
-        /* ignore */
-      })
+      }, 300)
     } catch {
       /* ignore */
     }
@@ -603,6 +579,17 @@ class AudioEngine {
 
   get hasWebAudioGraph() {
     return Boolean(this.sourceNode || this.ctx)
+  }
+
+  /** URL de media actual (podcast/pista) para playFresh tras pause en bloqueo. */
+  get mediaUrl(): string | null {
+    return (
+      this.lastMediaUrl ||
+      this.objectUrl ||
+      this.audio.getAttribute('src') ||
+      this.audio.currentSrc ||
+      null
+    )
   }
 
   /** Restaura salida audible YA (mismo turno del gesto de bloqueo). */
