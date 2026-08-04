@@ -292,11 +292,11 @@ function mediaIsEffectivelyPlaying() {
 /**
  * Play remoto (CarPlay / bloqueo / AirPods).
  *
- * Log del usuario: ms-play-fired llega, pero remote-play-result no —
- * audio.play() en iOS a veces NUNCA resuelve la Promise. Hay que hacer
- * timeout + Promise.all en paralelo (no await secuencial).
+ * Importante: en iOS NO lanzar dos audio.play() a la vez (current + fresh).
+ * El log del usuario: 1º ok-fresh, 2º FAIL cur=false fresh=false → AbortError mutuo.
+ * Una sola estrategia por gesto.
  */
-function settlePlayPromise(p: Promise<boolean>, ms = 700): Promise<boolean> {
+function settlePlayPromise(p: Promise<boolean>, ms = 900): Promise<boolean> {
   return new Promise((resolve) => {
     let done = false
     const finish = (v: boolean) => {
@@ -306,11 +306,13 @@ function settlePlayPromise(p: Promise<boolean>, ms = 700): Promise<boolean> {
     }
     void p.then((v) => finish(Boolean(v))).catch(() => finish(false))
     window.setTimeout(() => {
-      // Promise colgada: confiar en el estado real del elemento
       finish(!audioEngine.paused)
     }, ms)
   })
 }
+
+/** Si el in-place falló hace poco, el siguiente play remoto prueba fresh. */
+let preferFreshRemotePlayUntil = 0
 
 function handleRemotePlay() {
   const state = usePlayerStore.getState()
@@ -324,18 +326,8 @@ function handleRemotePlay() {
   stopSoftPauseSessionGuard()
 
   const snap0 = audioEngine.debugSnapshot()
-  logPlayback('remote-play', {
-    paused: snap0.paused,
-    muted: snap0.muted,
-    rate: snap0.rate,
-    suspended: snap0.suspended,
-    isPlaying: state.isPlaying,
-    podcast: Boolean(state.currentPodcastEpisodeId),
-    detail: `elPaused=${snap0.elementPaused} ready=${snap0.readyState} graph=${snap0.hasGraph} ctx=${snap0.ctxState} vol=${snap0.volume}`,
-  })
-
-  // 1) Volumen/mute/rate/contexto EN ESTE TURNO
-  audioEngine.forceAudibleOutput()
+  const isPodcast = Boolean(state.currentPodcastEpisodeId)
+  const ep = isPodcast ? getPodcastEpisode(state.currentPodcastEpisodeId!) : null
 
   const resumeAt =
     state.position > 0.25
@@ -344,25 +336,37 @@ function handleRemotePlay() {
         ? audioEngine.currentTime
         : 0
 
-  const isPodcast = Boolean(state.currentPodcastEpisodeId)
-  const ep = isPodcast ? getPodcastEpisode(state.currentPodcastEpisodeId!) : null
-  const graphBlocks =
-    isPodcast && audioEngine.hasWebAudioGraph
+  // ready>=3 + buffer → reanudar el mismo <audio>. Si no, o grafo Web Audio, fresh.
+  const canInPlace =
+    !audioEngine.hasWebAudioGraph &&
+    audioEngine.element.readyState >= 3 &&
+    Boolean(audioEngine.element.currentSrc || audioEngine.element.getAttribute('src'))
 
-  // 2) Kick SYNC — podcast: priorizar <audio> fresco (grafo Web Audio = mudo)
-  const freshP =
-    isPodcast && ep?.audioUrl
-      ? audioEngine.playFreshFromGesture(ep.audioUrl, resumeAt, { skipCors: true })
-      : null
+  const forceFresh = Date.now() < preferFreshRemotePlayUntil
+  const useFresh = Boolean(
+    isPodcast && ep?.audioUrl && (!canInPlace || forceFresh || audioEngine.hasWebAudioGraph),
+  )
+  const strategy = useFresh ? 'fresh' : 'inplace'
 
-  const currentP =
-    graphBlocks
-      ? null
-      : audioEngine.isSuspendedForUi
-        ? audioEngine.resumeFromUiGesture()
-        : audioEngine.playFromUserGesture()
+  logPlayback('remote-play', {
+    paused: snap0.paused,
+    muted: snap0.muted,
+    rate: snap0.rate,
+    suspended: snap0.suspended,
+    isPlaying: state.isPlaying,
+    podcast: isPodcast,
+    detail: `strategy=${strategy} elPaused=${snap0.elementPaused} ready=${snap0.readyState} graph=${snap0.hasGraph} vol=${snap0.volume}`,
+  })
 
-  // Micro-tick: forzar audible y logear si ya “play” sin sonido
+  audioEngine.forceAudibleOutput()
+
+  // UNA sola llamada play() en este gesto
+  const kicked = useFresh
+    ? audioEngine.playFreshFromGesture(ep!.audioUrl, resumeAt, { skipCors: true })
+    : audioEngine.isSuspendedForUi
+      ? audioEngine.resumeFromUiGesture()
+      : audioEngine.playFromUserGesture()
+
   try {
     requestAnimationFrame(() => {
       audioEngine.forceAudibleOutput()
@@ -373,7 +377,7 @@ function handleRemotePlay() {
         rate: s.rate,
         suspended: s.suspended,
         podcast: isPodcast,
-        detail: `elPaused=${s.elementPaused} vol=${s.volume} graph=${s.hasGraph}`,
+        detail: `strategy=${strategy} elPaused=${s.elementPaused} vol=${s.volume} err=${s.playErr ?? '-'}`,
       })
     })
   } catch {
@@ -381,18 +385,19 @@ function handleRemotePlay() {
   }
 
   void (async () => {
-    const [currentOk, freshOk] = await Promise.all([
-      currentP ? settlePlayPromise(currentP, 700) : Promise.resolve(false),
-      freshP ? settlePlayPromise(freshP, 700) : Promise.resolve(false),
-    ])
-
+    const ok = await settlePlayPromise(kicked, 900)
     audioEngine.forceAudibleOutput()
-    let playing = isPodcast ? Boolean(freshOk || currentOk) : currentOk
-    if (playing && audioEngine.paused) playing = false
-    // “Playing” pero mute/vol 0 → no cuenta
+    let playing = ok && !audioEngine.paused
     const snap1 = audioEngine.debugSnapshot()
     if (playing && (snap1.muted || snap1.volume === 0)) {
       audioEngine.forceAudibleOutput()
+    }
+
+    if (!playing && strategy === 'inplace') {
+      // Próximo tap de bloqueo usará fresh (mismo gesto ya consumido)
+      preferFreshRemotePlayUntil = Date.now() + 8000
+    } else if (playing) {
+      preferFreshRemotePlayUntil = 0
     }
 
     logPlayback('remote-play-result', {
@@ -403,10 +408,8 @@ function handleRemotePlay() {
       isPlaying: playing,
       podcast: isPodcast,
       detail: playing
-        ? freshOk
-          ? 'ok-fresh'
-          : 'ok-current'
-        : `FAIL cur=${currentOk} fresh=${freshOk} elPaused=${snap1.elementPaused} vol=${snap1.volume} graph=${snap1.hasGraph}`,
+        ? `ok-${strategy}`
+        : `FAIL strategy=${strategy} elPaused=${snap1.elementPaused} err=${snap1.playErr ?? '-'} ready=${snap1.readyState}`,
     })
 
     pendingBackgroundPlay = playing

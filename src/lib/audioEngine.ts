@@ -41,6 +41,8 @@ class AudioEngine {
   /** Pause de UI/bloqueo sin audio.pause(): iOS luego no reanuda con sonido. */
   private suspendedForUi = false
   private suspendFreezeAt = 0
+  /** Último error de audio.play() (diagnóstico). */
+  lastPlayError: string | null = null
   private standby: HTMLAudioElement | null = null
   private standbyUrl: string | null = null
   private standbyTrackId: string | null = null
@@ -538,6 +540,7 @@ class AudioEngine {
       currentTime: this.currentTime,
       hasGraph: Boolean(this.sourceNode || this.ctx),
       ctxState: this.ctx?.state ?? null,
+      playErr: this.lastPlayError,
     }
   }
 
@@ -1190,18 +1193,8 @@ class AudioEngine {
     }
     this.mountIntoDom()
     this.applyPlaybackSession()
-    this.audio.muted = false
-    if (this.gainNode) {
-      this.gainNode.gain.value = this.volumeValue
-      this.audio.volume = 1
-    } else {
-      this.audio.volume = this.volumeValue
-    }
-    try {
-      this.audio.playbackRate = 1
-    } catch {
-      /* ignore */
-    }
+    this.forceAudibleOutput()
+    this.lastPlayError = null
     void this.resumeContext()
     try {
       const p = this.audio.play()
@@ -1210,11 +1203,14 @@ class AudioEngine {
           this.emit()
           return !this.audio.paused
         })
-        .catch(() => {
+        .catch((err) => {
+          this.lastPlayError =
+            err instanceof DOMException ? err.name : err instanceof Error ? err.message : 'play-failed'
           this.emit()
           return false
         })
-    } catch {
+    } catch (err) {
+      this.lastPlayError = err instanceof Error ? err.message : 'play-throw'
       this.emit()
       return Promise.resolve(false)
     }
@@ -1363,8 +1359,10 @@ class AudioEngine {
 
     let playPromise: Promise<void>
     try {
+      this.lastPlayError = null
       playPromise = Promise.resolve(next.play()).then(() => undefined)
-    } catch {
+    } catch (err) {
+      this.lastPlayError = err instanceof Error ? err.message : 'fresh-throw'
       try {
         next.remove()
       } catch {
@@ -1376,6 +1374,7 @@ class AudioEngine {
     return playPromise
       .then(() => {
         if (next.paused) {
+          this.lastPlayError = 'fresh-still-paused'
           try {
             next.remove()
           } catch {
@@ -1410,7 +1409,9 @@ class AudioEngine {
         this.emit()
         return !this.audio.paused
       })
-      .catch(() => {
+      .catch((err) => {
+        this.lastPlayError =
+          err instanceof DOMException ? err.name : err instanceof Error ? err.message : 'fresh-failed'
         try {
           next.remove()
         } catch {
