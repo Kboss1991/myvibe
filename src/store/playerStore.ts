@@ -359,6 +359,7 @@ function handleRemotePlay() {
   })
 
   audioEngine.forceAudibleOutput()
+  audioEngine.unlockAudioRouteInGesture()
 
   // UNA sola llamada play() en este gesto
   const kicked = useFresh
@@ -385,8 +386,10 @@ function handleRemotePlay() {
   }
 
   void (async () => {
+    const t0 = audioEngine.currentTime
     const ok = await settlePlayPromise(kicked, 900)
     audioEngine.forceAudibleOutput()
+    audioEngine.applyPlaybackSession()
     let playing = ok && !audioEngine.paused
     const snap1 = audioEngine.debugSnapshot()
     if (playing && (snap1.muted || snap1.volume === 0)) {
@@ -394,7 +397,6 @@ function handleRemotePlay() {
     }
 
     if (!playing && strategy === 'inplace') {
-      // Próximo tap de bloqueo usará fresh (mismo gesto ya consumido)
       preferFreshRemotePlayUntil = Date.now() + 8000
     } else if (playing) {
       preferFreshRemotePlayUntil = 0
@@ -411,6 +413,28 @@ function handleRemotePlay() {
         ? `ok-${strategy}`
         : `FAIL strategy=${strategy} elPaused=${snap1.elementPaused} err=${snap1.playErr ?? '-'} ready=${snap1.readyState}`,
     })
+
+    // Detectar “reloj sí, sonido no”: el tiempo avanza pero el usuario no oye
+    if (playing) {
+      window.setTimeout(() => {
+        const t1 = audioEngine.currentTime
+        const advancing = t1 > t0 + 0.08
+        const s = audioEngine.debugSnapshot()
+        logPlayback('remote-play-clock', {
+          paused: s.paused,
+          muted: s.muted,
+          isPlaying: !s.paused,
+          podcast: isPodcast,
+          detail: `advancing=${advancing} dt=${(t1 - t0).toFixed(2)} vol=${s.volume} muted=${s.muted}`,
+        })
+        if (advancing && !audioEngine.paused) {
+          // Reclamar ruta otra vez por si el promote silenció la sesión
+          audioEngine.applyPlaybackSession()
+          audioEngine.forceAudibleOutput()
+          void audioEngine.element.play().catch(() => {})
+        }
+      }, 500)
+    }
 
     pendingBackgroundPlay = playing
     usePlayerStore.setState({ isPlaying: playing })

@@ -46,6 +46,7 @@ class AudioEngine {
   private standby: HTMLAudioElement | null = null
   private standbyUrl: string | null = null
   private standbyTrackId: string | null = null
+  private routeUnlockUrl: string | null = null
 
   constructor() {
     this.configureElement(this.audio)
@@ -190,6 +191,7 @@ class AudioEngine {
         }
       }
       if (nav.audioSession) {
+        // Reclamar categoría de reproducción (si no, play “avanza” sin oírse)
         nav.audioSession.type = 'playback'
         if (!this.audioSessionWired) {
           this.audioSessionWired = true
@@ -209,6 +211,61 @@ class AudioEngine {
       }
     } catch {
       // API no disponible
+    }
+  }
+
+  /**
+   * En el gesto de Media Session: “despertar” la ruta de audio de iOS.
+   * Sin esto, tras pause en bloqueo el podcast avanza el tiempo pero no se oye.
+   */
+  unlockAudioRouteInGesture() {
+    this.applyPlaybackSession()
+    try {
+      if (!this.routeUnlockUrl) {
+        const sampleRate = 22050
+        const numSamples = Math.floor(sampleRate * 0.04)
+        const dataSize = numSamples * 2
+        const buffer = new ArrayBuffer(44 + dataSize)
+        const view = new DataView(buffer)
+        const writeStr = (offset: number, s: string) => {
+          for (let i = 0; i < s.length; i++) view.setUint8(offset + i, s.charCodeAt(i))
+        }
+        writeStr(0, 'RIFF')
+        view.setUint32(4, 36 + dataSize, true)
+        writeStr(8, 'WAVE')
+        writeStr(12, 'fmt ')
+        view.setUint32(16, 16, true)
+        view.setUint16(20, 1, true)
+        view.setUint16(22, 1, true)
+        view.setUint32(24, sampleRate, true)
+        view.setUint32(28, sampleRate * 2, true)
+        view.setUint16(32, 2, true)
+        view.setUint16(34, 16, true)
+        writeStr(36, 'data')
+        view.setUint32(40, dataSize, true)
+        // Unos pocos samples no-cero casi inaudibles ayudan a reclamar la ruta
+        for (let i = 0; i < Math.min(32, numSamples); i++) {
+          view.setInt16(44 + i * 2, i % 2 === 0 ? 180 : -180, true)
+        }
+        this.routeUnlockUrl = URL.createObjectURL(new Blob([buffer], { type: 'audio/wav' }))
+      }
+      const unlock = new Audio(this.routeUnlockUrl)
+      unlock.volume = 0.03
+      const media = unlock as HTMLAudioElement & { playsInline?: boolean }
+      media.playsInline = true
+      unlock.setAttribute('playsinline', 'true')
+      void unlock.play().then(() => {
+        try {
+          unlock.pause()
+          unlock.removeAttribute('src')
+        } catch {
+          /* ignore */
+        }
+      }).catch(() => {
+        /* ignore */
+      })
+    } catch {
+      /* ignore */
     }
   }
 
@@ -1192,6 +1249,7 @@ class AudioEngine {
       return this.resumeFromUiGesture()
     }
     this.mountIntoDom()
+    this.unlockAudioRouteInGesture()
     this.applyPlaybackSession()
     this.forceAudibleOutput()
     this.lastPlayError = null
@@ -1200,6 +1258,7 @@ class AudioEngine {
       const p = this.audio.play()
       return Promise.resolve(p)
         .then(() => {
+          this.forceAudibleOutput()
           this.emit()
           return !this.audio.paused
         })
@@ -1266,20 +1325,10 @@ class AudioEngine {
   resumeFromUiGesture(): Promise<boolean> {
     this.scrubOrphanKeepAlives()
     this.mountIntoDom()
+    this.unlockAudioRouteInGesture()
     this.applyPlaybackSession()
     this.suspendedForUi = false
-    this.audio.muted = false
-    if (this.gainNode) {
-      this.gainNode.gain.value = this.volumeValue
-      this.audio.volume = 1
-    } else {
-      this.audio.volume = this.volumeValue
-    }
-    try {
-      this.audio.playbackRate = 1
-    } catch {
-      /* ignore */
-    }
+    this.forceAudibleOutput()
     if (
       Number.isFinite(this.suspendFreezeAt) &&
       this.suspendFreezeAt > 0.25 &&
@@ -1300,6 +1349,7 @@ class AudioEngine {
       const p = this.audio.play()
       return Promise.resolve(p)
         .then(() => {
+          this.forceAudibleOutput()
           this.emit()
           return !this.audio.paused
         })
@@ -1325,6 +1375,7 @@ class AudioEngine {
     this.scrubOrphanKeepAlives()
     this.suspendedForUi = false
     this.mountIntoDom()
+    this.unlockAudioRouteInGesture()
     this.applyPlaybackSession()
 
     const next = new Audio()
@@ -1382,11 +1433,15 @@ class AudioEngine {
           }
           return false
         }
-        // Promover a motor principal
+        // Promover SIN old.pause(): en iOS eso silencia la sesión entera
+        // (el reloj sigue, pero no se oye — síntoma del usuario).
         this.markIntentionalPause(1500)
         const old = this.audio
         try {
-          old.pause()
+          old.muted = true
+          old.volume = 0
+          old.removeAttribute('src')
+          old.load()
         } catch {
           /* ignore */
         }
@@ -1400,8 +1455,16 @@ class AudioEngine {
         this.wireElement(next)
         this.audio = next
         this.mountIntoDom()
+        this.applyPlaybackSession()
+        this.forceAudibleOutput()
+        if (this.audio.paused) {
+          try {
+            void this.audio.play()
+          } catch {
+            /* ignore */
+          }
+        }
         try {
-          old.removeAttribute('src')
           old.remove()
         } catch {
           /* ignore */
