@@ -535,6 +535,9 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         ` · Me gusta: ${likedCount} · Listas: ${playlistCount}` +
         (pushed ? ` · Subidas ahora: ${pushed}` : '') +
         (pulled ? ` · Nuevas aquí: ${pulled}` : '') +
+        (get().tracks.filter((t) => t.needsAudioUpdate).length
+          ? ` · Audio nuevo en PC: ${get().tracks.filter((t) => t.needsAudioUpdate).length}`
+          : '') +
         (taste.likesIn || taste.playlistsIn
           ? ` · Perfil ↓ likes ${taste.likesIn} / listas ${taste.playlistsIn}`
           : '') +
@@ -678,6 +681,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   setCover: (id, file) => library.setTrackCover(id, file),
   replaceTrackAudio: async (id, file) => {
     await library.replaceTrackAudio(id, file)
+    if (isLibraryHostDevice() && isCloudAuthEnabled()) {
+      void get()
+        .syncCloudCatalog()
+        .catch(() => {})
+    }
   },
   replaceMissingAudio: async (files, trackIds) => {
     set({ importProgress: { done: 0, total: files.length, name: 'Restaurando audio…' } })
@@ -687,6 +695,11 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       })
     } finally {
       set({ importProgress: null })
+      if (isLibraryHostDevice() && isCloudAuthEnabled()) {
+        void get()
+          .syncCloudCatalog()
+          .catch(() => {})
+      }
     }
   },
   toggleLike: async (id) => {

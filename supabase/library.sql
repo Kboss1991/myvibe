@@ -19,6 +19,14 @@ create table if not exists public.library_tracks (
 
 create index if not exists library_tracks_user_idx on public.library_tracks (user_id);
 
+-- Versión del audio en el PC (para avisar al móvil y ofrecer “Actualizar”)
+alter table public.library_tracks
+  add column if not exists audio_updated_at timestamptz;
+
+update public.library_tracks
+set audio_updated_at = updated_at
+where audio_updated_at is null;
+
 alter table public.library_tracks enable row level security;
 
 drop policy if exists "library_tracks_select_own" on public.library_tracks;

@@ -509,6 +509,7 @@ export async function downloadTracksFromPc(
             continue
           }
           const prev = await db.tracks.get(meta.id)
+          const now = Date.now()
           await db.tracks.put({
             id: meta.id,
             title: meta.title || prev?.title || 'Sin título',
@@ -523,11 +524,13 @@ export async function downloadTracksFromPc(
             liked: prev?.liked ?? false,
             playCount: prev?.playCount ?? 0,
             lastPlayedAt: prev?.lastPlayedAt ?? null,
-            createdAt: prev?.createdAt ?? Date.now(),
+            createdAt: prev?.createdAt ?? now,
             enriched: Boolean(meta.enriched || prev?.enriched),
             externalUrl: prev?.externalUrl,
             hasLocalAudio: true,
             origin: 'cloud',
+            audioUpdatedAt: now,
+            needsAudioUpdate: false,
           })
           savedVisible.push({
             fileName: myVibeDownloadName(meta.artist, meta.title, meta.fileName),

@@ -15,7 +15,7 @@ La música NO se sube a Supabase (sigue en cada dispositivo). Sí se sincronizan
 - **me gusta** y **playlists** (datos de perfil PC ↔ móvil)
 
 Tras crear el proyecto, ejecuta también `library.sql` (catálogo + likes + playlists).
-Si ya tenías `library.sql` antiguo, vuelve a ejecutarlo: añade las tablas `library_likes` y `library_playlists`, y activa Realtime para sync automática sin pulsar «Actualizar».
+Si ya tenías `library.sql` antiguo, vuelve a ejecutarlo: añade las tablas `library_likes` y `library_playlists`, la columna `audio_updated_at` (aviso de audio nuevo en el móvil) y activa Realtime para sync automática sin pulsar «Actualizar».
 
 Me gusta y playlists se suben solos en cada acción; el otro dispositivo las recibe por Realtime o en unos segundos.
 

@@ -14,6 +14,7 @@ import {
   IconSelect,
   IconClose,
   IconHeart,
+  IconDownload,
 } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
@@ -37,14 +38,20 @@ export function LibraryPage() {
   const enrichMissingCovers = useLibraryStore((s) => s.enrichMissingCovers)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
   const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
+  const downloadFromPc = useLibraryStore((s) => s.downloadFromPc)
+  const downloadProgress = useLibraryStore((s) => s.downloadProgress)
   const artists = useLibraryStore((s) => s.artists)
   const albums = useLibraryStore((s) => s.albums)
   const genres = useLibraryStore((s) => s.genres)
   const playTracks = usePlayerStore((s) => s.playTracks)
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
   const missingAudio = tracks.filter((t) => t.hasLocalAudio === false)
+  const needsAudioUpdate = tracks.filter(
+    (t) => t.needsAudioUpdate && t.hasLocalAudio !== false,
+  )
   const [enrichBusy, setEnrichBusy] = useState(false)
   const [restoreBusy, setRestoreBusy] = useState(false)
+  const [updateBusy, setUpdateBusy] = useState(false)
   const restoreInputRef = useRef<HTMLInputElement>(null)
 
   const artistList = useMemo(() => artists(), [artists, tracks])
@@ -252,6 +259,41 @@ export function LibraryPage() {
             .finally(() => setRestoreBusy(false))
         }}
       />
+
+      {tab === 'songs' && needsAudioUpdate.length > 0 && (
+        <div className="enrich-banner audio-update-banner" role="status">
+          <div>
+            <strong>
+              {needsAudioUpdate.length} canción
+              {needsAudioUpdate.length === 1 ? '' : 'es'} con audio nuevo en el PC
+            </strong>
+            <span>Sustituye la copia antigua de este móvil</span>
+          </div>
+          <button
+            type="button"
+            className="enrich-banner__btn"
+            disabled={updateBusy || Boolean(downloadProgress)}
+            onClick={() => {
+              setUpdateBusy(true)
+              void downloadFromPc(needsAudioUpdate.map((t) => t.id))
+                .then((r) => {
+                  alert(
+                    r.imported > 0
+                      ? `Actualizadas ${r.imported}: se borró la antigua y se puso la nueva.`
+                      : 'No se actualizó ninguna. ¿PC abierto con la misma cuenta?',
+                  )
+                })
+                .catch((err) => {
+                  alert(err instanceof Error ? err.message : 'No se pudo actualizar')
+                })
+                .finally(() => setUpdateBusy(false))
+            }}
+          >
+            <IconDownload size={16} />{' '}
+            {updateBusy || downloadProgress ? 'Actualizando…' : 'Actualizar todas'}
+          </button>
+        </div>
+      )}
 
       {tab === 'songs' && (
         <TrackList

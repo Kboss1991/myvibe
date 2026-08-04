@@ -117,6 +117,13 @@ export function TrackList({
     () => selectedTracks.filter((t) => t.hasLocalAudio === false),
     [selectedTracks],
   )
+  const selectedNeedsUpdate = useMemo(
+    () =>
+      selectedTracks.filter(
+        (t) => t.needsAudioUpdate && t.hasLocalAudio !== false,
+      ),
+    [selectedTracks],
+  )
   const allSelected = tracks.length > 0 && selected.size === tracks.length
 
   useEffect(() => {
@@ -135,7 +142,7 @@ export function TrackList({
     }
   }, [menuTrack, playlistPickIds, deleteNotice, editTrack])
 
-  async function downloadIds(ids: string[]) {
+  async function downloadIds(ids: string[], opts?: { quiet?: boolean }) {
     if (!ids.length) return
     setBulkBusy(true)
     try {
@@ -143,6 +150,15 @@ export function TrackList({
       const n = result.imported
       if (n <= 0) {
         alert('No se descargó ninguna. ¿PC abierto con la misma cuenta?')
+        return
+      }
+
+      if (opts?.quiet) {
+        alert(
+          n === 1
+            ? 'Audio actualizado: se sustituyó la copia antigua.'
+            : `${n} audios actualizados: se sustituyeron las copias antiguas.`,
+        )
         return
       }
 
@@ -342,9 +358,11 @@ export function TrackList({
           const active = track.id === currentTrackId
           const isSelected = selected.has(track.id)
           const remote = track.hasLocalAudio === false
+          const needsUpdate =
+            Boolean(track.needsAudioUpdate) && track.hasLocalAudio !== false
           const downloading =
             Boolean(downloadProgress?.ids.includes(track.id)) &&
-            (remote || downloadProgress?.trackId === track.id)
+            (remote || needsUpdate || downloadProgress?.trackId === track.id)
           const dlPercent =
             downloadProgress?.trackId === track.id
               ? downloadProgress.percent
@@ -354,7 +372,7 @@ export function TrackList({
           return (
             <li
               key={track.id}
-              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${downloading ? 'is-downloading' : ''}`}
+              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''}`}
               style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}
             >
               {selectMode && (
@@ -400,6 +418,9 @@ export function TrackList({
                     {remote && !downloading ? (
                       <em className="track-remote-tag"> · sin audio</em>
                     ) : null}
+                    {needsUpdate && !downloading ? (
+                      <em className="track-update-tag"> · nueva en PC</em>
+                    ) : null}
                     {downloading && downloadProgress?.trackId === track.id ? (
                       <em className="track-dl-tag"> · {dlPercent}%</em>
                     ) : null}
@@ -420,6 +441,25 @@ export function TrackList({
               )}
               {!selectMode && (
                 <div className="track-row__actions track-col--actions">
+                  {needsUpdate && (
+                    <button
+                      type="button"
+                      className="icon-btn track-row__update"
+                      aria-label="Actualizar audio desde el PC"
+                      title={
+                        pcOnline === false
+                          ? 'PC no detectado'
+                          : 'Borrar copia antigua y poner la nueva'
+                      }
+                      disabled={bulkBusy || Boolean(downloadProgress)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void downloadIds([track.id], { quiet: true })
+                      }}
+                    >
+                      <IconDownload size={20} />
+                    </button>
+                  )}
                   {remote && (
                     <>
                       <button
@@ -559,6 +599,22 @@ export function TrackList({
                   <IconDownload size={18} /> Descargar ({selectedRemote.length})
                 </button>
               </>
+            )}
+            {selectedNeedsUpdate.length > 0 && (
+              <button
+                type="button"
+                disabled={bulkBusy || Boolean(downloadProgress)}
+                onClick={() =>
+                  void runBulk(async () => {
+                    await downloadIds(
+                      selectedNeedsUpdate.map((t) => t.id),
+                      { quiet: true },
+                    )
+                  })
+                }
+              >
+                <IconDownload size={18} /> Actualizar ({selectedNeedsUpdate.length})
+              </button>
             )}
             <button
               type="button"
@@ -712,6 +768,21 @@ export function TrackList({
                   <IconDownload size={18} /> Descargar desde el PC
                 </button>
               </>
+            )}
+
+            {menuTrack.needsAudioUpdate && menuTrack.hasLocalAudio !== false && (
+              <button
+                type="button"
+                className="sheet__item sheet__item--update"
+                disabled={bulkBusy || Boolean(downloadProgress)}
+                onClick={() => {
+                  const id = menuTrack.id
+                  setMenuTrack(null)
+                  void downloadIds([id], { quiet: true })
+                }}
+              >
+                <IconDownload size={18} /> Actualizar audio (borrar antigua)
+              </button>
             )}
 
             <button

@@ -35,6 +35,13 @@ export interface Track {
    * Sirve para borrar en el iPhone lo que se borre en el PC.
    */
   origin?: 'local' | 'cloud'
+  /** Cuándo se guardó el audio en este dispositivo (ms). */
+  audioUpdatedAt?: number
+  /**
+   * El PC tiene una versión más nueva del audio (según nube).
+   * El móvil sigue reproduciendo la copia vieja hasta pulsar Actualizar.
+   */
+  needsAudioUpdate?: boolean
 }
 
 export interface Playlist {

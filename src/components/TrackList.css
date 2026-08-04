@@ -606,6 +606,30 @@
   color: #888;
 }
 
+.track-row.is-update {
+  background: rgba(245, 166, 35, 0.12);
+  box-shadow: inset 3px 0 0 #f5a623;
+}
+
+.track-row.is-update .track-row__title {
+  color: #fff;
+}
+
+.track-update-tag {
+  font-style: normal;
+  font-weight: 700;
+  font-size: 0.75rem;
+  color: #f5a623;
+}
+
+.track-row__update {
+  color: #f5a623;
+}
+
+.sheet__item--update {
+  color: #f5a623;
+}
+
 .track-dl-tag {
   font-style: normal;
   font-weight: 800;

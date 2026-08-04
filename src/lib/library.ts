@@ -47,6 +47,18 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
   await db.audio.put({ id, blob: safe })
 }
 
+/** Marca el audio local como fresco (tras importar / reemplazar / descargar). */
+export async function markLocalAudioFresh(
+  id: string,
+  at: number = Date.now(),
+): Promise<void> {
+  await db.tracks.update(id, {
+    hasLocalAudio: true,
+    audioUpdatedAt: at,
+    needsAudioUpdate: false,
+  })
+}
+
 export async function saveCoverBlob(id: string, blob: Blob): Promise<void> {
   const safe = blob.slice(0, blob.size, blob.type || 'image/jpeg')
   revokeCachedUrls(id)
@@ -172,6 +184,7 @@ export async function importAudioFiles(
         }
       }
 
+      const now = Date.now()
       const track: Track = {
         id,
         title: tags.title || dup?.title || file.name,
@@ -186,11 +199,13 @@ export async function importAudioFiles(
         liked: dup?.liked ?? false,
         playCount: dup?.playCount ?? 0,
         lastPlayedAt: dup?.lastPlayedAt ?? null,
-        createdAt: dup?.createdAt ?? Date.now(),
+        createdAt: dup?.createdAt ?? now,
         enriched: Boolean(dup?.enriched),
         externalUrl: dup?.externalUrl,
         hasLocalAudio: true,
         origin: dup?.origin === 'cloud' ? 'cloud' : 'local',
+        audioUpdatedAt: now,
+        needsAudioUpdate: false,
       }
 
       await db.tracks.put(track)
@@ -658,6 +673,8 @@ export async function replaceTrackAudio(id: string, file: File): Promise<Track> 
     fileName: audio.name || existing.fileName,
     hasLocalAudio: true,
     hasCover,
+    audioUpdatedAt: Date.now(),
+    needsAudioUpdate: false,
   }
   await db.tracks.update(id, patch)
   const updated = await db.tracks.get(id)

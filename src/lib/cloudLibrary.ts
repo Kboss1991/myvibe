@@ -21,6 +21,45 @@ export type CloudTrackRow = {
   mime_type: string
   file_name: string
   updated_at: string
+  audio_updated_at?: string | null
+}
+
+/** Si Supabase aún no tiene audio_updated_at, no la enviamos / no la pedimos. */
+let trackAudioUpdatedColumnOk: boolean | null = null
+
+function isMissingAudioUpdatedAtColumn(message: string): boolean {
+  return /audio_updated_at|column .* does not exist|Could not find.*audio_updated_at/i.test(
+    message,
+  )
+}
+
+const TRACK_CATALOG_SELECT =
+  'local_id,title,artist,album,genre,year,duration,mime_type,file_name,updated_at,audio_updated_at'
+const TRACK_CATALOG_SELECT_LEGACY =
+  'local_id,title,artist,album,genre,year,duration,mime_type,file_name,updated_at'
+
+async function fetchCloudTrackRows(userId: string): Promise<CloudTrackRow[]> {
+  const supabase = getSupabase()
+  const select =
+    trackAudioUpdatedColumnOk === false
+      ? TRACK_CATALOG_SELECT_LEGACY
+      : TRACK_CATALOG_SELECT
+  const { data, error } = await supabase
+    .from('library_tracks')
+    .select(select)
+    .eq('user_id', userId)
+  if (error && isMissingAudioUpdatedAtColumn(error.message)) {
+    trackAudioUpdatedColumnOk = false
+    const retry = await supabase
+      .from('library_tracks')
+      .select(TRACK_CATALOG_SELECT_LEGACY)
+      .eq('user_id', userId)
+    if (retry.error) throw new Error(retry.error.message)
+    return (retry.data || []) as CloudTrackRow[]
+  }
+  if (error) throw new Error(error.message)
+  if (trackAudioUpdatedColumnOk == null) trackAudioUpdatedColumnOk = true
+  return (data || []) as CloudTrackRow[]
 }
 
 async function deleteCloudLocalIds(userId: string, localIds: string[]): Promise<number> {
@@ -81,19 +120,28 @@ export async function pushLibraryMetadata(userId: string): Promise<number> {
   const keepIds = new Set(localTracks.map((t) => t.id))
 
   if (localTracks.length) {
-    const rows = localTracks.map((t) => ({
-      user_id: userId,
-      local_id: t.id,
-      title: t.title || '',
-      artist: t.artist || '',
-      album: t.album || '',
-      genre: t.genre || '',
-      year: t.year || '',
-      duration: t.duration || 0,
-      mime_type: t.mimeType || 'audio/mpeg',
-      file_name: t.fileName || `${t.title}.mp3`,
-      updated_at: new Date().toISOString(),
-    }))
+    const withAudioAt = trackAudioUpdatedColumnOk !== false
+    const rows = localTracks.map((t) => {
+      const audioAt = t.audioUpdatedAt ?? t.createdAt
+      const base = {
+        user_id: userId,
+        local_id: t.id,
+        title: t.title || '',
+        artist: t.artist || '',
+        album: t.album || '',
+        genre: t.genre || '',
+        year: t.year || '',
+        duration: t.duration || 0,
+        mime_type: t.mimeType || 'audio/mpeg',
+        file_name: t.fileName || `${t.title}.mp3`,
+        updated_at: new Date().toISOString(),
+      }
+      if (!withAudioAt) return base
+      return {
+        ...base,
+        audio_updated_at: new Date(audioAt).toISOString(),
+      }
+    })
 
     const chunk = 80
     for (let i = 0; i < rows.length; i += chunk) {
@@ -101,7 +149,24 @@ export async function pushLibraryMetadata(userId: string): Promise<number> {
       const { error } = await supabase.from('library_tracks').upsert(slice, {
         onConflict: 'user_id,local_id',
       })
+      if (error && withAudioAt && isMissingAudioUpdatedAtColumn(error.message)) {
+        trackAudioUpdatedColumnOk = false
+        const legacy = slice.map((r) => {
+          const { audio_updated_at: _a, ...rest } = r as typeof r & {
+            audio_updated_at?: string
+          }
+          return rest
+        })
+        const retry = await supabase.from('library_tracks').upsert(legacy, {
+          onConflict: 'user_id,local_id',
+        })
+        if (retry.error) throw new Error(retry.error.message || 'Error al subir catálogo')
+        continue
+      }
       if (error) throw new Error(error.message || 'Error al subir catálogo')
+      if (withAudioAt && trackAudioUpdatedColumnOk == null) {
+        trackAudioUpdatedColumnOk = true
+      }
     }
   }
 
@@ -286,15 +351,7 @@ function pickCloudLocalIdForTrack(
 /** Baja el catálogo de la nube y crea stubs grises si no hay audio local. */
 export async function pullLibraryCatalog(userId: string): Promise<number> {
   if (!isCloudAuthEnabled()) return 0
-  const supabase = getSupabase()
-  const { data, error } = await supabase
-    .from('library_tracks')
-    .select(
-      'local_id,title,artist,album,genre,year,duration,mime_type,file_name,updated_at',
-    )
-    .eq('user_id', userId)
-  if (error) throw new Error(error.message)
-  const rows = (data || []) as CloudTrackRow[]
+  const rows = await fetchCloudTrackRows(userId)
   let added = 0
   let locals = await db.tracks.toArray()
   const seenKeys = new Set<string>()
@@ -316,6 +373,37 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
     const hasBlob = existing ? Boolean(await getAudioBlob(row.local_id)) : false
 
     if (existing && hasBlob) {
+      const cloudAudioAt = row.audio_updated_at
+        ? Date.parse(row.audio_updated_at)
+        : NaN
+      const localAudioAt = existing.audioUpdatedAt
+      let needsAudioUpdate = Boolean(existing.needsAudioUpdate)
+      let nextAudioUpdatedAt = localAudioAt
+
+      if (Number.isFinite(cloudAudioAt) && cloudAudioAt > 0) {
+        if (localAudioAt == null) {
+          // Primera vez con la columna: adoptar sin forzar re-descarga
+          nextAudioUpdatedAt = cloudAudioAt
+          needsAudioUpdate = false
+        } else if (cloudAudioAt > localAudioAt + 5000) {
+          needsAudioUpdate = true
+        } else {
+          needsAudioUpdate = false
+        }
+      } else if (
+        // Sin columna: si cambia duración o nombre de archivo, avisar
+        localAudioAt != null &&
+        ((row.duration > 0 &&
+          existing.duration > 0 &&
+          Math.abs(row.duration - existing.duration) >= 1.5) ||
+          (row.file_name &&
+            existing.fileName &&
+            row.file_name.trim().toLowerCase() !==
+              existing.fileName.trim().toLowerCase()))
+      ) {
+        needsAudioUpdate = true
+      }
+
       await db.tracks.update(row.local_id, {
         title: row.title || existing.title,
         artist: row.artist || existing.artist,
@@ -326,7 +414,9 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
         mimeType: row.mime_type || existing.mimeType,
         fileName: row.file_name || existing.fileName,
         hasLocalAudio: true,
-        origin: 'cloud',
+        origin: existing.origin ?? 'cloud',
+        audioUpdatedAt: nextAudioUpdatedAt,
+        needsAudioUpdate,
       })
       for (const k of keys) seenKeys.add(k)
       continue
@@ -368,6 +458,7 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
         fileName: row.file_name,
         hasLocalAudio: false,
         origin: 'cloud',
+        needsAudioUpdate: false,
       })
       for (const k of keys) seenKeys.add(k)
       continue
@@ -391,6 +482,7 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
       enriched: false,
       hasLocalAudio: false,
       origin: 'cloud',
+      needsAudioUpdate: false,
     }
     await db.tracks.put(stub)
     locals.push(stub)
@@ -634,19 +726,28 @@ export async function pushTracksMetadata(
   }
   if (!tracks.length) return 0
 
-  const rows = tracks.map((t) => ({
-    user_id: userId,
-    local_id: t.id,
-    title: t.title || '',
-    artist: t.artist || '',
-    album: t.album || '',
-    genre: t.genre || '',
-    year: t.year || '',
-    duration: t.duration || 0,
-    mime_type: t.mimeType || 'audio/mpeg',
-    file_name: t.fileName || `${t.title}.mp3`,
-    updated_at: new Date().toISOString(),
-  }))
+  const withAudioAt = trackAudioUpdatedColumnOk !== false
+  const rows = tracks.map((t) => {
+    const audioAt = t.audioUpdatedAt ?? t.createdAt
+    const base = {
+      user_id: userId,
+      local_id: t.id,
+      title: t.title || '',
+      artist: t.artist || '',
+      album: t.album || '',
+      genre: t.genre || '',
+      year: t.year || '',
+      duration: t.duration || 0,
+      mime_type: t.mimeType || 'audio/mpeg',
+      file_name: t.fileName || `${t.title}.mp3`,
+      updated_at: new Date().toISOString(),
+    }
+    if (!withAudioAt) return base
+    return {
+      ...base,
+      audio_updated_at: new Date(audioAt).toISOString(),
+    }
+  })
 
   const chunk = 80
   for (let i = 0; i < rows.length; i += chunk) {
@@ -654,7 +755,26 @@ export async function pushTracksMetadata(
     const { error } = await supabase.from('library_tracks').upsert(slice, {
       onConflict: 'user_id,local_id',
     })
+    if (error && withAudioAt && isMissingAudioUpdatedAtColumn(error.message)) {
+      trackAudioUpdatedColumnOk = false
+      const legacy = slice.map((r) => {
+        const { audio_updated_at: _a, ...rest } = r as typeof r & {
+          audio_updated_at?: string
+        }
+        return rest
+      })
+      const retry = await supabase.from('library_tracks').upsert(legacy, {
+        onConflict: 'user_id,local_id',
+      })
+      if (retry.error) {
+        throw new Error(retry.error.message || 'Error al subir metadatos')
+      }
+      continue
+    }
     if (error) throw new Error(error.message || 'Error al subir metadatos')
+    if (withAudioAt && trackAudioUpdatedColumnOk == null) {
+      trackAudioUpdatedColumnOk = true
+    }
   }
   return rows.length
 }
