@@ -536,7 +536,13 @@ class AudioEngine {
       volume: this.audio.volume,
       readyState: this.audio.readyState,
       currentTime: this.currentTime,
+      hasGraph: Boolean(this.sourceNode || this.ctx),
+      ctxState: this.ctx?.state ?? null,
     }
+  }
+
+  get hasWebAudioGraph() {
+    return Boolean(this.sourceNode || this.ctx)
   }
 
   /** Restaura salida audible YA (mismo turno del gesto de bloqueo). */
@@ -552,6 +558,17 @@ class AudioEngine {
       this.audio.playbackRate = 1
     } catch {
       /* ignore */
+    }
+    // Si hay grafo Web Audio (radio), reanudar contexto YA
+    if (this.ctx) {
+      try {
+        const st = String(this.ctx.state)
+        if (st === 'suspended' || st === 'interrupted') {
+          void this.ctx.resume()
+        }
+      } catch {
+        /* ignore */
+      }
     }
   }
 
