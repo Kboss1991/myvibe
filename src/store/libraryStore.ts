@@ -53,6 +53,10 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 export function scheduleCatalogSync(delayMs = 500) {
   if (!isCloudAuthEnabled()) return
   if (!useAuthStore.getState().user?.id) return
+  if (Date.now() < catalogSyncQuietUntil && delayMs < 2000) {
+    // Durante quiet, solo acepta syncs “forzados” (delay alto = acción local)
+    return
+  }
   if (catalogSyncTimer != null) window.clearTimeout(catalogSyncTimer)
   catalogSyncTimer = window.setTimeout(() => {
     catalogSyncTimer = null
@@ -62,13 +66,18 @@ export function scheduleCatalogSync(delayMs = 500) {
 
 async function runCatalogSync(): Promise<{ pushed: number; pulled: number }> {
   if (catalogSyncInFlight) return catalogSyncInFlight
-  catalogSyncInFlight = useLibraryStore
+  // Lazy: evita TDZ si se llama durante la carga del módulo
+  const store = useLibraryStore
+  if (!store?.getState) {
+    return { pushed: 0, pulled: 0 }
+  }
+  catalogSyncQuietUntil = Date.now() + 4000
+  catalogSyncInFlight = store
     .getState()
     .syncCloudCatalog()
     .finally(() => {
       catalogSyncInFlight = null
-      // Tras un sync, ignora ecos realtime unos segundos
-      catalogSyncQuietUntil = Date.now() + 2500
+      catalogSyncQuietUntil = Date.now() + 4000
     })
   return catalogSyncInFlight
 }
@@ -79,13 +88,17 @@ export function startLibraryCatalogAutoSync(userId: string): () => void {
   catalogRealtimeStop?.()
   catalogRealtimeStop = subscribeLibraryCatalog(userId, () => {
     if (Date.now() < catalogSyncQuietUntil) return
-    scheduleCatalogSync(350)
+    scheduleCatalogSync(800)
   })
 
-  const pullNow = () => scheduleCatalogSync(200)
+  const pullNow = () => {
+    if (Date.now() < catalogSyncQuietUntil) return
+    scheduleCatalogSync(600)
+  }
   // Por si Realtime no está activo en Supabase
-  const poll = window.setInterval(pullNow, 8_000)
-  pullNow()
+  const poll = window.setInterval(pullNow, 20_000)
+  // Primer sync con retardo: deja montar la UI
+  const first = window.setTimeout(() => scheduleCatalogSync(1200), 1500)
 
   const onVis = () => {
     if (document.visibilityState === 'visible') pullNow()
@@ -97,6 +110,7 @@ export function startLibraryCatalogAutoSync(userId: string): () => void {
     catalogRealtimeStop?.()
     catalogRealtimeStop = null
     window.clearInterval(poll)
+    window.clearTimeout(first)
     document.removeEventListener('visibilitychange', onVis)
     window.removeEventListener('focus', pullNow)
     if (catalogSyncTimer != null) {
@@ -418,7 +432,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       }
     }
 
-    scheduleCatalogSync(400)
+    // Acciones locales: delay alto para saltarse el “quiet” anti-bucle
+    scheduleCatalogSync(2500)
     return imported
   },
 
@@ -719,7 +734,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         console.warn('Borrar en nube', e)
       }
     }
-    scheduleCatalogSync(400)
+    scheduleCatalogSync(2500)
   },
 
   deleteTrack: async (id) => {
@@ -733,7 +748,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
         console.warn('Borrar en nube', e)
       }
     }
-    scheduleCatalogSync(400)
+    scheduleCatalogSync(2500)
   },
 
   clearLocalMusic: async () => {
@@ -743,7 +758,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     // En el PC, sincronizar catálogo vacío vaciaría la nube: solo avisamos vía UI.
     // En el móvil, el próximo sync trae stubs grises otra vez.
     if (!isLibraryHostDevice() && isCloudAuthEnabled()) {
-      scheduleCatalogSync(600)
+      scheduleCatalogSync(2500)
     }
     return { tracks: result.tracks }
   },
@@ -764,7 +779,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   replaceTrackAudio: async (id, file) => {
     await library.replaceTrackAudio(id, file)
     if (isLibraryHostDevice() && isCloudAuthEnabled()) {
-      scheduleCatalogSync(400)
+      scheduleCatalogSync(2500)
     }
   },
   replaceMissingAudio: async (files, trackIds) => {
@@ -776,7 +791,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     } finally {
       set({ importProgress: null })
       if (isLibraryHostDevice() && isCloudAuthEnabled()) {
-        scheduleCatalogSync(400)
+        scheduleCatalogSync(2500)
       }
     }
   },

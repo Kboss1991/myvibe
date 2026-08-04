@@ -21,7 +21,7 @@ import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
 import { useAuthStore } from './store/authStore'
-import { scheduleCatalogSync, startLibraryCatalogAutoSync, startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
+import { startLibraryCatalogAutoSync, startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
 import { usePlayerStore } from './store/playerStore'
 import './App.css'
 
@@ -146,15 +146,6 @@ export default function App() {
       hostStop?.()
     }
   }, [user])
-
-  // Cuando aparecen canciones locales (p. ej. tras cargar IDB), vuelve a publicar
-  const tracksLen = useLibraryStore((s) => s.tracks.length)
-  useEffect(() => {
-    if (!user || !isCloudAuthEnabled()) return
-    if (tracksLen <= 0) return
-    const t = window.setTimeout(() => scheduleCatalogSync(500), 500)
-    return () => window.clearTimeout(t)
-  }, [user, tracksLen])
 
   // Presencia “escuchando ahora” para el círculo
   useEffect(() => {
