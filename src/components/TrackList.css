@@ -32,6 +32,32 @@
   font-variant-numeric: tabular-nums;
 }
 
+.track-list-head__btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  text-align: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-list-head__btn:hover {
+  color: #fff;
+}
+
+.track-list-head__btn.is-active {
+  color: var(--accent);
+}
+
 .track-list-head__actions {
   min-width: 0;
 }

@@ -1,7 +1,11 @@
 import { useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
-import { TrackColumnsHead } from '../components/TrackColumnsHead'
+import {
+  TrackColumnsHead,
+  sortTracks,
+  type TrackSort,
+} from '../components/TrackColumnsHead'
 import { CoverArt } from '../components/CoverArt'
 import { PlaylistBuilderSheet } from '../components/PlaylistBuilderSheet'
 import {
@@ -30,6 +34,10 @@ export function LibraryPage() {
   const [creating, setCreating] = useState(false)
   const [genreFilter, setGenreFilter] = useState<string | null>(null)
   const [selectMode, setSelectMode] = useState(false)
+  const [trackSort, setTrackSort] = useState<TrackSort>({
+    key: 'date',
+    dir: 'desc',
+  })
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
   const getLiked = useLibraryStore((s) => s.getLiked)
@@ -61,6 +69,15 @@ export function LibraryPage() {
     ? genreGroups.find((g) => g.name === genreFilter)?.tracks ?? []
     : []
 
+  const sortedSongs = useMemo(
+    () => sortTracks(tracks, trackSort),
+    [tracks, trackSort],
+  )
+  const sortedGenreTracks = useMemo(
+    () => sortTracks(genreTracks, trackSort),
+    [genreTracks, trackSort],
+  )
+
   const { progress, collapsed } = useMainScrollCollapse(64)
 
   const metaLabel =
@@ -77,9 +94,11 @@ export function LibraryPage() {
               : `${genreGroups.length} género${genreGroups.length === 1 ? '' : 's'}`
 
   const playQueueIds = useMemo(() => {
-    if (tab === 'genres' && genreFilter) return genreTracks.map((t) => t.id)
-    return tracks.map((t) => t.id)
-  }, [tab, genreFilter, genreTracks, tracks])
+    if (tab === 'genres' && genreFilter) {
+      return sortedGenreTracks.map((t) => t.id)
+    }
+    return sortedSongs.map((t) => t.id)
+  }, [tab, genreFilter, sortedGenreTracks, sortedSongs])
 
   const showSelect =
     (tab === 'songs' && tracks.length > 0) ||
@@ -224,7 +243,11 @@ export function LibraryPage() {
         </div>
 
         {(tab === 'songs' || (tab === 'genres' && genreFilter)) && (
-          <TrackColumnsHead selecting={selectMode} />
+          <TrackColumnsHead
+            selecting={selectMode}
+            sort={trackSort}
+            onSortChange={setTrackSort}
+          />
         )}
       </div>
 
@@ -297,7 +320,7 @@ export function LibraryPage() {
 
       {tab === 'songs' && (
         <TrackList
-          tracks={tracks}
+          tracks={sortedSongs}
           showColumns
           hideColumnHead
           selectMode={selectMode}
@@ -420,7 +443,7 @@ export function LibraryPage() {
         <>
           {genreFilter ? (
             <TrackList
-              tracks={genreTracks}
+              tracks={sortedGenreTracks}
               showColumns
               hideColumnHead
               selectMode={selectMode}
