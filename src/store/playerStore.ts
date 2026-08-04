@@ -3,7 +3,7 @@ import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay, getAudioBlobSources, getAudioBlob, revokeCachedUrls, ensureAudioMime, peekAudioObjectUrl } from '../lib/library'
 import { deleteBinary } from '../lib/opfs'
-import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, clearMediaPlaybackRefresh, claimNowPlaying, setPlaybackStateResolver, keepMediaSessionAlivePaused, reaffirmMediaSession, startSoftPauseSessionGuard, stopSoftPauseSessionGuard } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, shuffleArray, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, clearMediaPlaybackRefresh, claimNowPlaying, setPlaybackStateResolver, keepMediaSessionAlivePaused, reaffirmMediaSession, startSoftPauseSessionGuard, stopSoftPauseSessionGuard, setGhostPlayHandler } from '../lib/mediaSession'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
@@ -383,13 +383,15 @@ function handleRemotePlay() {
 }
 
 function handleRemotePause() {
-  // Soft-pause: NO audio.pause() — si no, iOS deja "Sin contenido" y no reanuda
+  // Pause REAL. Soft-pause (mute + elemento “playing”) hace que iOS
+  // cambie el icono a Play SIN llamar al handler → silencio (log sin remote-play).
   audioEngine.markIntentionalPause(4000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
   pendingBackgroundPlay = false
   clearMediaPlayingHold()
   clearMediaPlaybackRefresh()
+  stopSoftPauseSessionGuard()
 
   const state = usePlayerStore.getState()
   const snap = audioEngine.debugSnapshot()
@@ -400,13 +402,14 @@ function handleRemotePause() {
     suspended: snap.suspended,
     isPlaying: state.isPlaying,
     podcast: Boolean(state.currentPodcastEpisodeId),
+    detail: `elPaused=${snap.elementPaused}`,
   })
 
   if (state.currentPodcastEpisodeId) {
     persistPodcastProgressNow(usePlayerStore.setState, usePlayerStore.getState)
   }
 
-  audioEngine.suspendForUi()
+  audioEngine.pause()
 
   usePlayerStore.setState({
     isPlaying: false,
@@ -414,6 +417,7 @@ function handleRemotePause() {
       ? { radioPauseStartedAt: performance.now() }
       : {}),
   })
+  // Mantener ficha Now Playing (sin soft-audio)
   keepMediaSessionAlivePaused()
   startSoftPauseSessionGuard()
   setMediaPlaybackState(false)
@@ -427,6 +431,7 @@ function handleRemotePause() {
     suspended: snap2.suspended,
     isPlaying: false,
     podcast: Boolean(state.currentPodcastEpisodeId),
+    detail: `elPaused=${snap2.elementPaused}`,
   })
 }
 
@@ -972,6 +977,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   hydrate: async () => {
     setPlaybackStateResolver(() => mediaIsEffectivelyPlaying())
+    setGhostPlayHandler(() => handleRemotePlay())
     const snap = await ensurePlaybackSnapshot()
     audioEngine.setVolume(snap.volume)
 
@@ -1391,21 +1397,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     stopInterruptionResumeWatcher()
     clearMediaPlaybackRefresh()
     audioEngine.markIntentionalPause(4000)
-    // iOS PWA: pause real → "Sin contenido" en bloqueo. Soft-pause mantiene la ficha.
-    const soft =
-      typeof navigator !== 'undefined' &&
-      (/iPhone|iPad|iPod/i.test(navigator.userAgent || '') ||
-        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1))
-    if (soft) {
-      audioEngine.suspendForUi()
-      keepMediaSessionAlivePaused()
-      startSoftPauseSessionGuard()
-    } else {
-      stopSoftPauseSessionGuard()
-      audioEngine.pause()
-      setMediaPlaybackState(false)
-      refreshMediaPlaybackState(false)
-    }
+    // Pause real siempre: soft-pause en iOS evita que Media Session dispare play
+    stopSoftPauseSessionGuard()
+    audioEngine.pause()
+    setMediaPlaybackState(false)
+    refreshMediaPlaybackState(false)
+    keepMediaSessionAlivePaused()
+    startSoftPauseSessionGuard()
     set({
       isPlaying: false,
       ...(currentRadioId && radioPauseStartedAt == null

@@ -1,6 +1,7 @@
 import { getCoverBlob } from './library'
 import type { RadioStation } from './radios'
 import type { Track } from '../types'
+import { logPlayback } from './playbackDebug'
 
 export function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -42,6 +43,12 @@ let softPauseHandlers: {
   getPosition?: () => number
   seekSkip?: boolean
 } | null = null
+/** Si iOS pone playbackState=playing sin llamar al handler play */
+let ghostPlayHandler: (() => void) | null = null
+
+export function setGhostPlayHandler(fn: (() => void) | null) {
+  ghostPlayHandler = fn
+}
 
 export function clearMediaArtworkCache(trackId?: string) {
   if (trackId) artworkCache.delete(trackId)
@@ -247,9 +254,11 @@ function bindMediaHandlers(handlers: {
   softPauseHandlers = handlers
   // play/pause: invocar en el mismo turno del gesto de Media Session
   navigator.mediaSession.setActionHandler('play', () => {
+    logPlayback('ms-play-fired')
     handlers.play()
   })
   navigator.mediaSession.setActionHandler('pause', () => {
+    logPlayback('ms-pause-fired')
     handlers.pause()
   })
   navigator.mediaSession.setActionHandler('previoustrack', () => {
@@ -358,20 +367,34 @@ export function keepMediaSessionAlivePaused() {
   reaffirmMediaSession({ playing: false })
 }
 
-/** Mientras soft-pause: reafirmar paused y recuperar ficha si iOS la borró. */
+/** Mientras estamos en pause de usuario: mantener ficha + detectar play fantasma de iOS. */
 export function startSoftPauseSessionGuard() {
   stopSoftPauseSessionGuard()
   if (typeof window === 'undefined') return
   softPauseGuardTimer = window.setInterval(() => {
     try {
-      if (!playbackStateResolver || playbackStateResolver()) {
+      const msPlaying = navigator.mediaSession.playbackState === 'playing'
+      let weThinkPlaying = false
+      try {
+        weThinkPlaying = Boolean(playbackStateResolver?.())
+      } catch {
+        /* ignore */
+      }
+
+      // iOS cambió el icono a Play sin llamar a nuestro handler
+      if (msPlaying && !weThinkPlaying && ghostPlayHandler) {
+        logPlayback('ghost-play-detected', {
+          detail: 'mediaSession=playing sin handler',
+        })
+        ghostPlayHandler()
+        return
+      }
+
+      if (weThinkPlaying) {
         stopSoftPauseSessionGuard()
         return
       }
-    } catch {
-      /* ignore */
-    }
-    try {
+
       const title = navigator.mediaSession.metadata?.title
       if (!title && lastPublishedMeta) {
         keepMediaSessionAlivePaused()
@@ -381,7 +404,7 @@ export function startSoftPauseSessionGuard() {
     } catch {
       /* ignore */
     }
-  }, 1800)
+  }, 300)
 }
 
 export function stopSoftPauseSessionGuard() {
