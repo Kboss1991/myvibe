@@ -19,6 +19,7 @@ import {
   type PodcastEpisode,
   type PodcastShow,
 } from '../lib/podcasts'
+import { logPlayback } from '../lib/playbackDebug'
 
 interface PlayerState {
   queue: string[]
@@ -290,13 +291,15 @@ function mediaIsEffectivelyPlaying() {
 
 /**
  * Play remoto (CarPlay / bloqueo / AirPods).
- * Podcasts en iOS PWA: tras pause real, play() del mismo <audio> deja el
- * icono en playing sin sonido. Usamos soft-resume o un <audio> fresco
- * en el MISMO gesto; no marcar playing hasta confirmar audio.
+ *
+ * iOS PWA + podcast: tras pause, el <audio> a menudo queda en paused=false
+ * (o “playing” mudo). NO hacer early-return solo por !paused — hay que
+ * forzar salida audible y, en podcasts, un <audio> fresco en el mismo gesto.
  */
 function handleRemotePlay() {
   const state = usePlayerStore.getState()
   if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
+    logPlayback('remote-play-empty')
     return
   }
 
@@ -304,33 +307,19 @@ function handleRemotePlay() {
   clearMediaPlaybackRefresh()
   stopSoftPauseSessionGuard()
 
-  // Soft-pause de bloqueo: solo desmutear + rate 1 (sigue “sonando” para iOS)
-  if (audioEngine.isSuspendedForUi) {
-    const kicked = audioEngine.resumeFromUiGesture()
-    pendingBackgroundPlay = true
-    usePlayerStore.setState({ isPlaying: true })
-    reaffirmMediaSession({ playing: true })
-    void kicked.then((playing) => {
-      pendingBackgroundPlay = playing
-      usePlayerStore.setState({ isPlaying: playing })
-      if (playing) {
-        stopSoftPauseSessionGuard()
-        refreshMediaPlaybackState(true, { strong: true })
-        void bindMediaSession([])
-      } else {
-        refreshMediaPlaybackState(false)
-        startSoftPauseSessionGuard()
-      }
-    })
-    return
-  }
+  const snap0 = audioEngine.debugSnapshot()
+  logPlayback('remote-play', {
+    paused: snap0.paused,
+    muted: snap0.muted,
+    rate: snap0.rate,
+    suspended: snap0.suspended,
+    isPlaying: state.isPlaying,
+    podcast: Boolean(state.currentPodcastEpisodeId),
+    detail: `elPaused=${snap0.elementPaused} ready=${snap0.readyState}`,
+  })
 
-  if (!audioEngine.paused) {
-    pendingBackgroundPlay = false
-    usePlayerStore.setState({ isPlaying: true })
-    refreshMediaPlaybackState(true, { strong: true })
-    return
-  }
+  // 1) Siempre restaurar volumen/mute/rate EN ESTE TURNO
+  audioEngine.forceAudibleOutput()
 
   const resumeAt =
     state.position > 0.25
@@ -339,32 +328,57 @@ function handleRemotePlay() {
         ? audioEngine.currentTime
         : 0
 
-  // Podcast: nuevo <audio> en el gesto (el pausado a menudo “play” mudo)
-  let kicked: Promise<boolean>
-  if (state.currentPodcastEpisodeId) {
-    const ep = getPodcastEpisode(state.currentPodcastEpisodeId)
-    kicked = ep?.audioUrl
+  const isPodcast = Boolean(state.currentPodcastEpisodeId)
+  const ep = isPodcast ? getPodcastEpisode(state.currentPodcastEpisodeId!) : null
+
+  // 2) Soft-resume + play del elemento actual (sync)
+  const softOrCurrent = audioEngine.isSuspendedForUi
+    ? audioEngine.resumeFromUiGesture()
+    : audioEngine.playFromUserGesture()
+
+  // 3) Podcast: en paralelo, <audio> NUEVO en el mismo gesto (el viejo suele ir mudo)
+  const fresh =
+    isPodcast && ep?.audioUrl
       ? audioEngine.playFreshFromGesture(ep.audioUrl, resumeAt, { skipCors: true })
-      : audioEngine.playFromUserGesture()
-  } else {
-    kicked = audioEngine.playFromUserGesture()
-  }
+      : null
 
   void (async () => {
-    let playing = await kicked
-    if (!playing) {
-      try {
-        await usePlayerStore.getState().play()
-      } catch {
-        /* ignore */
-      }
-      playing = !audioEngine.paused
-    }
+    const currentOk = await softOrCurrent
+    const freshOk = fresh ? await fresh : false
+    // Podcast: priorizar el <audio> fresco (el viejo a menudo “play” sin sonido)
+    let playing = isPodcast ? Boolean(freshOk || currentOk) : currentOk
+
+    audioEngine.forceAudibleOutput()
+    if (playing && audioEngine.paused) playing = false
+
+    const snap1 = audioEngine.debugSnapshot()
+    logPlayback('remote-play-result', {
+      paused: snap1.paused,
+      muted: snap1.muted,
+      rate: snap1.rate,
+      suspended: snap1.suspended,
+      isPlaying: playing,
+      podcast: isPodcast,
+      detail: playing
+        ? freshOk
+          ? 'ok-fresh'
+          : 'ok-current'
+        : 'FAIL-no-audio',
+    })
+
     pendingBackgroundPlay = playing
     usePlayerStore.setState({ isPlaying: playing })
-    if (!playing) clearMediaPlayingHold()
-    refreshMediaPlaybackState(playing, { strong: playing })
-    if (playing) void bindMediaSession([])
+    if (!playing) {
+      clearMediaPlayingHold()
+      keepMediaSessionAlivePaused()
+      startSoftPauseSessionGuard()
+      refreshMediaPlaybackState(false)
+      return
+    }
+    stopSoftPauseSessionGuard()
+    reaffirmMediaSession({ playing: true })
+    refreshMediaPlaybackState(true, { strong: true })
+    void bindMediaSession([])
   })()
 }
 
@@ -378,6 +392,16 @@ function handleRemotePause() {
   clearMediaPlaybackRefresh()
 
   const state = usePlayerStore.getState()
+  const snap = audioEngine.debugSnapshot()
+  logPlayback('remote-pause', {
+    paused: snap.paused,
+    muted: snap.muted,
+    rate: snap.rate,
+    suspended: snap.suspended,
+    isPlaying: state.isPlaying,
+    podcast: Boolean(state.currentPodcastEpisodeId),
+  })
+
   if (state.currentPodcastEpisodeId) {
     persistPodcastProgressNow(usePlayerStore.setState, usePlayerStore.getState)
   }
@@ -392,6 +416,18 @@ function handleRemotePause() {
   })
   keepMediaSessionAlivePaused()
   startSoftPauseSessionGuard()
+  setMediaPlaybackState(false)
+  refreshMediaPlaybackState(false)
+
+  const snap2 = audioEngine.debugSnapshot()
+  logPlayback('remote-pause-done', {
+    paused: snap2.paused,
+    muted: snap2.muted,
+    rate: snap2.rate,
+    suspended: snap2.suspended,
+    isPlaying: false,
+    podcast: Boolean(state.currentPodcastEpisodeId),
+  })
 }
 
 /**

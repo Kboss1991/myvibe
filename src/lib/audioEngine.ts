@@ -525,6 +525,36 @@ class AudioEngine {
     return this.suspendedForUi
   }
 
+  /** Snapshot para diagnóstico en el móvil. */
+  debugSnapshot() {
+    return {
+      paused: this.paused,
+      elementPaused: this.audio.paused,
+      muted: this.audio.muted,
+      rate: this.audio.playbackRate,
+      suspended: this.suspendedForUi,
+      volume: this.audio.volume,
+      readyState: this.audio.readyState,
+      currentTime: this.currentTime,
+    }
+  }
+
+  /** Restaura salida audible YA (mismo turno del gesto de bloqueo). */
+  forceAudibleOutput() {
+    this.audio.muted = false
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.volumeValue
+      this.audio.volume = 1
+    } else {
+      this.audio.volume = this.volumeValue
+    }
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
+    }
+  }
+
   get volume() {
     return this.volumeValue
   }

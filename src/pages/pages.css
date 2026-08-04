@@ -1262,6 +1262,39 @@
   margin-bottom: 24px;
 }
 
+.profile-debug {
+  margin-bottom: 24px;
+}
+
+.profile-debug__box {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.profile-debug__hint {
+  margin: 0 0 10px;
+  font-size: 0.85rem;
+  color: var(--text-muted, #aaa);
+  line-height: 1.35;
+}
+
+.profile-debug__log {
+  margin: 0 0 12px;
+  padding: 10px;
+  max-height: 220px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #0a0a0a;
+  color: #b8f5c5;
+  font-size: 0.72rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .profile-card {
   margin: 0 0 20px;
   padding: 16px;

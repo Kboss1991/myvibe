@@ -23,6 +23,11 @@ import {
 } from '../lib/listenStats'
 import { checkTasteTablesReady, TASTE_SQL_HINT } from '../lib/cloudLibrary'
 import { TASTE_SYNC_SQL } from '../lib/tasteSyncSql'
+import {
+  clearPlaybackDebugLog,
+  formatPlaybackDebugLine,
+  getPlaybackDebugLog,
+} from '../lib/playbackDebug'
 import './pages.css'
 import '../components/TrackList.css'
 
@@ -58,6 +63,8 @@ export function ProfilePage() {
   const syncCloudCatalog = useLibraryStore((s) => s.syncCloudCatalog)
   const navigate = useNavigate()
   const avatarInputRef = useRef<HTMLInputElement>(null)
+  const [debugLog, setDebugLog] = useState(() => getPlaybackDebugLog())
+  const [debugOpen, setDebugOpen] = useState(false)
 
   const [editing, setEditing] = useState(false)
   const [displayName, setDisplayName] = useState(user?.displayName ?? '')
@@ -198,6 +205,72 @@ export function ProfilePage() {
           <IconEdit size={18} /> Editar perfil
         </button>
       </div>
+
+      <section className="profile-debug" aria-label="Diagnóstico de audio">
+        <button
+          type="button"
+          className="btn-outline"
+          onClick={() => {
+            setDebugLog(getPlaybackDebugLog())
+            setDebugOpen((v) => !v)
+          }}
+        >
+          {debugOpen ? 'Ocultar' : 'Ver'} diagnóstico pause/play
+        </button>
+        {debugOpen && (
+          <div className="profile-debug__box">
+            <p className="profile-debug__hint">
+              Tras fallar en bloqueo, abre esto y copia las líneas (o haz captura). Así veo si el
+              gesto llega a la app.
+            </p>
+            <pre className="profile-debug__log">
+              {debugLog.length
+                ? debugLog.map(formatPlaybackDebugLine).join('\n')
+                : 'Sin eventos aún. Reproduce un podcast, pause/play en bloqueo y vuelve aquí.'}
+            </pre>
+            <div className="profile-actions">
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={() => {
+                  setDebugLog(getPlaybackDebugLog())
+                }}
+              >
+                Actualizar
+              </button>
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={async () => {
+                  const text = getPlaybackDebugLog().map(formatPlaybackDebugLine).join('\n')
+                  try {
+                    if (navigator.share) {
+                      await navigator.share({ title: 'MyVibe audio debug', text })
+                    } else if (navigator.clipboard?.writeText) {
+                      await navigator.clipboard.writeText(text)
+                      setOkMsg('Diagnóstico copiado')
+                    }
+                  } catch {
+                    /* ignore */
+                  }
+                }}
+              >
+                Compartir / copiar
+              </button>
+              <button
+                type="button"
+                className="btn-outline"
+                onClick={() => {
+                  clearPlaybackDebugLog()
+                  setDebugLog([])
+                }}
+              >
+                Borrar log
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Estadísticas */}
       <section className="stats-panel" aria-labelledby="stats-heading">
