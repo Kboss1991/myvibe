@@ -270,7 +270,14 @@ function bindMediaHandlers(handlers: {
   navigator.mediaSession.setActionHandler('play', () => {
     markMediaPlayGesture()
     logPlayback('ms-play-fired')
-    handlers.play()
+    try {
+      handlers.play()
+      logPlayback('ms-play-dispatched')
+    } catch (err) {
+      logPlayback('ms-play-handler-error', {
+        detail: err instanceof Error ? err.message : 'unknown',
+      })
+    }
   })
   navigator.mediaSession.setActionHandler('pause', () => {
     logPlayback('ms-pause-fired')

@@ -1532,6 +1532,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   play: async () => {
+    clearMediaPlaybackRefresh()
+    stopSoftPauseSessionGuard()
     const {
       currentTrackId,
       currentRadioId,
@@ -1551,7 +1553,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         isPlaying: true,
         ...(currentRadioId ? { radioPauseStartedAt: null } : {}),
       })
-      refreshMediaPlaybackState(true)
+      refreshMediaPlaybackState(true, { strong: true })
       return
     }
 
@@ -1585,6 +1587,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       // Si falla el play, NO resintonizar: playRadio vuelve al vivo y borra el retraso
       const playing = !audioEngine.paused
       set({ isPlaying: playing, radioPauseStartedAt: null })
+      if (playing) setMediaPlaybackState(true)
       // Metadatos DESPUÉS del play: si van antes, CarPlay deja el botón en Play
       await bindMediaSession([])
       refreshMediaPlaybackState(playing)
@@ -1639,6 +1642,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       }
       pendingBackgroundPlay = false
       set({ isPlaying: true })
+      setMediaPlaybackState(true)
       void bindMediaSession([])
       refreshMediaPlaybackState(true, { strong: true })
       return
@@ -1681,6 +1685,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       return
     }
     set({ isPlaying: true })
+    setMediaPlaybackState(true)
     await bindMediaSession([])
     refreshMediaPlaybackState(true, { strong: true })
   },
@@ -1770,6 +1775,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
     pendingBackgroundPlay = true
     beginTrackChangeMediaGuard(8000)
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
     const ok = await loadAndMaybePlay(trackId, 0, true, set)
     if (ok) {
       prefetchNextForCurrent(get)
