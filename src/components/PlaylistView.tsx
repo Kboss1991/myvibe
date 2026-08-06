@@ -7,7 +7,7 @@ import {
   normalizeThemeColor,
 } from '../lib/playlistThemes'
 import { useAuthStore } from '../store/authStore'
-import { usePlayerStore } from '../store/playerStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import { CoverArt } from './CoverArt'
 import { CoverCropSheet } from './CoverCropSheet'
 import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
@@ -90,12 +90,12 @@ export function PlaylistView({
   onShare,
 }: Props) {
   const user = useAuthStore((s) => s.user)
-  const playTracks = usePlayerStore((s) => s.playTracks)
-  const addToQueue = usePlayerStore((s) => s.addToQueue)
-  const shuffle = usePlayerStore((s) => s.shuffle)
-  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
-  const isPlaying = usePlayerStore((s) => s.isPlaying)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
+  const addToQueue = useLibraryPlayerStore((s) => s.addToQueue)
+  const shuffle = useLibraryPlayerStore((s) => s.shuffle)
+  const toggleShuffle = useLibraryPlayerStore((s) => s.toggleShuffle)
+  const currentTrackId = useLibraryPlayerStore((s) => s.currentTrackId)
+  const isPlaying = useLibraryPlayerStore((s) => s.isPlaying)
   const [sharing, setSharing] = useState(false)
 
   const [query, setQuery] = useState('')

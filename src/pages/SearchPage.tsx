@@ -5,7 +5,7 @@ import { TrackList } from '../components/TrackList'
 import { IconSearch } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
 import { useLibraryStore } from '../store/libraryStore'
-import { usePlayerStore } from '../store/playerStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import './pages.css'
 
 export function SearchPage() {
@@ -15,7 +15,7 @@ export function SearchPage() {
   const albums = useLibraryStore((s) => s.albums)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
-  const playTracks = usePlayerStore((s) => s.playTracks)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
 
   const query = q.trim().toLowerCase()
   const hasQuery = query.length > 0

@@ -14,7 +14,7 @@ import {
   isZipFile,
 } from '../lib/zip'
 import { useLibraryStore } from '../store/libraryStore'
-import { usePlayerStore } from '../store/playerStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import './pages.css'
 
 export function UploadPage() {
@@ -23,7 +23,7 @@ export function UploadPage() {
   const importShare = useLibraryStore((s) => s.importShare)
   const importProgress = useLibraryStore((s) => s.importProgress)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
-  const playTracks = usePlayerStore((s) => s.playTracks)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
   const navigate = useNavigate()
   const [dragOver, setDragOver] = useState(false)
   const [error, setError] = useState<string | null>(null)

@@ -752,8 +752,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   },
 
   clearLocalMusic: async () => {
-    const { usePlayerStore } = await import('./playerStore')
-    usePlayerStore.getState().clearQueue()
+    const { useLibraryPlayerStore } = await import('./libraryPlayerStore')
+    useLibraryPlayerStore.getState().stop()
     const result = await library.clearLocalMusicLibrary()
     // En el PC, sincronizar catálogo vacío vaciaría la nube: solo avisamos vía UI.
     // En el móvil, el próximo sync trae stubs grises otra vez.

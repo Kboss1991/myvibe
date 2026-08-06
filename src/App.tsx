@@ -23,6 +23,7 @@ import { UploadPage } from './pages/UploadPage'
 import { useAuthStore } from './store/authStore'
 import { startLibraryCatalogAutoSync, startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
 import { usePlayerStore } from './store/playerStore'
+import { useLibraryPlayerStore } from './store/libraryPlayerStore'
 import './App.css'
 
 class RouteErrorBoundary extends Component<
@@ -64,7 +65,8 @@ export default function App() {
   const user = useAuthStore((s) => s.user)
   const initLibrary = useLibraryStore((s) => s.init)
   const hydratePlayer = usePlayerStore((s) => s.hydrate)
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const hydrateLibraryPlayer = useLibraryPlayerStore((s) => s.hydrate)
+  const currentTrackId = useLibraryPlayerStore((s) => s.currentTrackId)
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
   const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
   const location = useLocation()
@@ -72,13 +74,23 @@ export default function App() {
   const hasPlayer = Boolean(currentTrackId || currentRadioId || currentPodcastEpisodeId)
   const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
+  const setLibNowPlayingOpen = useLibraryPlayerStore((s) => s.setNowPlayingOpen)
+  const setLibQueueOpen = useLibraryPlayerStore((s) => s.setQueueOpen)
 
   // Al cambiar de pestaña, cerrar hojas a pantalla completa (si no, tapan Radios/etc.)
   useEffect(() => {
     setNowPlayingOpen(false)
     setQueueOpen(false)
+    setLibNowPlayingOpen(false)
+    setLibQueueOpen(false)
     document.body.classList.remove('sheet-open')
-  }, [location.pathname, setNowPlayingOpen, setQueueOpen])
+  }, [
+    location.pathname,
+    setNowPlayingOpen,
+    setQueueOpen,
+    setLibNowPlayingOpen,
+    setLibQueueOpen,
+  ])
 
   useEffect(() => {
     void hydrateAuth()
@@ -88,8 +100,9 @@ export default function App() {
     if (!user) return
     const unsub = initLibrary()
     void hydratePlayer()
+    void hydrateLibraryPlayer()
     return unsub
-  }, [user, initLibrary, hydratePlayer])
+  }, [user, initLibrary, hydratePlayer, hydrateLibraryPlayer])
 
   // Catálogo en la nube + host Wi‑Fi en el PC + dispositivos
   useEffect(() => {

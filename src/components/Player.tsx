@@ -6,6 +6,7 @@ import { formatRadioDelay, getRadioStation } from '../lib/radios'
 import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
 import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
 import { useLibraryStore } from '../store/libraryStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import { bindMediaSession, resumeAfterInterruption, usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
 import {
@@ -48,41 +49,72 @@ function repeatAriaLabel(repeat: 'off' | 'all' | 'one'): string {
 export function PlayerBar() {
   const tracks = useLibraryStore((s) => s.tracks)
   const toggleLike = useLibraryStore((s) => s.toggleLike)
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+
+  // Biblioteca = motor NUEVO (libraryPlayerStore). Radio/podcast = playerStore viejo.
+  const libTrackId = useLibraryPlayerStore((s) => s.currentTrackId)
+  const libPlaying = useLibraryPlayerStore((s) => s.isPlaying)
+  const libPosition = useLibraryPlayerStore((s) => s.position)
+  const libDuration = useLibraryPlayerStore((s) => s.duration)
+  const libShuffle = useLibraryPlayerStore((s) => s.shuffle)
+  const libRepeat = useLibraryPlayerStore((s) => s.repeat)
+  const libToggle = useLibraryPlayerStore((s) => s.toggle)
+  const libSeek = useLibraryPlayerStore((s) => s.seek)
+  const libNext = useLibraryPlayerStore((s) => s.next)
+  const libPrevious = useLibraryPlayerStore((s) => s.previous)
+  const libToggleShuffle = useLibraryPlayerStore((s) => s.toggleShuffle)
+  const libCycleRepeat = useLibraryPlayerStore((s) => s.cycleRepeat)
+  const libSetNowPlayingOpen = useLibraryPlayerStore((s) => s.setNowPlayingOpen)
+  const libSetQueueOpen = useLibraryPlayerStore((s) => s.setQueueOpen)
+  const libCoverUrl = useLibraryPlayerStore((s) => s.coverUrl)
+
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
   const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
-  const isPlaying = usePlayerStore((s) => s.isPlaying)
-  const position = usePlayerStore((s) => s.position)
-  const duration = usePlayerStore((s) => s.duration)
-  const shuffle = usePlayerStore((s) => s.shuffle)
-  const repeat = usePlayerStore((s) => s.repeat)
-  const toggle = usePlayerStore((s) => s.toggle)
-  const seek = usePlayerStore((s) => s.seek)
+  const rpPlaying = usePlayerStore((s) => s.isPlaying)
+  const rpPosition = usePlayerStore((s) => s.position)
+  const rpDuration = usePlayerStore((s) => s.duration)
+  const rpToggle = usePlayerStore((s) => s.toggle)
+  const rpSeek = usePlayerStore((s) => s.seek)
   const skipForward = usePlayerStore((s) => s.skipForward)
   const skipBack = usePlayerStore((s) => s.skipBack)
-  const next = usePlayerStore((s) => s.next)
-  const previous = usePlayerStore((s) => s.previous)
-  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
-  const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
-  const setNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
-  const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
+  const rpNext = usePlayerStore((s) => s.next)
+  const rpPrevious = usePlayerStore((s) => s.previous)
+  const rpSetNowPlayingOpen = usePlayerStore((s) => s.setNowPlayingOpen)
+  const coverUrlRp = usePlayerStore((s) => s.coverUrl)
+  const radioDelay = usePlayerStore((s) => s.radioDelay)
+  const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
+
+  const currentTrackId = libTrackId
+  const isLibrary = Boolean(libTrackId)
+  const isPlaying = isLibrary ? libPlaying : rpPlaying
+  const position = isLibrary ? libPosition : rpPosition
+  const duration = isLibrary ? libDuration : rpDuration
+  const shuffle = libShuffle
+  const repeat = libRepeat
+  const toggle = isLibrary ? libToggle : rpToggle
+  const seek = isLibrary ? libSeek : rpSeek
+  const next = isLibrary ? libNext : rpNext
+  const previous = isLibrary ? libPrevious : rpPrevious
+  const toggleShuffle = libToggleShuffle
+  const cycleRepeat = libCycleRepeat
+  const setNowPlayingOpen = isLibrary ? libSetNowPlayingOpen : rpSetNowPlayingOpen
+  const setQueueOpen = libSetQueueOpen
+  const coverUrl = isLibrary ? libCoverUrl : coverUrlRp
+
   const track = tracks.find((t) => t.id === currentTrackId)
-  // Resolver por id (estable); no usar getCurrentRadio() en el selector (objeto nuevo cada tick)
   const radio = currentRadioId ? getRadioStation(currentRadioId) : null
   const podcastEp = currentPodcastEpisodeId ? getPodcastEpisode(currentPodcastEpisodeId) : null
   const podcastShow = podcastEp ? getPodcastShow(podcastEp.showId) : null
-  const coverUrl = usePlayerStore((s) => s.coverUrl)
-  const radioDelay = usePlayerStore((s) => s.radioDelay)
-  const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
   const maxDelay = audioEngine.maxRadioDelay
   const displayDelay = useDisplayedRadioDelay(radioDelay, radioPauseStartedAt, maxDelay)
 
   useEffect(() => {
-    // Solo ficha Now Playing; play/pause remoto están stripped (no-op).
+    // Solo radio/podcast: la biblioteca publica Media Session en su store nuevo
+    if (!currentRadioId && !currentPodcastEpisodeId) return
     void bindMediaSession(tracks)
-  }, [currentTrackId, currentRadioId, currentPodcastEpisodeId])
+  }, [currentRadioId, currentPodcastEpisodeId, tracks])
 
   useEffect(() => {
+    if (isLibrary) return
     const onResume = () => {
       resumeAfterInterruption()
     }
@@ -99,7 +131,7 @@ export function PlayerBar() {
       window.removeEventListener('focus', onResume)
       document.removeEventListener('resume', onResume as EventListener)
     }
-  }, [currentTrackId, currentRadioId, currentPodcastEpisodeId, isPlaying])
+  }, [isLibrary, currentRadioId, currentPodcastEpisodeId, isPlaying])
 
   // Si queda un sheet/overlay colgado, quitarlo al sintonizar radio
   useEffect(() => {
@@ -338,30 +370,62 @@ export function NowPlaying() {
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
   const toggleLike = useLibraryStore((s) => s.toggleLike)
-  const open = usePlayerStore((s) => s.nowPlayingOpen)
-  const setOpen = usePlayerStore((s) => s.setNowPlayingOpen)
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+
+  const libOpen = useLibraryPlayerStore((s) => s.nowPlayingOpen)
+  const libSetOpen = useLibraryPlayerStore((s) => s.setNowPlayingOpen)
+  const libTrackId = useLibraryPlayerStore((s) => s.currentTrackId)
+  const libPlaying = useLibraryPlayerStore((s) => s.isPlaying)
+  const libPosition = useLibraryPlayerStore((s) => s.position)
+  const libDuration = useLibraryPlayerStore((s) => s.duration)
+  const libShuffle = useLibraryPlayerStore((s) => s.shuffle)
+  const libRepeat = useLibraryPlayerStore((s) => s.repeat)
+  const libToggle = useLibraryPlayerStore((s) => s.toggle)
+  const libNext = useLibraryPlayerStore((s) => s.next)
+  const libPrevious = useLibraryPlayerStore((s) => s.previous)
+  const libSeek = useLibraryPlayerStore((s) => s.seek)
+  const libToggleShuffle = useLibraryPlayerStore((s) => s.toggleShuffle)
+  const libCycleRepeat = useLibraryPlayerStore((s) => s.cycleRepeat)
+  const libSetQueueOpen = useLibraryPlayerStore((s) => s.setQueueOpen)
+  const libPlaybackSource = useLibraryPlayerStore((s) => s.playbackSource)
+  const libCoverUrl = useLibraryPlayerStore((s) => s.coverUrl)
+
+  const rpOpen = usePlayerStore((s) => s.nowPlayingOpen)
+  const rpSetOpen = usePlayerStore((s) => s.setNowPlayingOpen)
   const currentRadioId = usePlayerStore((s) => s.currentRadioId)
   const currentPodcastEpisodeId = usePlayerStore((s) => s.currentPodcastEpisodeId)
-  const playbackSource = usePlayerStore((s) => s.playbackSource)
-  const isPlaying = usePlayerStore((s) => s.isPlaying)
-  const position = usePlayerStore((s) => s.position)
-  const duration = usePlayerStore((s) => s.duration)
-  const shuffle = usePlayerStore((s) => s.shuffle)
-  const repeat = usePlayerStore((s) => s.repeat)
-  const toggle = usePlayerStore((s) => s.toggle)
-  const next = usePlayerStore((s) => s.next)
-  const previous = usePlayerStore((s) => s.previous)
-  const seek = usePlayerStore((s) => s.seek)
+  const rpPlaying = usePlayerStore((s) => s.isPlaying)
+  const rpPosition = usePlayerStore((s) => s.position)
+  const rpDuration = usePlayerStore((s) => s.duration)
+  const rpToggle = usePlayerStore((s) => s.toggle)
+  const rpNext = usePlayerStore((s) => s.next)
+  const rpPrevious = usePlayerStore((s) => s.previous)
+  const rpSeek = usePlayerStore((s) => s.seek)
   const skipForward = usePlayerStore((s) => s.skipForward)
   const skipBack = usePlayerStore((s) => s.skipBack)
-  const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
-  const cycleRepeat = usePlayerStore((s) => s.cycleRepeat)
-  const setQueueOpen = usePlayerStore((s) => s.setQueueOpen)
   const radioDelay = usePlayerStore((s) => s.radioDelay)
   const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
   const setRadioDelay = usePlayerStore((s) => s.setRadioDelay)
-  const coverUrl = usePlayerStore((s) => s.coverUrl)
+  const coverUrlRp = usePlayerStore((s) => s.coverUrl)
+
+  const isLibrary = Boolean(libTrackId)
+  const open = isLibrary ? libOpen : rpOpen
+  const setOpen = isLibrary ? libSetOpen : rpSetOpen
+  const currentTrackId = libTrackId
+  const isPlaying = isLibrary ? libPlaying : rpPlaying
+  const position = isLibrary ? libPosition : rpPosition
+  const duration = isLibrary ? libDuration : rpDuration
+  const shuffle = libShuffle
+  const repeat = libRepeat
+  const toggle = isLibrary ? libToggle : rpToggle
+  const next = isLibrary ? libNext : rpNext
+  const previous = isLibrary ? libPrevious : rpPrevious
+  const seek = isLibrary ? libSeek : rpSeek
+  const toggleShuffle = libToggleShuffle
+  const cycleRepeat = libCycleRepeat
+  const setQueueOpen = libSetQueueOpen
+  const playbackSource = libPlaybackSource
+  const coverUrl = isLibrary ? libCoverUrl : coverUrlRp
+
   const track = tracks.find((t) => t.id === currentTrackId)
   const radio = currentRadioId ? getRadioStation(currentRadioId) : null
   const podcastEp = currentPodcastEpisodeId ? getPodcastEpisode(currentPodcastEpisodeId) : null
@@ -691,13 +755,13 @@ export function NowPlaying() {
 }
 
 export function QueueSheet() {
-  const open = usePlayerStore((s) => s.queueOpen)
-  const setOpen = usePlayerStore((s) => s.setQueueOpen)
-  const queue = usePlayerStore((s) => s.queue)
-  const removeFromQueue = usePlayerStore((s) => s.removeFromQueue)
-  const playTracks = usePlayerStore((s) => s.playTracks)
+  const open = useLibraryPlayerStore((s) => s.queueOpen)
+  const setOpen = useLibraryPlayerStore((s) => s.setQueueOpen)
+  const queue = useLibraryPlayerStore((s) => s.queue)
+  const removeFromQueue = useLibraryPlayerStore((s) => s.removeFromQueue)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
   const tracks = useLibraryStore((s) => s.tracks)
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const currentTrackId = useLibraryPlayerStore((s) => s.currentTrackId)
 
   if (!open) return null
 

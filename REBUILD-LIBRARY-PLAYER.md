@@ -1,10 +1,12 @@
-# Reproductor de biblioteca (rebuild)
+# Motor de biblioteca nuevo (v1)
 
-Motor de biblioteca reactivado estilo Spotify:
+`src/store/libraryPlayerStore.ts` — escrito desde cero:
 
-- Play / pause, anterior / siguiente
-- Timeline con tiempo transcurrido y restante
-- Shuffle (aleatorio vs orden de lista)
-- Repeat: off → lista → canción → off
+- Su propio `<audio>` (no usa `audioEngine` ni `loadAndMaybePlay`)
+- Media Session mínima (metadata + play/pause/next/prev + `playbackState`)
+- **Sin** `setPositionState` en cada tick (causa del Play fantasma en iOS)
+- **Sin** holds / reclaim / CarPlay labyrinth del `playerStore` viejo
 
-Código completo anterior (con el laberinto CarPlay): rama `archive/full-library-player`.
+`playerStore` solo gestiona radio y podcasts. La biblioteca ya no pasa por él.
+
+Archivo histórico: `archive/full-library-player`.

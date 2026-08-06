@@ -11,6 +11,7 @@ import { formatEpisodeDate, getMyPodcasts } from '../lib/podcasts'
 import { playlistCoverArtProps } from '../lib/library'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import { usePlayerStore } from '../store/playerStore'
 import './pages.css'
 
@@ -27,7 +28,7 @@ export function HomePage() {
   const playlists = useLibraryStore((s) => s.playlists)
   const getRecent = useLibraryStore((s) => s.getRecent)
   const getLiked = useLibraryStore((s) => s.getLiked)
-  const playTracks = usePlayerStore((s) => s.playTracks)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
   const playPodcastEpisode = usePlayerStore((s) => s.playPodcastEpisode)
   const recent = getRecent()
   const liked = getLiked()

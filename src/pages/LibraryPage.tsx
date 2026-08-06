@@ -24,7 +24,7 @@ import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { useLibraryStore } from '../store/libraryStore'
-import { usePlayerStore } from '../store/playerStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import './pages.css'
 
 type Tab = 'songs' | 'playlists' | 'artists' | 'albums' | 'genres'
@@ -51,7 +51,7 @@ export function LibraryPage() {
   const artists = useLibraryStore((s) => s.artists)
   const albums = useLibraryStore((s) => s.albums)
   const genres = useLibraryStore((s) => s.genres)
-  const playTracks = usePlayerStore((s) => s.playTracks)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
   const missingAudio = tracks.filter((t) => t.hasLocalAudio === false)
   const needsAudioUpdate = tracks.filter(

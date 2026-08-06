@@ -5,7 +5,7 @@ import { isAppleMobile } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
 import { saveFilesVisibly, myVibeDownloadName, deleteVisibleCopies } from '../lib/visibleStorage'
 import { useLibraryStore } from '../store/libraryStore'
-import { usePlayerStore } from '../store/playerStore'
+import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import { CoverArt } from './CoverArt'
 import { CoverCropSheet } from './CoverCropSheet'
 import {
@@ -64,11 +64,11 @@ export function TrackList({
   onSelectModeChange,
   showSelectToggle = true,
 }: Props) {
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
-  const isPlaying = usePlayerStore((s) => s.isPlaying)
-  const playTracks = usePlayerStore((s) => s.playTracks)
-  const playNext = usePlayerStore((s) => s.playNext)
-  const addToQueue = usePlayerStore((s) => s.addToQueue)
+  const currentTrackId = useLibraryPlayerStore((s) => s.currentTrackId)
+  const isPlaying = useLibraryPlayerStore((s) => s.isPlaying)
+  const playTracks = useLibraryPlayerStore((s) => s.playTracks)
+  const playNext = useLibraryPlayerStore((s) => s.playNext)
+  const addToQueue = useLibraryPlayerStore((s) => s.addToQueue)
   const toggleLike = useLibraryStore((s) => s.toggleLike)
   const deleteTrack = useLibraryStore((s) => s.deleteTrack)
   const deleteTracks = useLibraryStore((s) => s.deleteTracks)
