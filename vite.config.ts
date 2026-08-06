@@ -61,7 +61,7 @@ export default defineConfig({
       },
       workbox: {
         // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
-        cacheId: 'myvibe-lib-single-audio-ms-20260806',
+        cacheId: 'myvibe-lib-ms-nextprev-always-20260730',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,

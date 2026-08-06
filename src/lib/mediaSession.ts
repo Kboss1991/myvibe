@@ -29,6 +29,18 @@ export function shuffleArray<T>(items: T[], stayIndex?: number): T[] {
 /** Cache de carátulas ya convertidas para la pantalla de bloqueo. */
 const artworkCache = new Map<string, MediaImage[]>()
 
+/**
+ * Cuando la biblioteca posee Now Playing, radio/podcast NO deben
+ * pisar nexttrack/previoustrack ni registrar seek± (iOS muestra ±10s).
+ */
+let libraryOwnsMediaSession = false
+export function setLibraryOwnsMediaSession(active: boolean) {
+  libraryOwnsMediaSession = active
+}
+export function isLibraryOwnsMediaSession() {
+  return libraryOwnsMediaSession
+}
+
 /** Última carátula publicada — iOS borra Now Playing si reescribimos artwork: []. */
 let lastPublishedArtwork: MediaImage[] = []
 export function clearMediaArtworkCache(trackId?: string) {
@@ -243,6 +255,9 @@ function bindMediaHandlers(handlers: {
   getPosition?: () => number
   seekSkip?: boolean
 }) {
+  // Biblioteca tiene el control: no pisar next/prev ni meter seek± de podcast
+  if (libraryOwnsMediaSession) return
+
   navigator.mediaSession.setActionHandler('play', () => {
     try {
       handlers.play?.()
@@ -359,6 +374,7 @@ export async function updateMediaSession(
 ) {
   if (!('mediaSession' in navigator)) return
   if (!track) return
+  if (libraryOwnsMediaSession) return
 
   // Handlers YA (antes de await artwork)
   bindMediaHandlers(handlers)
@@ -400,6 +416,7 @@ export async function updateRadioMediaSession(
   },
 ) {
   if (!('mediaSession' in navigator)) return
+  if (libraryOwnsMediaSession) return
 
   bindMediaHandlers({
     ...handlers,
@@ -446,6 +463,7 @@ export async function updateRadioMediaSession(
 
 export function setMediaPlaybackState(playing: boolean) {
   if (!('mediaSession' in navigator)) return
+  if (libraryOwnsMediaSession) return
   try {
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   } catch {
@@ -458,6 +476,7 @@ export function refreshMediaPlaybackState(
   playing?: boolean,
   opts?: { strong?: boolean },
 ) {
+  if (libraryOwnsMediaSession) return
   if (playing !== true && playing !== false) return
   const apply = () => setMediaPlaybackState(playing)
   apply()
@@ -474,6 +493,7 @@ export function refreshMediaPlaybackState(
 
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
   if (!('mediaSession' in navigator)) return
+  if (libraryOwnsMediaSession) return
   setMediaPlaybackState(playing)
   if (!Number.isFinite(duration) || duration <= 0) return
   const pos = Math.max(0, Math.min(position, duration))

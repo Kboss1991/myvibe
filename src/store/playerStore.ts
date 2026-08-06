@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
-import { setMediaPlaybackState, setMediaPositionState, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState } from '../lib/mediaSession'
+import { setMediaPlaybackState, setMediaPositionState, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, isLibraryOwnsMediaSession } from '../lib/mediaSession'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
 import { roundRadioDelayMs } from '../lib/radios'
@@ -541,8 +541,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     interruptionBurstToken += 1
     stopInterruptionResumeWatcher()
     stopNearEndPoller()
-    audioEngine.markIntentionalPause(1500)
-    audioEngine.pause()
+    // No pausar aquí: libraryPlayerStore decide si hay rival activo.
+    // Pausar siempre al reanudar biblioteca destruía la sesión iOS.
     set({
       currentTrackId: null,
       currentRadioId: null,
@@ -560,6 +560,8 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   syncFromEngine: () => {
+    // Biblioteca posee el <audio> compartido: no pisar Media Session
+    if (isLibraryOwnsMediaSession()) return
     const playing = !audioEngine.paused
     // Solo soltar pending cuando ya suena y pasó la ventana anti-reset de CarPlay
     if (playing && pendingBackgroundPlay && Date.now() >= mediaPlayingHoldUntil) {
@@ -1062,6 +1064,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 }))
 
 export async function bindMediaSession(_tracks: Track[]) {
+  if (isLibraryOwnsMediaSession()) return
   const state = usePlayerStore.getState()
   if (state.currentRadioId) {
     const station = getRadioStation(state.currentRadioId)
