@@ -140,8 +140,9 @@ async function publishPlayingMediaSession(trackId: string) {
       usePlayerStore.setState({ coverUrl })
     }
   })
+  if (usePlayerStore.getState().currentTrackId !== trackId) return
   setMediaPlaybackState(true)
-  await refreshMediaSessionForTrackId(trackId, true)
+  await syncLibraryTrackMediaSession(true, { reclaim: true })
 }
 /** Cola de episodios del show abierto (ids). */
 let podcastEpisodeQueue: string[] = []
@@ -1100,7 +1101,7 @@ async function loadAndMaybePlay(
         set({ isPlaying: true })
         setMediaPlaybackState(true)
         refreshMediaPlaybackState(true, { strong: true })
-        void publishPlayingMediaSession(trackId)
+        void syncLibraryTrackMediaSession(true, { reclaim: true })
         return true
       }
     }
@@ -2215,6 +2216,10 @@ export async function bindMediaSession(tracks: Track[]) {
       )
     }
     refreshMediaPlaybackState()
+    return
+  }
+  if (isLibraryTrackState(state)) {
+    await syncLibraryTrackMediaSession(mediaIsEffectivelyPlaying())
     return
   }
   let track = tracks.find((t) => t.id === state.currentTrackId) ?? null
