@@ -305,8 +305,9 @@ function commitTrackChange(trackId: string, index: number, url: string) {
 }
 
 /**
- * Registro ÚNICO de Media Session. No volver a llamar en pause/play/metadata.
- * (Tras radio/podcast, reclaimLibraryMediaSession() restaura si fueron pisados.)
+ * Registro ESTÁTICO y permanente de Media Session al arrancar.
+ * nexttrack/previoustrack SIEMPRE registrados (aunque la URL aún no esté lista:
+ * el handler hace return). Nunca seek±.
  */
 function bindLibraryMediaHandlersOnce() {
   if (mediaHandlersBound || !('mediaSession' in navigator)) return
@@ -324,6 +325,7 @@ function bindLibraryMediaHandlersOnce() {
     audio().pause()
   })
 
+  // Registrados de forma incondicional e inmediata — no esperar urlReady
   navigator.mediaSession.setActionHandler('previoustrack', () => {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
     const target = resolveSkipTarget(-1)
@@ -342,7 +344,6 @@ function bindLibraryMediaHandlersOnce() {
       el.play().catch(() => {})
       return
     }
-    // Solo URL precargada — sin IndexedDB / createObjectURL en bloqueo
     const url = readyUrlForTrack(target.trackId)
     if (!url) return
     commitTrackChange(target.trackId, target.index, url)
@@ -366,11 +367,17 @@ function bindLibraryMediaHandlersOnce() {
   }
 }
 
+/** Fuerza re-registro de next/prev (p.ej. tras podcast) y anula seek±. */
+export function ensureLibraryMediaSessionBound() {
+  if (!('mediaSession' in navigator)) return
+  mediaHandlersBound = false
+  bindLibraryMediaHandlersOnce()
+}
+
 /** Solo al recuperar el control tras radio/podcast (ellos pisan Media Session). */
 function reclaimLibraryMediaSession() {
   setLibraryOwnsMediaSession(true)
-  mediaHandlersBound = false
-  bindLibraryMediaHandlersOnce()
+  ensureLibraryMediaSessionBound()
 }
 
 async function publishMetadata(track: Track) {

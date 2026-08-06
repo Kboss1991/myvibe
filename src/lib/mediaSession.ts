@@ -255,7 +255,7 @@ function bindMediaHandlers(handlers: {
   getPosition?: () => number
   seekSkip?: boolean
 }) {
-  // Biblioteca tiene el control: no pisar next/prev ni meter seek± de podcast
+  // Biblioteca tiene el control: no pisar next/prev
   if (libraryOwnsMediaSession) return
 
   navigator.mediaSession.setActionHandler('play', () => {
@@ -272,38 +272,35 @@ function bindMediaHandlers(handlers: {
       /* ignore */
     }
   })
-  navigator.mediaSession.setActionHandler(
-    'previoustrack',
-    handlers.previoustrack ? () => handlers.previoustrack!() : null,
-  )
-  navigator.mediaSession.setActionHandler(
-    'nexttrack',
-    handlers.nexttrack ? () => handlers.nexttrack!() : null,
-  )
-
-  try {
-    if (handlers.seekto) {
-      if (handlers.seekSkip && handlers.getPosition) {
-        navigator.mediaSession.setActionHandler('seekbackward', (details) => {
-          const offset = details.seekOffset ?? 15
-          const pos = handlers.getPosition?.() ?? 0
-          handlers.seekto?.(Math.max(0, pos - offset))
-        })
-        navigator.mediaSession.setActionHandler('seekforward', (details) => {
-          const offset = details.seekOffset ?? 15
-          const pos = handlers.getPosition?.() ?? 0
-          handlers.seekto?.(pos + offset)
-        })
-      } else {
-        navigator.mediaSession.setActionHandler('seekbackward', null)
-        navigator.mediaSession.setActionHandler('seekforward', null)
+  // NUNCA poner next/prev a null (iOS muestra ±10s). Solo actualizar si hay handler.
+  if (handlers.previoustrack) {
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      try {
+        handlers.previoustrack!()
+      } catch {
+        /* ignore */
       }
+    })
+  }
+  if (handlers.nexttrack) {
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      try {
+        handlers.nexttrack!()
+      } catch {
+        /* ignore */
+      }
+    })
+  }
+
+  // Nunca seek±: en iOS sustituyen las flechas de pista por +10s/-10s
+  try {
+    navigator.mediaSession.setActionHandler('seekbackward', null)
+    navigator.mediaSession.setActionHandler('seekforward', null)
+    if (handlers.seekto) {
       navigator.mediaSession.setActionHandler('seekto', (details) => {
         if (typeof details.seekTime === 'number') handlers.seekto?.(details.seekTime)
       })
     } else {
-      navigator.mediaSession.setActionHandler('seekbackward', null)
-      navigator.mediaSession.setActionHandler('seekforward', null)
       navigator.mediaSession.setActionHandler('seekto', null)
     }
   } catch {

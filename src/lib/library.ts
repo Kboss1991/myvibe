@@ -105,11 +105,6 @@ export async function getCoverBlob(id: string): Promise<Blob | null> {
   return pickBestBlob(fromIdb, fromOpfs)
 }
 
-import {
-  deleteLocalAudioFromCache,
-  putLocalAudioInCache,
-} from './localAudioCache'
-
 const objectUrlCache = new Map<string, string>()
 /** IDs pendientes de revoke — solo en primer plano y fuera de uso. */
 const pendingAudioRevoke = new Set<string>()
@@ -172,14 +167,7 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
     }
   }
   const playable = ensureAudioMime(blob, mimeHint)
-
-  // Preferir URL same-origin con SW Range (206) — iOS pause/resume
-  const rangeUrl = await putLocalAudioInCache(id, playable)
-  if (rangeUrl) {
-    objectUrlCache.set(`audio:${id}`, rangeUrl)
-    return rangeUrl
-  }
-
+  // Blob URL en memoria — sin rutas sintéticas del Service Worker
   const url = URL.createObjectURL(playable)
   objectUrlCache.set(`audio:${id}`, url)
   return url
@@ -214,7 +202,6 @@ export function revokeCachedUrls(id: string): void {
       objectUrlCache.delete(key)
     }
   }
-  void deleteLocalAudioFromCache(id)
 }
 
 export async function importAudioFiles(
