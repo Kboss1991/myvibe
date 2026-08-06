@@ -534,8 +534,7 @@ function handleRemotePlay() {
 }
 
 function handleRemotePause() {
-  // Para canciones locales, mantener la sesión viva evita que CarPlay ceda
-  // el Play a Podcasts tras pausar. Radio/podcast siguen en hard pause.
+  // Pause real: el soft-pause en biblioteca empeora el icono y puede abrir Podcasts.
   audioEngine.markIntentionalPause(4000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
@@ -560,12 +559,7 @@ function handleRemotePause() {
     persistPodcastProgressNow(usePlayerStore.setState, usePlayerStore.getState)
   }
 
-  const useSoftPause = Boolean(state.currentTrackId) && !state.currentRadioId && !state.currentPodcastEpisodeId
-  if (useSoftPause) {
-    audioEngine.suspendForUi()
-  } else {
-    audioEngine.pause()
-  }
+  audioEngine.pause()
 
   usePlayerStore.setState({
     isPlaying: false,
@@ -585,7 +579,7 @@ function handleRemotePause() {
     suspended: snap2.suspended,
     isPlaying: false,
     podcast: Boolean(state.currentPodcastEpisodeId),
-    detail: `soft=${useSoftPause} elPaused=${snap2.elementPaused}`,
+    detail: `soft=false elPaused=${snap2.elementPaused}`,
   })
 }
 
@@ -2125,15 +2119,20 @@ export async function bindMediaSession(tracks: Track[]) {
   if (!track && state.currentTrackId) {
     track = (await db.tracks.get(state.currentTrackId)) ?? null
   }
-  await updateMediaSession(track, state.coverUrl, {
-    play: () => handleRemotePlay(),
-    pause: () => handleRemotePause(),
-    previoustrack: () => void usePlayerStore.getState().previous(),
-    nexttrack: () => void usePlayerStore.getState().next(),
-    seekto: (time) => usePlayerStore.getState().seek(time),
-    getPosition: () => usePlayerStore.getState().position,
-    seekSkip: false,
-  })
+  await updateMediaSession(
+    track,
+    state.coverUrl,
+    {
+      play: () => handleRemotePlay(),
+      pause: () => handleRemotePause(),
+      previoustrack: () => void usePlayerStore.getState().previous(),
+      nexttrack: () => void usePlayerStore.getState().next(),
+      seekto: (time) => usePlayerStore.getState().seek(time),
+      getPosition: () => usePlayerStore.getState().position,
+      seekSkip: false,
+    },
+    { playing: mediaIsEffectivelyPlaying() },
+  )
   // Tras MediaMetadata, iOS resetea el botón — reafirmar play/pause real
   refreshMediaPlaybackState(mediaIsEffectivelyPlaying())
 }
