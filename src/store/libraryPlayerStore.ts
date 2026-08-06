@@ -53,12 +53,15 @@ audio.preload = 'auto'
 audio.setAttribute('playsinline', 'true')
 audio.setAttribute('webkit-playsinline', 'true')
 audio.setAttribute('x-webkit-airplay', 'allow')
-audio.crossOrigin = 'anonymous'
+// No crossOrigin: los blob: locales a veces quedan mudos en iOS con anonymous
 audio.style.cssText =
   'position:fixed;width:1px;height:1px;opacity:0.01;pointer-events:none;left:0;bottom:0;z-index:-1'
 
 let audioMounted = false
 let loadEpoch = 0
+let handlersBound = false
+/** Prefetch del siguiente id → url para poder hacer play() en el gesto de skip. */
+let prefetched: { id: string; url: string } | null = null
 let persistTimer: number | null = null
 let pendingPersist: Partial<{
   queue: string[]
@@ -75,6 +78,352 @@ function ensureAudioMounted() {
   if (audioMounted || typeof document === 'undefined') return
   document.body.appendChild(audio)
   audioMounted = true
+}
+
+/** Sin esto iOS avanza el reloj sin sonido. */
+function claimPlaybackSession() {
+  try {
+    const nav = navigator as Navigator & { audioSession?: { type: string } }
+    if (nav.audioSession) nav.audioSession.type = 'playback'
+  } catch {
+    /* ignore */
+  }
+}
+
+function unlockAudioRouteInGesture() {
+  claimPlaybackSession()
+  try {
+    const AC =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AC) return
+    const ctx = new AC()
+    void ctx.resume().catch(() => {})
+    const buf = ctx.createBuffer(1, 1, ctx.sampleRate || 22050)
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(ctx.destination)
+    src.start(0)
+    window.setTimeout(() => {
+      try {
+        void ctx.close()
+      } catch {
+        /* ignore */
+      }
+    }, 300)
+  } catch {
+    /* ignore */
+  }
+}
+
+function forceAudible() {
+  audio.muted = false
+  audio.volume = 1
+  try {
+    audio.playbackRate = 1
+  } catch {
+    /* ignore */
+  }
+}
+
+function setPlaybackStateOnly(playing: boolean) {
+  if (!('mediaSession' in navigator)) return
+  try {
+    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+  } catch {
+    /* ignore */
+  }
+}
+
+function prefetchId(trackId: string | null) {
+  if (!trackId) return
+  if (prefetched?.id === trackId) return
+  void getAudioObjectUrl(trackId).then((url) => {
+    if (!url) return
+    if (useLibraryPlayerStore.getState().currentTrackId === trackId) return
+    prefetched = { id: trackId, url }
+  })
+}
+
+function prefetchNextFromState() {
+  const { queue, index, repeat } = useLibraryPlayerStore.getState()
+  if (!queue.length) return
+  let nextIndex = index + 1
+  if (nextIndex >= queue.length) {
+    if (repeat === 'all') nextIndex = 0
+    else return
+  }
+  prefetchId(queue[nextIndex] ?? null)
+}
+
+/** Play remoto (bloqueo): mismo turno del gesto. */
+function playFromRemoteGesture() {
+  ensureAudioMounted()
+  unlockAudioRouteInGesture()
+  forceAudible()
+  const resumeAt = useLibraryPlayerStore.getState().position
+  if (resumeAt > 0.25) {
+    try {
+      if (Math.abs((audio.currentTime || 0) - resumeAt) > 0.4) {
+        audio.currentTime = resumeAt
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+  try {
+    const p = audio.play()
+    void Promise.resolve(p)
+      .then(() => {
+        forceAudible()
+        claimPlaybackSession()
+        const playing = !audio.paused
+        useLibraryPlayerStore.getState().syncFromAudio(playing)
+        setPlaybackStateOnly(playing)
+      })
+      .catch(() => {
+        // Reintento: a veces hace falta reclamar sesión otra vez
+        claimPlaybackSession()
+        forceAudible()
+        void audio.play().then(
+          () => {
+            useLibraryPlayerStore.getState().syncFromAudio(!audio.paused)
+            setPlaybackStateOnly(!audio.paused)
+          },
+          () => {
+            useLibraryPlayerStore.getState().syncFromAudio(false)
+            setPlaybackStateOnly(false)
+          },
+        )
+      })
+  } catch {
+    useLibraryPlayerStore.getState().syncFromAudio(false)
+    setPlaybackStateOnly(false)
+  }
+}
+
+function pauseFromRemote() {
+  audio.pause()
+  useLibraryPlayerStore.getState().syncFromAudio(false)
+  setPlaybackStateOnly(false)
+  persistSoon({ position: audio.currentTime || 0 })
+}
+
+/** Skip en el gesto de Media Session (usa prefetch si está listo). */
+function skipFromRemoteGesture(dir: 1 | -1) {
+  unlockAudioRouteInGesture()
+  forceAudible()
+  claimPlaybackSession()
+
+  const state = useLibraryPlayerStore.getState()
+  const { queue, index, position, repeat } = state
+  if (!queue.length) return
+
+  if (dir < 0 && position > 3) {
+    try {
+      audio.currentTime = 0
+    } catch {
+      /* ignore */
+    }
+    useLibraryPlayerStore.setState({ position: 0 })
+    if (audio.paused) void audio.play().catch(() => {})
+    setPlaybackStateOnly(!audio.paused)
+    return
+  }
+
+  let nextIndex = index + dir
+  if (nextIndex < 0) {
+    nextIndex = repeat === 'all' || repeat === 'one' ? queue.length - 1 : 0
+  } else if (nextIndex >= queue.length) {
+    if (repeat === 'all' || repeat === 'one') nextIndex = 0
+    else return
+  }
+  const nextId = queue[nextIndex]
+  if (!nextId) return
+
+  useLibraryPlayerStore.setState({
+    index: nextIndex,
+    currentTrackId: nextId,
+    position: 0,
+    isPlaying: true,
+  })
+  persistSoon({ index: nextIndex, currentTrackId: nextId, position: 0 })
+
+  const cached = prefetched?.id === nextId ? prefetched.url : null
+  prefetched = null
+
+  if (cached) {
+    loadEpoch += 1
+    const epoch = loadEpoch
+    audio.src = cached
+    try {
+      const p = audio.play()
+      void Promise.resolve(p).then(() => {
+        if (epoch !== loadEpoch) return
+        forceAudible()
+        claimPlaybackSession()
+        useLibraryPlayerStore.getState().syncFromAudio(!audio.paused)
+        setPlaybackStateOnly(!audio.paused)
+      })
+    } catch {
+      void loadTrack(nextId, true)
+      return
+    }
+    void db.tracks.get(nextId).then((track) => {
+      if (track && useLibraryPlayerStore.getState().currentTrackId === nextId) {
+        void publishNowPlaying(track, !audio.paused)
+      }
+    })
+    void getCoverObjectUrl(nextId).then((coverUrl) => {
+      if (coverUrl && useLibraryPlayerStore.getState().currentTrackId === nextId) {
+        useLibraryPlayerStore.setState({ coverUrl })
+      }
+    })
+    void recordPlay(nextId)
+    void persistRecent(nextId)
+    prefetchNextFromState()
+    return
+  }
+
+  void loadTrack(nextId, true)
+}
+
+function bindMediaHandlersOnce() {
+  if (handlersBound || !('mediaSession' in navigator)) return
+  handlersBound = true
+  try {
+    navigator.mediaSession.setActionHandler('play', () => {
+      playFromRemoteGesture()
+    })
+    navigator.mediaSession.setActionHandler('pause', () => {
+      pauseFromRemote()
+    })
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      skipFromRemoteGesture(-1)
+    })
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      skipFromRemoteGesture(1)
+    })
+    // iOS: seekto/± sustituye saltar canción por ±10s
+    try {
+      navigator.mediaSession.setActionHandler('seekto', null)
+      navigator.mediaSession.setActionHandler('seekbackward', null)
+      navigator.mediaSession.setActionHandler('seekforward', null)
+    } catch {
+      /* ignore */
+    }
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Media Session: solo metadata + playbackState (handlers una vez). */
+async function publishNowPlaying(track: Track, playing: boolean) {
+  if (!('mediaSession' in navigator)) return
+  bindMediaHandlersOnce()
+
+  let artwork: MediaImage[] = []
+  try {
+    const url = await getCoverObjectUrl(track.id)
+    if (url) {
+      artwork = [
+        { src: url, sizes: '512x512', type: 'image/jpeg' },
+        { src: url, sizes: '256x256', type: 'image/jpeg' },
+      ]
+    }
+  } catch {
+    /* sin portada */
+  }
+
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist || 'MyVibe',
+      album: track.album || 'MyVibe',
+      artwork,
+    })
+  } catch {
+    /* ignore */
+  }
+
+  setPlaybackStateOnly(playing)
+}
+
+async function stopRivalPlayers() {
+  try {
+    const { usePlayerStore } = await import('./playerStore')
+    usePlayerStore.getState().yieldToLibraryPlayer()
+  } catch {
+    /* ignore */
+  }
+  try {
+    const { audioEngine } = await import('../lib/audioEngine')
+    audioEngine.markIntentionalPause(1500)
+    audioEngine.pause()
+  } catch {
+    /* ignore */
+  }
+}
+
+async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
+  ensureAudioMounted()
+  claimPlaybackSession()
+  const epoch = ++loadEpoch
+  const url = await getAudioObjectUrl(trackId)
+  if (!url || epoch !== loadEpoch) return false
+
+  audio.pause()
+  audio.src = url
+  try {
+    audio.load()
+  } catch {
+    /* ignore */
+  }
+
+  const track = await db.tracks.get(trackId)
+  if (!track || epoch !== loadEpoch) return false
+
+  void getCoverObjectUrl(trackId).then((coverUrl) => {
+    if (useLibraryPlayerStore.getState().currentTrackId === trackId) {
+      useLibraryPlayerStore.setState({ coverUrl })
+    }
+  })
+
+  if (!autoplay) {
+    useLibraryPlayerStore.setState({
+      isPlaying: false,
+      position: audio.currentTime || 0,
+      duration: Number.isFinite(audio.duration) ? audio.duration : track.duration || 0,
+    })
+    await publishNowPlaying(track, false)
+    return true
+  }
+
+  forceAudible()
+  claimPlaybackSession()
+  try {
+    await audio.play()
+  } catch {
+    useLibraryPlayerStore.setState({ isPlaying: false })
+    await publishNowPlaying(track, false)
+    return false
+  }
+
+  if (epoch !== loadEpoch) return false
+
+  forceAudible()
+  claimPlaybackSession()
+  const playing = !audio.paused
+  useLibraryPlayerStore.setState({
+    isPlaying: playing,
+    position: audio.currentTime || 0,
+    duration: Number.isFinite(audio.duration) ? audio.duration : track.duration || 0,
+  })
+  await publishNowPlaying(track, playing)
+  void recordPlay(trackId)
+  void persistRecent(trackId)
+  prefetchNextFromState()
+  return playing
 }
 
 function shuffleArray(items: string[], stayIndex?: number): string[] {
@@ -117,167 +466,6 @@ async function flushPersist() {
   }
 }
 
-/** Media Session mínima — sin setPositionState (iOS lo usa para volver a Play). */
-async function publishNowPlaying(track: Track, playing: boolean) {
-  if (!('mediaSession' in navigator)) return
-
-  let artwork: MediaImage[] = []
-  try {
-    const url = await getCoverObjectUrl(track.id)
-    if (url) {
-      artwork = [
-        { src: url, sizes: '512x512', type: 'image/jpeg' },
-        { src: url, sizes: '256x256', type: 'image/jpeg' },
-      ]
-    }
-  } catch {
-    /* sin portada */
-  }
-
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title,
-      artist: track.artist || 'MyVibe',
-      album: track.album || 'MyVibe',
-      artwork,
-    })
-  } catch {
-    /* ignore */
-  }
-
-  try {
-    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
-  } catch {
-    /* ignore */
-  }
-
-  const store = () => useLibraryPlayerStore.getState()
-
-  try {
-    // play: gesto síncrono → audio.play() en el mismo turno (requisito iOS)
-    navigator.mediaSession.setActionHandler('play', () => {
-      void audio.play().then(
-        () => {
-          store().syncFromAudio(true)
-          try {
-            navigator.mediaSession.playbackState = 'playing'
-          } catch {
-            /* ignore */
-          }
-        },
-        () => {
-          void store().play()
-        },
-      )
-    })
-    navigator.mediaSession.setActionHandler('pause', () => {
-      audio.pause()
-      store().syncFromAudio(false)
-      try {
-        navigator.mediaSession.playbackState = 'paused'
-      } catch {
-        /* ignore */
-      }
-    })
-    navigator.mediaSession.setActionHandler('previoustrack', () => {
-      void store().previous()
-    })
-    navigator.mediaSession.setActionHandler('nexttrack', () => {
-      void store().next()
-    })
-    // En iOS, seekto/seek± hace que salgan ±10s en vez de saltar canción
-    try {
-      navigator.mediaSession.setActionHandler('seekto', null)
-      navigator.mediaSession.setActionHandler('seekbackward', null)
-      navigator.mediaSession.setActionHandler('seekforward', null)
-    } catch {
-      /* ignore */
-    }
-  } catch {
-    /* handlers no soportados */
-  }
-}
-
-function setPlaybackStateOnly(playing: boolean) {
-  if (!('mediaSession' in navigator)) return
-  try {
-    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
-  } catch {
-    /* ignore */
-  }
-}
-
-async function stopRivalPlayers() {
-  try {
-    const { usePlayerStore } = await import('./playerStore')
-    usePlayerStore.getState().yieldToLibraryPlayer()
-  } catch {
-    /* ignore */
-  }
-  try {
-    const { audioEngine } = await import('../lib/audioEngine')
-    audioEngine.markIntentionalPause(1500)
-    audioEngine.pause()
-  } catch {
-    /* ignore */
-  }
-}
-
-async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
-  ensureAudioMounted()
-  const epoch = ++loadEpoch
-  const url = await getAudioObjectUrl(trackId)
-  if (!url || epoch !== loadEpoch) return false
-
-  audio.pause()
-  audio.src = url
-  try {
-    audio.load()
-  } catch {
-    /* ignore */
-  }
-
-  const track = await db.tracks.get(trackId)
-  if (!track || epoch !== loadEpoch) return false
-
-  void getCoverObjectUrl(trackId).then((coverUrl) => {
-    if (useLibraryPlayerStore.getState().currentTrackId === trackId) {
-      useLibraryPlayerStore.setState({ coverUrl })
-    }
-  })
-
-  if (!autoplay) {
-    useLibraryPlayerStore.setState({
-      isPlaying: false,
-      position: audio.currentTime || 0,
-      duration: Number.isFinite(audio.duration) ? audio.duration : track.duration || 0,
-    })
-    await publishNowPlaying(track, false)
-    return true
-  }
-
-  try {
-    await audio.play()
-  } catch {
-    useLibraryPlayerStore.setState({ isPlaying: false })
-    await publishNowPlaying(track, false)
-    return false
-  }
-
-  if (epoch !== loadEpoch) return false
-
-  const playing = !audio.paused
-  useLibraryPlayerStore.setState({
-    isPlaying: playing,
-    position: audio.currentTime || 0,
-    duration: Number.isFinite(audio.duration) ? audio.duration : track.duration || 0,
-  })
-  await publishNowPlaying(track, playing)
-  void recordPlay(trackId)
-  void persistRecent(trackId)
-  return playing
-}
-
 function wireAudioEvents() {
   audio.addEventListener('timeupdate', () => {
     const s = useLibraryPlayerStore.getState()
@@ -286,6 +474,8 @@ function wireAudioEvents() {
     const duration = Number.isFinite(audio.duration) ? audio.duration : s.duration
     useLibraryPlayerStore.setState({ position, duration })
     persistSoon({ position })
+    // Prefetch temprano para que el skip en bloqueo tenga URL lista
+    if (duration > 0 && duration - position < 25) prefetchNextFromState()
   })
   audio.addEventListener('durationchange', () => {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
@@ -295,6 +485,7 @@ function wireAudioEvents() {
   })
   audio.addEventListener('play', () => {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
+    claimPlaybackSession()
     useLibraryPlayerStore.setState({ isPlaying: true })
     setPlaybackStateOnly(true)
   })
@@ -311,6 +502,7 @@ function wireAudioEvents() {
 }
 
 wireAudioEvents()
+bindMediaHandlersOnce()
 
 export const useLibraryPlayerStore = create<
   LibraryPlayerState & {
@@ -462,14 +654,18 @@ export const useLibraryPlayerStore = create<
     if (!currentTrackId) return
     await stopRivalPlayers()
     ensureAudioMounted()
+    claimPlaybackSession()
 
     if (!audio.src) {
       await loadTrack(currentTrackId, true)
       return
     }
 
+    forceAudible()
     try {
       await audio.play()
+      forceAudible()
+      claimPlaybackSession()
       set({ isPlaying: true })
       setPlaybackStateOnly(true)
       const track = await db.tracks.get(currentTrackId)
@@ -480,10 +676,7 @@ export const useLibraryPlayerStore = create<
   },
 
   pause: () => {
-    audio.pause()
-    set({ isPlaying: false, position: audio.currentTime || 0 })
-    setPlaybackStateOnly(false)
-    persistSoon({ position: audio.currentTime || 0 })
+    pauseFromRemote()
   },
 
   onEnded: async () => {
@@ -527,6 +720,7 @@ export const useLibraryPlayerStore = create<
   next: async () => {
     const { queue, index, repeat, currentTrackId } = get()
     if (!queue.length || !currentTrackId) return
+    claimPlaybackSession()
 
     let nextIndex = index + 1
     if (nextIndex >= queue.length) {
@@ -547,6 +741,7 @@ export const useLibraryPlayerStore = create<
       get().seek(0)
       return
     }
+    claimPlaybackSession()
     const prevIndex =
       index <= 0 ? (repeat === 'all' || repeat === 'one' ? queue.length - 1 : 0) : index - 1
     const trackId = queue[prevIndex]
