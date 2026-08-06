@@ -31,7 +31,6 @@ const artworkCache = new Map<string, MediaImage[]>()
 
 /** Última carátula publicada — iOS borra Now Playing si reescribimos artwork: []. */
 let lastPublishedArtwork: MediaImage[] = []
-let lastPublishedMeta: { title: string; artist: string; album: string } | null = null
 export function clearMediaArtworkCache(trackId?: string) {
   if (trackId) artworkCache.delete(trackId)
   else artworkCache.clear()
@@ -312,11 +311,6 @@ function publishMetadata(opts: {
   artwork: MediaImage[]
 }) {
   const artwork = artworkOrLast(opts.artwork)
-  lastPublishedMeta = {
-    title: opts.title,
-    artist: opts.artist,
-    album: opts.album,
-  }
   navigator.mediaSession.metadata = new MediaMetadata({
     title: opts.title,
     artist: opts.artist,
