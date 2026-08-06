@@ -1031,6 +1031,8 @@ async function loadAndMaybePlay(
         pendingBackgroundPlay = true
         beginTrackChangeMediaGuard(8000)
         set({ isPlaying: true })
+        setMediaPlaybackState(true)
+        refreshMediaPlaybackState(true, { strong: true })
         void publishPlayingMediaSession(trackId)
         return true
       }
@@ -1039,6 +1041,9 @@ async function loadAndMaybePlay(
     const playing = !audioEngine.paused
     set({ isPlaying: playing })
     if (playing) {
+      beginTrackChangeMediaGuard(8000)
+      setMediaPlaybackState(true)
+      refreshMediaPlaybackState(true, { strong: true })
       await recordPlay(trackId)
       await persistRecent(trackId)
       prefetchNextForCurrent(usePlayerStore.getState)
