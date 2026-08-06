@@ -262,6 +262,10 @@ async function syncLibraryTrackMediaSession(
 ) {
   const state = usePlayerStore.getState()
   if (!isLibraryTrackState(state) || !state.currentTrackId) return
+  logPlayback('library-session-sync', {
+    isPlaying: playing,
+    detail: `build=${PLAYBACK_DEBUG_BUILD} library-v2 track=${state.currentTrackId}`,
+  })
   await refreshMediaSessionForTrackId(state.currentTrackId, playing)
   if (opts?.reclaim) {
     claimNowPlaying(playing, { reclaim: true })
@@ -367,8 +371,6 @@ function handleRemotePlay() {
         return
       }
       await syncLibraryTrackMediaSession(false, { reclaim: true })
-      keepMediaSessionAlivePaused()
-      startSoftPauseSessionGuard()
     })()
     return
   }
@@ -591,8 +593,6 @@ function handleRemotePause() {
     audioEngine.pause()
     usePlayerStore.setState({ isPlaying: false })
     void syncLibraryTrackMediaSession(false, { reclaim: true })
-    keepMediaSessionAlivePaused()
-    startSoftPauseSessionGuard()
     const snap2 = audioEngine.debugSnapshot()
     logPlayback('remote-pause-done', {
       paused: snap2.paused,

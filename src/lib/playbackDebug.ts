@@ -20,7 +20,7 @@ const KEY = 'myvibe_playback_debug'
 const MAX = 40
 
 /** Debe coincidir con workbox cacheId — confirma que el móvil tiene el build nuevo. */
-export const PLAYBACK_DEBUG_BUILD = 'myvibe-library-rewrite-20260806p'
+export const PLAYBACK_DEBUG_BUILD = 'myvibe-library-v2-20260806q'
 
 export function logPlayback(
   event: string,
