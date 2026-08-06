@@ -1,10 +1,10 @@
 /**
  * Reproductor de biblioteca — reglas estrictas iOS PWA / Media Session:
  * 1) Una sola instancia <audio> (audioEngine.element). Nunca `new Audio()` al cambiar pista.
- * 2) nexttrack + previoustrack SIEMPRE registrados; seekbackward/seekforward NUNCA.
- * 3) En pause: solo audio.pause() + playbackState='paused' (no limpiar metadata/handlers).
- * 4) En next/prev: estado global + audio.play() en la misma pila (URL prefetch).
- * 5) setPositionState solo con números finitos ≥ 0.
+ * 2) nexttrack + previoustrack SIEMPRE; seekbackward/seekforward NUNCA.
+ * 3) playbackState SOLO desde eventos nativos (playing / pause) del <audio>.
+ * 4) Handler play → solo audio.play(); next/prev → src + load() + play() síncrono.
+ * 5) setPositionState SOLO en loadedmetadata / timeupdate.
  */
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
@@ -118,8 +118,13 @@ async function flushPersist() {
   }
 }
 
-function setPlaybackState(playing: boolean) {
+/**
+ * ÚNICO camino para playbackState 'playing'|'paused'.
+ * Solo invocado desde listeners nativos del <audio> (playing / pause).
+ */
+function setPlaybackStateFromElement(playing: boolean) {
   if (!('mediaSession' in navigator)) return
+  if (!useLibraryPlayerStore.getState().currentTrackId) return
   try {
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   } catch {
@@ -127,7 +132,7 @@ function setPlaybackState(playing: boolean) {
   }
 }
 
-/** setPositionState con valores válidos (requisito iOS). */
+/** Solo desde loadedmetadata / timeupdate — nunca desde action handlers. */
 function pushPositionState() {
   if (!('mediaSession' in navigator)) return
   if (!useLibraryPlayerStore.getState().currentTrackId) return
@@ -187,8 +192,8 @@ function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | nu
 }
 
 /**
- * Cambia de pista en el MISMO <audio>: solo src + play().
- * Nunca new Audio().
+ * Misma instancia <audio>: src + load() + play() en la misma pila.
+ * playbackState lo pone el evento nativo `playing` — no aquí.
  */
 function applySrcAndPlay(url: string): void {
   const el = audio()
@@ -199,17 +204,16 @@ function applySrcAndPlay(url: string): void {
   } catch {
     /* ignore */
   }
-  // Misma instancia: cambiar src (sin crear elemento nuevo)
   el.src = url
-  const playPromise = el.play()
-  void Promise.resolve(playPromise).catch(() => {
+  el.load()
+  el.play().catch(() => {
     /* NotAllowedError / AbortError en background */
   })
 }
 
 function commitTrackChange(trackId: string, index: number, url: string) {
   loadEpoch += 1
-  // Estado global YA (misma pila que play())
+  // Estado global YA (misma pila que src/load/play)
   useLibraryPlayerStore.setState({
     currentTrackId: trackId,
     index,
@@ -219,11 +223,10 @@ function commitTrackChange(trackId: string, index: number, url: string) {
   persistSoon({ currentTrackId: trackId, index, position: 0 })
   setLibraryOwnsMediaSession(true)
   ensureLibraryMediaHandlers()
-  setPlaybackState(true)
   applySrcAndPlay(url)
   void db.tracks.get(trackId).then((track) => {
     if (track && useLibraryPlayerStore.getState().currentTrackId === trackId) {
-      void publishMetadata(track, true)
+      void publishMetadata(track)
     }
   })
   void getCoverObjectUrl(trackId).then((coverUrl) => {
@@ -238,55 +241,30 @@ function commitTrackChange(trackId: string, index: number, url: string) {
 
 /**
  * OBLIGATORIO en iOS: nexttrack + previoustrack SIEMPRE definidos,
- * y seekbackward/seekforward NUNCA. Si no, la lock screen muestra ±10s
- * y Play puede caer en Apple Podcasts.
- * Se re-registran en cada publish/pause/play (no "once"): radio/podcast
- * pueden haber pisado los handlers.
+ * seek± NUNCA. No tocar playbackState ni setPositionState aquí.
  */
 function ensureLibraryMediaHandlers() {
   if (!('mediaSession' in navigator)) return
 
   navigator.mediaSession.setActionHandler('play', () => {
-    setLibraryOwnsMediaSession(true)
-    ensureLibraryMediaHandlers()
-    // 1) playbackState YA  2) play() síncrono — sin tocar metadata
-    setPlaybackState(true)
-    const el = audio()
-    el.muted = false
-    el.volume = 1
-    const resumeAt = useLibraryPlayerStore.getState().position
-    if (resumeAt > 0.25) {
-      try {
-        if (Math.abs((el.currentTime || 0) - resumeAt) > 0.5) {
-          el.currentTime = resumeAt
-        }
-      } catch {
+    // Única acción: audio.play(). playbackState lo pone el evento `playing`.
+    audio()
+      .play()
+      .catch(() => {
         /* ignore */
-      }
-    }
-    const playPromise = el.play()
-    void Promise.resolve(playPromise).catch(() => {})
-    useLibraryPlayerStore.getState().syncFromAudio(true)
+      })
   })
 
   navigator.mediaSession.setActionHandler('pause', () => {
-    // Solo pause + playbackState. NO desregistrar handlers ni limpiar metadata.
-    setPlaybackState(false)
+    // Única acción: audio.pause(). playbackState lo pone el evento `pause`.
     audio().pause()
-    useLibraryPlayerStore.getState().syncFromAudio(false)
-    persistSoon({ position: Math.max(0, audio().currentTime || 0) })
-    ensureLibraryMediaHandlers()
   })
 
   navigator.mediaSession.setActionHandler('previoustrack', () => {
     setLibraryOwnsMediaSession(true)
-    setPlaybackState(true)
     const target = resolveSkipTarget(-1)
-    if (!target) {
-      setPlaybackState(useLibraryPlayerStore.getState().isPlaying)
-      return
-    }
-    // Reinicio de la misma pista: estado + play() en la misma pila
+    if (!target) return
+    // Reinicio de la misma pista
     if (
       target.trackId === useLibraryPlayerStore.getState().currentTrackId &&
       target.index === useLibraryPlayerStore.getState().index
@@ -297,72 +275,32 @@ function ensureLibraryMediaHandlers() {
       } catch {
         /* ignore */
       }
-      useLibraryPlayerStore.setState({ position: 0, isPlaying: true })
-      const playPromise = el.play()
-      void Promise.resolve(playPromise).catch(() => {})
+      useLibraryPlayerStore.setState({ position: 0 })
+      el.play().catch(() => {})
       return
     }
     const url = peekAudioObjectUrl(target.trackId)
-    if (url) {
-      commitTrackChange(target.trackId, target.index, url)
+    if (!url) {
+      // Sin URL sincrona: prefetch; no fingir playing
+      prefetchId(target.trackId)
       return
     }
-    // Sin URL en cache: actualizar estado YA; play cuando esté lista
-    useLibraryPlayerStore.setState({
-      currentTrackId: target.trackId,
-      index: target.index,
-      position: 0,
-      isPlaying: true,
-    })
-    void getAudioObjectUrl(target.trackId).then((u) => {
-      if (!u) return
-      if (useLibraryPlayerStore.getState().queue[target.index] !== target.trackId) return
-      setPlaybackState(true)
-      applySrcAndPlay(u)
-      void db.tracks.get(target.trackId).then((track) => {
-        if (track && useLibraryPlayerStore.getState().currentTrackId === target.trackId) {
-          void publishMetadata(track, true)
-        }
-      })
-      prefetchNeighbors()
-    })
+    commitTrackChange(target.trackId, target.index, url)
   })
 
   navigator.mediaSession.setActionHandler('nexttrack', () => {
     setLibraryOwnsMediaSession(true)
-    setPlaybackState(true)
     const target = resolveSkipTarget(1)
-    if (!target) {
-      setPlaybackState(false)
-      return
-    }
+    if (!target) return
     const url = peekAudioObjectUrl(target.trackId)
-    if (url) {
-      // Estado + src + play() en la misma pila del handler
-      commitTrackChange(target.trackId, target.index, url)
+    if (!url) {
+      prefetchId(target.trackId)
       return
     }
-    useLibraryPlayerStore.setState({
-      currentTrackId: target.trackId,
-      index: target.index,
-      position: 0,
-      isPlaying: true,
-    })
-    void getAudioObjectUrl(target.trackId).then((u) => {
-      if (!u) return
-      if (useLibraryPlayerStore.getState().queue[target.index] !== target.trackId) return
-      setPlaybackState(true)
-      applySrcAndPlay(u)
-      void db.tracks.get(target.trackId).then((track) => {
-        if (track && useLibraryPlayerStore.getState().currentTrackId === target.trackId) {
-          void publishMetadata(track, true)
-        }
-      })
-      prefetchNeighbors()
-    })
+    // src + load() + play() síncrono (sin await)
+    commitTrackChange(target.trackId, target.index, url)
   })
 
-  // Eliminar seek± (si podcast los registró, iOS muestra ±10s en vez de saltar pista)
   try {
     navigator.mediaSession.setActionHandler('seekto', null)
     navigator.mediaSession.setActionHandler('seekbackward', null)
@@ -372,10 +310,9 @@ function ensureLibraryMediaHandlers() {
   }
 }
 
-async function publishMetadata(track: Track, playing: boolean) {
+async function publishMetadata(track: Track) {
   if (!('mediaSession' in navigator)) return
   setLibraryOwnsMediaSession(true)
-  // Handlers ANTES de cualquier await (y de nuevo después): next/prev siempre vivos
   ensureLibraryMediaHandlers()
 
   let artwork: MediaImage[] = []
@@ -391,7 +328,6 @@ async function publishMetadata(track: Track, playing: boolean) {
     /* ignore */
   }
 
-  // No borrar metadata si perdimos la pista durante el await
   if (useLibraryPlayerStore.getState().currentTrackId !== track.id) return
 
   try {
@@ -406,8 +342,7 @@ async function publishMetadata(track: Track, playing: boolean) {
   }
 
   ensureLibraryMediaHandlers()
-  setPlaybackState(playing)
-  pushPositionState()
+  // NO playbackState ni setPositionState aquí — solo el <audio> nativo
 }
 
 async function stopRivalPlayers() {
@@ -464,32 +399,31 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
 
   if (!autoplay) {
     el.src = url
+    el.load()
     useLibraryPlayerStore.setState({
       isPlaying: false,
       position: 0,
       duration: Number.isFinite(el.duration) && el.duration > 0 ? el.duration : track.duration || 0,
     })
-    await publishMetadata(track, false)
+    await publishMetadata(track)
     return true
   }
 
-  setPlaybackState(true)
   applySrcAndPlay(url)
 
   if (epoch !== loadEpoch) return false
 
-  const playing = !el.paused
+  // isPlaying / playbackState los pondrá el evento nativo `playing`
   useLibraryPlayerStore.setState({
-    isPlaying: playing,
     position: Math.max(0, el.currentTime || 0),
     duration:
       Number.isFinite(el.duration) && el.duration > 0 ? el.duration : track.duration || 0,
   })
-  await publishMetadata(track, playing)
+  await publishMetadata(track)
   void recordPlay(trackId)
   void persistRecent(trackId)
   prefetchNeighbors()
-  return playing
+  return !el.paused
 }
 
 function onLibraryTimeUpdate() {
@@ -515,19 +449,20 @@ function onLibraryLoadedMetadata() {
   pushPositionState()
 }
 
-function onLibraryPlay() {
+/** ÚNICO origen de playbackState = 'playing'. */
+function onLibraryPlaying() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   useLibraryPlayerStore.setState({ isPlaying: true })
-  setPlaybackState(true)
-  pushPositionState()
+  setPlaybackStateFromElement(true)
 }
 
+/** ÚNICO origen de playbackState = 'paused'. */
 function onLibraryPause() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   if (audio().ended) return
   useLibraryPlayerStore.setState({ isPlaying: false })
-  // Mantener metadata + handlers; solo marcar paused
-  setPlaybackState(false)
+  setPlaybackStateFromElement(false)
+  persistSoon({ position: Math.max(0, audio().currentTime || 0) })
   ensureLibraryMediaHandlers()
 }
 
@@ -542,15 +477,13 @@ function ensureElementWired() {
   if (elementWired) {
     elementWired.removeEventListener('timeupdate', onLibraryTimeUpdate)
     elementWired.removeEventListener('loadedmetadata', onLibraryLoadedMetadata)
-    elementWired.removeEventListener('durationchange', onLibraryLoadedMetadata)
-    elementWired.removeEventListener('play', onLibraryPlay)
+    elementWired.removeEventListener('playing', onLibraryPlaying)
     elementWired.removeEventListener('pause', onLibraryPause)
     elementWired.removeEventListener('ended', onLibraryEnded)
   }
   el.addEventListener('timeupdate', onLibraryTimeUpdate)
   el.addEventListener('loadedmetadata', onLibraryLoadedMetadata)
-  el.addEventListener('durationchange', onLibraryLoadedMetadata)
-  el.addEventListener('play', onLibraryPlay)
+  el.addEventListener('playing', onLibraryPlaying)
   el.addEventListener('pause', onLibraryPause)
   el.addEventListener('ended', onLibraryEnded)
   elementWired = el
@@ -733,27 +666,24 @@ export const useLibraryPlayerStore = create<
       return
     }
 
-    setPlaybackState(true)
     el.muted = false
     el.volume = 1
     try {
       await el.play()
-      set({ isPlaying: true })
-      setPlaybackState(true)
-      pushPositionState()
+      // isPlaying / playbackState: evento nativo `playing`
       const track = await db.tracks.get(currentTrackId)
-      if (track) await publishMetadata(track, true)
+      if (track) await publishMetadata(track)
     } catch {
       await loadTrack(currentTrackId, true)
     }
   },
 
   pause: () => {
-    // audio.pause() + playbackState paused. NO limpiar metadata ni handlers.
-    setPlaybackState(false)
+    // Solo audio.pause(). playbackState lo pone el evento nativo `pause`.
+    // No limpiar metadata ni handlers.
     audio().pause()
     const pos = Math.max(0, audio().currentTime || 0)
-    set({ isPlaying: false, position: pos })
+    set({ position: pos })
     persistSoon({ position: pos })
     ensureLibraryMediaHandlers()
     prefetchNeighbors()
@@ -764,28 +694,24 @@ export const useLibraryPlayerStore = create<
     if (!currentTrackId || !queue.length) return
 
     if (repeat === 'one') {
-      setPlaybackState(true)
       const el = audio()
       try {
         el.currentTime = 0
       } catch {
         /* ignore */
       }
-      const playPromise = el.play()
-      void Promise.resolve(playPromise).catch(() => {})
-      set({ isPlaying: true, position: 0 })
+      set({ position: 0 })
+      el.play().catch(() => {})
       return
     }
 
     const target = resolveSkipTarget(1)
     if (!target) {
-      setPlaybackState(false)
       set({ isPlaying: false, position: 0 })
       return
     }
     const url = peekAudioObjectUrl(target.trackId)
     if (url) {
-      setPlaybackState(true)
       commitTrackChange(target.trackId, target.index, url)
       return
     }
@@ -797,7 +723,6 @@ export const useLibraryPlayerStore = create<
     const target = resolveSkipTarget(1)
     if (!target) return
     ensureElementWired()
-    setPlaybackState(true)
     const url = peekAudioObjectUrl(target.trackId)
     if (url) {
       commitTrackChange(target.trackId, target.index, url)
@@ -817,7 +742,6 @@ export const useLibraryPlayerStore = create<
     const target = resolveSkipTarget(-1)
     if (!target) return
     ensureElementWired()
-    setPlaybackState(true)
     const url = peekAudioObjectUrl(target.trackId)
     if (url) {
       commitTrackChange(target.trackId, target.index, url)
@@ -838,7 +762,7 @@ export const useLibraryPlayerStore = create<
     }
     set({ position: t })
     persistSoon({ position: t })
-    pushPositionState()
+    // setPositionState solo en timeupdate/loadedmetadata
   },
 
   toggleShuffle: () => {
