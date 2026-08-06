@@ -791,11 +791,16 @@ function startInterruptionResumeWatcher() {
     }
     // Durante la llamada play() falla siempre: solo pelear el Now Playing
     if (audioEngine.isSystemInterrupted) {
+      if (isLibraryTrackState(state)) {
+        void syncLibraryTrackMediaSession(true, { reclaim: true })
+        return
+      }
       claimNowPlaying(true, { reclaim: true })
       return
     }
     void state.play().then(() => {
       if (!audioEngine.paused) refreshMediaPlaybackState(true)
+      else if (isLibraryTrackState(state)) void syncLibraryTrackMediaSession(true, { reclaim: true })
       else claimNowPlaying(true, { reclaim: true })
     })
   }, 1200)
@@ -820,6 +825,18 @@ async function burstResumeAfterCall() {
     }
 
     audioEngine.applyPlaybackSession()
+    if (isLibraryTrackState(state)) {
+      await syncLibraryTrackMediaSession(true, { reclaim: true })
+      await state.play()
+      if (!audioEngine.paused) {
+        pendingBackgroundPlay = false
+        stopInterruptionResumeWatcher()
+        refreshMediaPlaybackState(true)
+        return
+      }
+      void syncLibraryTrackMediaSession(true, { reclaim: true })
+      continue
+    }
     await bindMediaSession([])
     claimNowPlaying(true, { reclaim: true })
     await state.play()
@@ -1285,6 +1302,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         set({ isPlaying: true })
         // Mantener metadatos en Now Playing (si se pierden, CarPlay salta a Spotify)
         audioEngine.applyPlaybackSession()
+        if (isLibraryTrackState(get())) {
+          void syncLibraryTrackMediaSession(true, { reclaim: true })
+          startInterruptionResumeWatcher()
+          return
+        }
         void bindMediaSession([]).then(() => {
           // Durante la llamada el audio está pausado, pero hay que seguir
           // reclamando el slot "playing" para no ceder CarPlay a Spotify.
@@ -1303,6 +1325,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         pendingBackgroundPlay = true
         set({ isPlaying: true })
         audioEngine.applyPlaybackSession()
+        if (isLibraryTrackState(get())) {
+          void syncLibraryTrackMediaSession(true, { reclaim: true })
+          void burstResumeAfterCall()
+          startInterruptionResumeWatcher()
+          return
+        }
         void bindMediaSession([]).then(() => claimNowPlaying(true, { reclaim: true }))
         void burstResumeAfterCall()
         startInterruptionResumeWatcher()
@@ -1649,9 +1677,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     audioEngine.pause()
     setMediaPlaybackState(false)
     refreshMediaPlaybackState(false)
+    if (libraryTrack) {
+      void syncLibraryTrackMediaSession(false, { reclaim: true })
+      set({
+        isPlaying: false,
+        ...(currentRadioId && radioPauseStartedAt == null
+          ? { radioPauseStartedAt: performance.now() }
+          : {}),
+      })
+      return
+    }
     keepMediaSessionAlivePaused()
     startSoftPauseSessionGuard()
-    if (libraryTrack) void syncLibraryTrackMediaSession(false, { reclaim: true })
     set({
       isPlaying: false,
       ...(currentRadioId && radioPauseStartedAt == null
