@@ -230,6 +230,8 @@ function   commitChainedTrack(
 async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = false) {
   const track = await db.tracks.get(trackId)
   if (!track || usePlayerStore.getState().currentTrackId !== trackId) return
+  const state = usePlayerStore.getState()
+  const carPlaySimpleLibrary = isLibraryTrackState(state) && isAppleMobile()
   const cover = usePlayerStore.getState().coverUrl
   const wantPlaying = forcePlaying || mediaIsEffectivelyPlaying()
   await updateMediaSession(
@@ -240,11 +242,11 @@ async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = fal
       pause: () => handleRemotePause(),
       previoustrack: () => void usePlayerStore.getState().previous(),
       nexttrack: () => void usePlayerStore.getState().next(),
-      seekto: (time) => usePlayerStore.getState().seek(time),
-      getPosition: () => usePlayerStore.getState().position,
+      seekto: carPlaySimpleLibrary ? undefined : (time) => usePlayerStore.getState().seek(time),
+      getPosition: carPlaySimpleLibrary ? undefined : () => usePlayerStore.getState().position,
       seekSkip: false,
     },
-    { playing: wantPlaying },
+    { playing: wantPlaying, skipArtworkUpgrade: carPlaySimpleLibrary },
   )
   if (wantPlaying) refreshMediaPlaybackState(true, { strong: true })
   else refreshMediaPlaybackState(wantPlaying)

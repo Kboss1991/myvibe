@@ -463,7 +463,7 @@ export async function updateMediaSession(
     getPosition?: () => number
     seekSkip?: boolean
   },
-  opts?: { playing?: boolean },
+  opts?: { playing?: boolean; skipArtworkUpgrade?: boolean },
 ) {
   if (!('mediaSession' in navigator)) return
 
@@ -509,6 +509,10 @@ export async function updateMediaSession(
     stopSoftPauseSessionGuard()
     setMediaPlaybackState(true)
     refreshMediaPlaybackState(true, { strong: true })
+  }
+
+  if (opts?.skipArtworkUpgrade) {
+    return
   }
 
   const artwork = await resolveLockScreenArtwork(track, _coverUrl)
