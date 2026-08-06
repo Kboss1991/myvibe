@@ -678,7 +678,6 @@ export function QueueSheet() {
   const setOpen = usePlayerStore((s) => s.setQueueOpen)
   const queue = usePlayerStore((s) => s.queue)
   const removeFromQueue = usePlayerStore((s) => s.removeFromQueue)
-  const playTracks = usePlayerStore((s) => s.playTracks)
   const tracks = useLibraryStore((s) => s.tracks)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
 
@@ -703,17 +702,13 @@ export function QueueSheet() {
               if (!t) return null
               return (
                 <li key={`${id}-${i}`} className={id === currentTrackId ? 'is-active' : ''}>
-                  <button
-                    type="button"
-                    className="queue-list__main"
-                    onClick={() => void playTracks(queue, id)}
-                  >
+                  <div className="queue-list__main">
                     <CoverArt trackId={t.id} hasCover={t.hasCover} size={40} />
                     <div>
                       <strong>{t.title}</strong>
                       <span>{t.artist}</span>
                     </div>
-                  </button>
+                  </div>
                   <button
                     type="button"
                     className="icon-btn"

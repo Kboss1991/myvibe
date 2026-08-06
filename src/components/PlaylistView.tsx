@@ -13,9 +13,7 @@ import { CoverCropSheet } from './CoverCropSheet'
 import { PlaylistBuilderSheet } from './PlaylistBuilderSheet'
 import { UserAvatar } from './UserAvatar'
 import {
-  IconPlay,
   IconShuffle,
-  IconQueue,
   IconDownload,
   IconShare,
   IconMore,
@@ -90,12 +88,8 @@ export function PlaylistView({
   onShare,
 }: Props) {
   const user = useAuthStore((s) => s.user)
-  const playTracks = usePlayerStore((s) => s.playTracks)
-  const addToQueue = usePlayerStore((s) => s.addToQueue)
   const shuffle = usePlayerStore((s) => s.shuffle)
   const toggleShuffle = usePlayerStore((s) => s.toggleShuffle)
-  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
-  const isPlaying = usePlayerStore((s) => s.isPlaying)
   const [sharing, setSharing] = useState(false)
 
   const [query, setQuery] = useState('')
@@ -188,7 +182,6 @@ export function PlaylistView({
     void onReorderTracks(next)
   }
 
-  const ids = displayTracks.map((t) => t.id)
   const heroCoverId = coverId || coverTrackId || tracks[0]?.id || null
   const heroHasCover = coverId
     ? !!hasCover
@@ -241,19 +234,6 @@ export function PlaylistView({
                   <span className="dot">·</span>
                   <span>{durationLabel}</span>
                 </p>
-                <button
-                  type="button"
-                  className="sp-play"
-                  disabled={!tracks.length}
-                  aria-label="Reproducir"
-                  onClick={() =>
-                    void playTracks(ids, undefined, {
-                      source: { kind: 'liked', title },
-                    })
-                  }
-                >
-                  <IconPlay size={22} />
-                </button>
               </div>
             </div>
           </header>
@@ -298,21 +278,6 @@ export function PlaylistView({
               <p className="sp-hero__type">Lista</p>
               <div className="sp-hero__title-row">
                 <h1 className="sp-hero__title">{title}</h1>
-                <button
-                  type="button"
-                  className="sp-play"
-                  disabled={!tracks.length}
-                  aria-label="Reproducir"
-                  onClick={() =>
-                    void playTracks(ids, undefined, {
-                      source: playlistId
-                        ? { kind: 'playlist', id: playlistId, title }
-                        : null,
-                    })
-                  }
-                >
-                  <IconPlay size={22} />
-                </button>
               </div>
               <p className="sp-hero__stats">
                 <span className="sp-hero__owner">
@@ -447,16 +412,6 @@ export function PlaylistView({
                     <IconShare size={18} /> Compartir
                   </button>
                 )}
-                <button
-                  type="button"
-                  disabled={!tracks.length}
-                  onClick={() => {
-                    tracks.forEach((t) => addToQueue(t.id))
-                    setMoreOpen(false)
-                  }}
-                >
-                  <IconQueue size={18} /> Añadir a la cola
-                </button>
                 {onDelete && (
                   <button
                     type="button"
@@ -506,11 +461,10 @@ export function PlaylistView({
         ) : (
           <ul className="sp-table-body">
             {displayTracks.map((track, i) => {
-              const active = track.id === currentTrackId
               return (
                 <li
                   key={track.id}
-                  className={`sp-row ${active ? 'is-active' : ''} ${dragId === track.id ? 'is-dragging' : ''}`}
+                  className={`sp-row ${dragId === track.id ? 'is-dragging' : ''}`}
                   draggable={editMode && Boolean(onReorderTracks)}
                   onDragStart={() => {
                     if (!onReorderTracks) return
@@ -539,47 +493,11 @@ export function PlaylistView({
                       </span>
                     )
                   ) : (
-                    <button
-                      type="button"
-                      className="sp-row__playnum"
-                      onClick={() =>
-                        void playTracks(
-                          displayTracks.map((t) => t.id),
-                          track.id,
-                          {
-                            source: playlistId
-                              ? { kind: 'playlist', id: playlistId, title }
-                              : likedStyle
-                                ? { kind: 'liked', title }
-                                : null,
-                          },
-                        )
-                      }
-                    >
+                    <span className="sp-row__playnum" aria-hidden>
                       <span className="num">{i + 1}</span>
-                      <span className="play">
-                        <IconPlay size={14} />
-                      </span>
-                    </button>
+                    </span>
                   )}
-                  <button
-                    type="button"
-                    className="sp-row__title"
-                    onClick={() => {
-                      if (editMode) return
-                      void playTracks(
-                        displayTracks.map((t) => t.id),
-                        track.id,
-                        {
-                          source: playlistId
-                            ? { kind: 'playlist', id: playlistId, title }
-                            : likedStyle
-                              ? { kind: 'liked', title }
-                              : null,
-                        },
-                      )
-                    }}
-                  >
+                  <div className="sp-row__title">
                     <CoverArt
                       trackId={track.id}
                       hasCover={track.hasCover}
@@ -587,12 +505,10 @@ export function PlaylistView({
                       size={40}
                     />
                     <span>
-                      <strong className={active && isPlaying ? 'playing' : ''}>
-                        {track.title}
-                      </strong>
+                      <strong>{track.title}</strong>
                       <small>{track.artist}</small>
                     </span>
-                  </button>
+                  </div>
                   <span className="col-album">{track.album}</span>
                   <span className="col-date">{track.year || '—'}</span>
                   <span className="col-time">{formatTime(track.duration)}</span>

@@ -5,7 +5,6 @@ import { TrackList } from '../components/TrackList'
 import { IconSearch } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
 import { useLibraryStore } from '../store/libraryStore'
-import { usePlayerStore } from '../store/playerStore'
 import './pages.css'
 
 export function SearchPage() {
@@ -15,7 +14,6 @@ export function SearchPage() {
   const albums = useLibraryStore((s) => s.albums)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
-  const playTracks = usePlayerStore((s) => s.playTracks)
 
   const query = q.trim().toLowerCase()
   const hasQuery = query.length > 0
@@ -98,17 +96,9 @@ export function SearchPage() {
                     {artistResults.map((a) => {
                       const cover = a.tracks.find((t) => t.hasCover) ?? a.tracks[0]
                       return (
-                        <button
+                        <div
                           key={a.name}
-                          type="button"
-                          className="home-cover-card home-cover-card--artist"
-                          onClick={() =>
-                            void playTracks(
-                              a.tracks
-                                .filter((t) => t.hasLocalAudio !== false)
-                                .map((t) => t.id),
-                            )
-                          }
+                          className="home-cover-card home-cover-card--artist home-cover-card--static"
                         >
                           <span className="home-cover-card__art">
                             <CoverArt
@@ -120,7 +110,7 @@ export function SearchPage() {
                           </span>
                           <strong>{a.name}</strong>
                           <span>Artista · {a.tracks.length}</span>
-                        </button>
+                        </div>
                       )
                     })}
                   </div>
@@ -134,17 +124,9 @@ export function SearchPage() {
                     {albumResults.map((a) => {
                       const cover = a.tracks.find((t) => t.hasCover) ?? a.tracks[0]
                       return (
-                        <button
+                        <div
                           key={`${a.name}-${a.artist}`}
-                          type="button"
-                          className="home-cover-card"
-                          onClick={() =>
-                            void playTracks(
-                              a.tracks
-                                .filter((t) => t.hasLocalAudio !== false)
-                                .map((t) => t.id),
-                            )
-                          }
+                          className="home-cover-card home-cover-card--static"
                         >
                           <span className="home-cover-card__art">
                             <CoverArt
@@ -156,7 +138,7 @@ export function SearchPage() {
                           </span>
                           <strong>{a.name}</strong>
                           <span>{a.artist}</span>
-                        </button>
+                        </div>
                       )
                     })}
                   </div>

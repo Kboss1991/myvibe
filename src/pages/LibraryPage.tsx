@@ -10,7 +10,6 @@ import { CoverArt } from '../components/CoverArt'
 import { PlaylistBuilderSheet } from '../components/PlaylistBuilderSheet'
 import {
   IconPlus,
-  IconPlay,
   IconTrash,
   IconSearch,
   IconSparkles,
@@ -24,7 +23,6 @@ import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { useLibraryStore } from '../store/libraryStore'
-import { usePlayerStore } from '../store/playerStore'
 import './pages.css'
 
 type Tab = 'songs' | 'playlists' | 'artists' | 'albums' | 'genres'
@@ -51,7 +49,6 @@ export function LibraryPage() {
   const artists = useLibraryStore((s) => s.artists)
   const albums = useLibraryStore((s) => s.albums)
   const genres = useLibraryStore((s) => s.genres)
-  const playTracks = usePlayerStore((s) => s.playTracks)
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
   const missingAudio = tracks.filter((t) => t.hasLocalAudio === false)
   const needsAudioUpdate = tracks.filter(
@@ -92,13 +89,6 @@ export function LibraryPage() {
             : genreFilter
               ? genreFilter
               : `${genreGroups.length} género${genreGroups.length === 1 ? '' : 's'}`
-
-  const playQueueIds = useMemo(() => {
-    if (tab === 'genres' && genreFilter) {
-      return sortedGenreTracks.map((t) => t.id)
-    }
-    return sortedSongs.map((t) => t.id)
-  }, [tab, genreFilter, sortedGenreTracks, sortedSongs])
 
   const showSelect =
     (tab === 'songs' && tracks.length > 0) ||
@@ -229,16 +219,6 @@ export function LibraryPage() {
                 <IconUpload size={16} />
               </button>
             )}
-            <button
-              type="button"
-              className="library-meta-play"
-              disabled={!playQueueIds.length}
-              aria-label="Reproducir"
-              title="Reproducir"
-              onClick={() => void playTracks(playQueueIds)}
-            >
-              <IconPlay size={22} />
-            </button>
           </div>
         </div>
 
@@ -390,7 +370,7 @@ export function LibraryPage() {
         <ul className="simple-list">
           {artistList.map((a) => (
             <li key={a.name}>
-              <button type="button" onClick={() => void playTracks(a.tracks.map((t) => t.id))}>
+              <div className="simple-list__item">
                 <CoverArt
                   trackId={a.tracks[0]?.id}
                   hasCover={a.tracks[0]?.hasCover}
@@ -401,8 +381,7 @@ export function LibraryPage() {
                   <strong>{a.name}</strong>
                   <span>{a.tracks.length} canciones</span>
                 </div>
-                <IconPlay size={18} />
-              </button>
+              </div>
             </li>
           ))}
           {artistList.length === 0 && (
@@ -417,7 +396,7 @@ export function LibraryPage() {
         <ul className="simple-list">
           {albumList.map((a) => (
             <li key={`${a.name}-${a.artist}`}>
-              <button type="button" onClick={() => void playTracks(a.tracks.map((t) => t.id))}>
+              <div className="simple-list__item">
                 <CoverArt
                   trackId={a.tracks[0]?.id}
                   hasCover={a.tracks[0]?.hasCover}
@@ -427,8 +406,7 @@ export function LibraryPage() {
                   <strong>{a.name}</strong>
                   <span>{a.artist}</span>
                 </div>
-                <IconPlay size={18} />
-              </button>
+              </div>
             </li>
           ))}
           {albumList.length === 0 && (
@@ -472,14 +450,6 @@ export function LibraryPage() {
                         {g.tracks.length === 1 ? 'canción' : 'canciones'}
                       </span>
                     </div>
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    aria-label={`Reproducir ${g.name}`}
-                    onClick={() => void playTracks(g.tracks.map((t) => t.id))}
-                  >
-                    <IconPlay size={18} />
                   </button>
                 </li>
               ))}

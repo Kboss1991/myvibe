@@ -27,7 +27,6 @@ export function HomePage() {
   const playlists = useLibraryStore((s) => s.playlists)
   const getRecent = useLibraryStore((s) => s.getRecent)
   const getLiked = useLibraryStore((s) => s.getLiked)
-  const playTracks = usePlayerStore((s) => s.playTracks)
   const playPodcastEpisode = usePlayerStore((s) => s.playPodcastEpisode)
   const recent = getRecent()
   const liked = getLiked()
@@ -172,17 +171,7 @@ export function HomePage() {
           </div>
           <div className="h-scroll home-cover-row">
             {recent.slice(0, 12).map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className="home-cover-card"
-                onClick={() =>
-                  void playTracks(
-                    tracks.filter((x) => x.hasLocalAudio !== false).map((x) => x.id),
-                    t.id,
-                  )
-                }
-              >
+              <div key={t.id} className="home-cover-card home-cover-card--static">
                 <span className="home-cover-card__art">
                   <CoverArt
                     trackId={t.id}
@@ -194,7 +183,7 @@ export function HomePage() {
                 </span>
                 <strong>{t.title}</strong>
                 <span>{t.artist}</span>
-              </button>
+              </div>
             ))}
           </div>
         </section>
@@ -236,17 +225,7 @@ export function HomePage() {
           </div>
           <div className="h-scroll home-cover-row">
             {latest.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                className="home-cover-card"
-                onClick={() =>
-                  void playTracks(
-                    tracks.filter((x) => x.hasLocalAudio !== false).map((x) => x.id),
-                    t.id,
-                  )
-                }
-              >
+              <div key={t.id} className="home-cover-card home-cover-card--static">
                 <span className="home-cover-card__art">
                   <CoverArt
                     trackId={t.id}
@@ -258,7 +237,7 @@ export function HomePage() {
                 </span>
                 <strong>{t.title}</strong>
                 <span>{t.artist}</span>
-              </button>
+              </div>
             ))}
           </div>
         </section>

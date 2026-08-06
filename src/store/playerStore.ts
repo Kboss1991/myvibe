@@ -608,24 +608,6 @@ type PlaybackPersistPartial = Partial<{
   playbackSource: PlaybackSource | null
 }>
 
-function normalizePlaybackSource(raw: unknown): PlaybackSource | null {
-  if (!raw || typeof raw !== 'object') return null
-  const s = raw as Record<string, unknown>
-  if (s.kind === 'liked' && typeof s.title === 'string' && s.title.trim()) {
-    return { kind: 'liked', title: s.title.trim() }
-  }
-  if (
-    s.kind === 'playlist' &&
-    typeof s.id === 'string' &&
-    s.id &&
-    typeof s.title === 'string' &&
-    s.title.trim()
-  ) {
-    return { kind: 'playlist', id: s.id, title: s.title.trim() }
-  }
-  return null
-}
-
 let pendingPersist: PlaybackPersistPartial = {}
 
 function persistSoon(partial: PlaybackPersistPartial) {
@@ -896,6 +878,12 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId = null
     }
 
+    // REBUILD: no restaurar cola/pista de biblioteca (reproductor eliminado)
+    queue = []
+    originalQueue = []
+    index = 0
+    currentTrackId = null
+
     set({
       queue,
       originalQueue,
@@ -905,12 +893,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       shuffle: snap.shuffle !== false,
       // Migrar estado antiguo 'one' → 'all'
       repeat: snap.repeat === 'all' || (snap.repeat as string) === 'one' ? 'all' : 'off',
-      position: snap.position,
+      position: 0,
       volume: snap.volume,
-      playbackSource: currentTrackId
-        ? normalizePlaybackSource(snap.playbackSource)
-        : null,
+      playbackSource: null,
       hydrated: true,
+    })
+    persistSoon({
+      queue: [],
+      originalQueue: [],
+      index: 0,
+      currentTrackId: null,
+      position: 0,
+      playbackSource: null,
     })
     bindPersistLifecycle()
 
@@ -1226,57 +1220,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 
-  playTracks: async (trackIds, startId, options) => {
-    if (!trackIds.length) return
-    audioEngine.clearStandby()
-    prefetchedNextId = null
-    const forceShuffle = options?.shuffle
-    const source =
-      options && 'source' in options ? (options.source ?? null) : null
-    const shuffleOn =
-      forceShuffle === true
-        ? true
-        : forceShuffle === false
-          ? false
-          : get().shuffle !== false
-    let queue = [...trackIds]
-    let index = startId ? Math.max(0, queue.indexOf(startId)) : 0
-    if (index < 0) index = 0
-    const originalQueue = [...queue]
-    if (shuffleOn) {
-      // Play general (sin canción concreta): mezcla TODO, incluida la primera.
-      // Si el usuario eligió una pista, esa queda la primera.
-      const stay = startId ? index : undefined
-      queue = shuffleArray(queue, stay)
-      index = 0
-    }
-    set({
-      queue,
-      originalQueue,
-      index,
-      currentTrackId: queue[index] ?? null,
-      shuffle: shuffleOn,
-      playbackSource: source,
-    })
-    persistSoon({
-      queue,
-      originalQueue,
-      index,
-      currentTrackId: queue[index] ?? null,
-      shuffle: shuffleOn,
-      position: 0,
-      playbackSource: source,
-    })
-    for (let i = index; i < queue.length; i++) {
-      const trackId = queue[i]!
-      set({ index: i, currentTrackId: trackId })
-      if (await loadAndMaybePlay(trackId, 0, true, set)) return
-    }
-    for (let i = 0; i < index; i++) {
-      const trackId = queue[i]!
-      set({ index: i, currentTrackId: trackId })
-      if (await loadAndMaybePlay(trackId, 0, true, set)) return
-    }
+  playTracks: async (_trackIds, _startId, _options) => {
+    // REBUILD: reproducción de biblioteca desactivada a propósito.
+    // Restaurar desde archive/full-library-player cuando se rehaga el motor.
+    console.info('[rebuild] playTracks desactivado — biblioteca sin reproductor')
+  },
+
+  addToQueue: (_trackId) => {
+    console.info('[rebuild] addToQueue desactivado')
+  },
+
+  playNext: (_trackId) => {
+    console.info('[rebuild] playNext desactivado')
   },
 
   toggle: async () => {
@@ -1715,22 +1670,6 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const next: RepeatMode = get().repeat === 'off' ? 'all' : 'off'
     set({ repeat: next })
     persistSoon({ repeat: next })
-  },
-
-  addToQueue: (trackId) => {
-    const queue = [...get().queue, trackId]
-    const originalQueue = get().shuffle ? get().originalQueue : queue
-    set({ queue, originalQueue })
-    persistSoon({ queue, originalQueue })
-  },
-
-  playNext: (trackId) => {
-    const { queue, index } = get()
-    const next = [...queue]
-    next.splice(index + 1, 0, trackId)
-    const originalQueue = get().shuffle ? get().originalQueue : next
-    set({ queue: next, originalQueue })
-    persistSoon({ queue: next, originalQueue })
   },
 
   removeFromQueue: (queueIndex) => {

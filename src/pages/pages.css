@@ -417,7 +417,8 @@
 }
 
 .playlist-list li,
-.simple-list li button {
+.simple-list li button,
+.simple-list li .simple-list__item {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -456,7 +457,8 @@
   color: var(--text-muted);
 }
 
-.simple-list li button > :last-child {
+.simple-list li button > :last-child,
+.simple-list li .simple-list__item > :last-child {
   margin-left: auto;
   color: var(--text-muted);
 }
@@ -980,6 +982,11 @@
 
 .home-cover-card--artist .home-cover-card__art {
   border-radius: 50%;
+}
+
+.home-cover-card--static {
+  cursor: default;
+  pointer-events: none;
 }
 
 /* Buscador: solo el campo hasta que escribes */
