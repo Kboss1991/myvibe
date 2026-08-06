@@ -157,16 +157,14 @@ async function publishPlayingMediaSession(trackId: string) {
     }
   }
 
-  // Portada lista ANTES del único write de metadata (si no, CarPlay muestra el logo)
-  try {
-    const coverUrl = await getCoverObjectUrl(trackId)
+  // No bloquear el primer publish por la portada: updateMediaSession ya sabe
+  // arrancar con artwork en caché y luego mejorarla si llega.
+  void getCoverObjectUrl(trackId).then((coverUrl) => {
     if (token !== sessionPublishToken) return
     if (coverUrl && usePlayerStore.getState().currentTrackId === trackId) {
       usePlayerStore.setState({ coverUrl })
     }
-  } catch {
-    /* ignore */
-  }
+  })
 
   if (token !== sessionPublishToken) return
   if (usePlayerStore.getState().currentTrackId !== trackId) return
