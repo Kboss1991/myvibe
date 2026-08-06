@@ -1724,28 +1724,6 @@ class AudioEngine {
       })
   }
 
-  /** Cede el bus de audio a otro reproductor (biblioteca propia, etc.). */
-  yieldPlaybackRoute() {
-    this.markIntentionalPause(2000)
-    this.suspendedForUi = false
-    try {
-      this.audio.pause()
-    } catch {
-      /* ignore */
-    }
-    try {
-      void this.ctx?.suspend()
-    } catch {
-      /* ignore */
-    }
-    try {
-      void this.meterCtx?.suspend()
-    } catch {
-      /* ignore */
-    }
-    this.emit()
-  }
-
   pause() {
     this.scrubOrphanKeepAlives()
     this.suspendedForUi = false
