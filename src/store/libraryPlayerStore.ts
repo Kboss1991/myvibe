@@ -185,9 +185,14 @@ async function publishNowPlaying(track: Track, playing: boolean) {
     navigator.mediaSession.setActionHandler('nexttrack', () => {
       void store().next()
     })
-    navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (typeof details.seekTime === 'number') store().seek(details.seekTime)
-    })
+    // En iOS, seekto/seek± hace que salgan ±10s en vez de saltar canción
+    try {
+      navigator.mediaSession.setActionHandler('seekto', null)
+      navigator.mediaSession.setActionHandler('seekbackward', null)
+      navigator.mediaSession.setActionHandler('seekforward', null)
+    } catch {
+      /* ignore */
+    }
   } catch {
     /* handlers no soportados */
   }
