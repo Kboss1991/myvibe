@@ -229,7 +229,7 @@ function prefetchNextForCurrent(
   })
 }
 
-function commitChainedTrack(
+function   commitChainedTrack(
   set: (partial: Partial<PlayerState>) => void,
   get: () => PlayerState,
   trackId: string,
@@ -246,6 +246,8 @@ function commitChainedTrack(
   persistSoon({ index: nextIndex, currentTrackId: trackId, position: 0 })
   pendingBackgroundPlay = true
   beginTrackChangeMediaGuard(8000)
+  setMediaPlaybackState(true)
+  refreshMediaPlaybackState(true, { strong: true })
   // NO publicar MediaSession aquí: el <audio> aún está en pause tras el cambio de src.
   // Esperar a que suene → una sola escritura de metadata.
   void publishPlayingMediaSession(trackId)
@@ -343,9 +345,21 @@ function handleRemotePlay() {
   stopSoftPauseSessionGuard()
 
   if (!audioEngine.paused && !audioEngine.isSuspendedForUi) {
+    let msState = 'unknown'
+    try {
+      msState = navigator.mediaSession.playbackState
+    } catch {
+      /* ignore */
+    }
+    logPlayback('remote-play-sync', {
+      isPlaying: state.isPlaying,
+      detail: `ms=${msState} elPaused=false`,
+    })
     pendingBackgroundPlay = false
+    holdMediaPlaying(8000)
     usePlayerStore.setState({ isPlaying: true })
-    refreshMediaPlaybackState(true, { strong: true })
+    setMediaPlaybackState(true)
+    reaffirmMediaSession({ playing: true })
     return
   }
 
@@ -460,8 +474,7 @@ function handleRemotePlay() {
         const dead =
           !probe.advancing ||
           probe.sounds === 'no' ||
-          probe.reason === 'stalled' ||
-          (probe.reason === 'silent-signal' && probe.peak < 0.005)
+          probe.reason === 'stalled'
 
         if (dead) {
           preferReloadRemotePlayUntil = Date.now() + 60000
@@ -539,8 +552,6 @@ function handleRemotePause() {
   // Mantener ficha Now Playing (sin soft-audio)
   keepMediaSessionAlivePaused()
   startSoftPauseSessionGuard()
-  setMediaPlaybackState(false)
-  refreshMediaPlaybackState(false)
 
   const snap2 = audioEngine.debugSnapshot()
   logPlayback('remote-pause-done', {
