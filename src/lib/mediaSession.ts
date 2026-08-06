@@ -55,6 +55,20 @@ export function clearMediaArtworkCache(trackId?: string) {
   else artworkCache.clear()
 }
 
+/** Carátula ya convertida (evita await antes del primer write en skip/CarPlay). */
+export function peekCachedLockScreenArtwork(trackId: string): MediaImage[] {
+  const cached = artworkCache.get(trackId)
+  if (cached?.length) return cached
+  return lastPublishedArtwork
+}
+
+/** Evita ghost-play justo después de un play real del usuario. */
+let lastMediaPlayGestureAt = 0
+
+export function markMediaPlayGesture() {
+  lastMediaPlayGestureAt = Date.now()
+}
+
 async function resizeCoverToJpeg(blob: Blob, size: number, quality: number): Promise<string> {
   let bitmap: ImageBitmap | null = null
   try {
@@ -254,6 +268,7 @@ function bindMediaHandlers(handlers: {
   softPauseHandlers = handlers
   // play/pause: invocar en el mismo turno del gesto de Media Session
   navigator.mediaSession.setActionHandler('play', () => {
+    markMediaPlayGesture()
     logPlayback('ms-play-fired')
     handlers.play()
   })
@@ -382,7 +397,12 @@ export function startSoftPauseSessionGuard() {
       }
 
       // iOS cambió el icono a Play sin llamar a nuestro handler
-      if (msPlaying && !weThinkPlaying && ghostPlayHandler) {
+      if (
+        msPlaying &&
+        !weThinkPlaying &&
+        ghostPlayHandler &&
+        Date.now() - lastMediaPlayGestureAt > 900
+      ) {
         logPlayback('ghost-play-detected', {
           detail: 'mediaSession=playing sin handler',
         })
@@ -449,16 +469,28 @@ export async function updateMediaSession(
   bindMediaHandlers(handlers)
 
   const playingHint = opts?.playing
+  const cachedArt = peekCachedLockScreenArtwork(track.id)
+
+  publishMetadata({
+    title: track.title,
+    artist: track.artist,
+    album: track.album,
+    artwork: cachedArt,
+  })
+  if (playingHint === true) {
+    stopSoftPauseSessionGuard()
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+  }
+
   const artwork = await resolveLockScreenArtwork(track, _coverUrl)
 
-  // Nunca artwork: [] — limpia la ficha en iOS ("Sin contenido")
   publishMetadata({
     title: track.title,
     artist: track.artist,
     album: track.album,
     artwork,
   })
-  // Re-bind tras metadata (algunos iOS sueltan handlers al reescribir)
   bindMediaHandlers(handlers)
 
   if (playingHint === true) {

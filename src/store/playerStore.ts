@@ -114,6 +114,12 @@ function holdMediaPlaying(ms = 4500) {
   mediaPlayingHoldUntil = Math.max(mediaPlayingHoldUntil, Date.now() + ms)
 }
 
+/** Player.tsx: no pisar metadata mientras publicamos tras skip/CarPlay. */
+export function shouldDeferAuxiliaryMediaSessionBind(): boolean {
+  const now = Date.now()
+  return now < trackAdvanceLockUntil || now < mediaPlayingHoldUntil
+}
+
 function clearMediaPlayingHold() {
   mediaPlayingHoldUntil = 0
 }
@@ -130,6 +136,7 @@ function beginTrackChangeMediaGuard(ms = 6000) {
 async function publishPlayingMediaSession(trackId: string) {
   const token = ++sessionPublishToken
   beginTrackChangeMediaGuard(8000)
+  setMediaPlaybackState(true)
   for (let i = 0; i < 40; i++) {
     if (token !== sessionPublishToken) return
     if (usePlayerStore.getState().currentTrackId !== trackId) return
@@ -296,7 +303,10 @@ function mediaIsEffectivelyPlaying() {
  * El log del usuario: 1º ok-fresh, 2º FAIL cur=false fresh=false → AbortError mutuo.
  * Una sola estrategia por gesto.
  */
-function settlePlayPromise(p: Promise<boolean>, ms = 900): Promise<boolean> {
+/** Evita dos handleRemotePlay en el mismo gesto (ghost + ms-play). */
+let remotePlayCoalesceUntil = 0
+
+function settlePlayPromise(p: Promise<boolean>, ms = 2000): Promise<boolean> {
   return new Promise((resolve) => {
     let done = false
     const finish = (v: boolean) => {
@@ -311,10 +321,17 @@ function settlePlayPromise(p: Promise<boolean>, ms = 900): Promise<boolean> {
   })
 }
 
-/** Si el in-place falló / quedó stall, el siguiente play remoto prueba fresh. */
-let preferFreshRemotePlayUntil = 0
+/** Tras fallo de resume, forzar reload src en el siguiente play remoto. */
+let preferReloadRemotePlayUntil = 0
 
 function handleRemotePlay() {
+  const now = Date.now()
+  if (now < remotePlayCoalesceUntil) {
+    logPlayback('remote-play-skipped', { detail: 'coalesce' })
+    return
+  }
+  remotePlayCoalesceUntil = now + 500
+
   const state = usePlayerStore.getState()
   if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
     logPlayback('remote-play-empty')
@@ -324,6 +341,13 @@ function handleRemotePlay() {
   stopInterruptionResumeWatcher()
   clearMediaPlaybackRefresh()
   stopSoftPauseSessionGuard()
+
+  if (!audioEngine.paused && !audioEngine.isSuspendedForUi) {
+    pendingBackgroundPlay = false
+    usePlayerStore.setState({ isPlaying: true })
+    refreshMediaPlaybackState(true, { strong: true })
+    return
+  }
 
   const snap0 = audioEngine.debugSnapshot()
   const isPodcast = Boolean(state.currentPodcastEpisodeId)
@@ -337,21 +361,19 @@ function handleRemotePlay() {
         ? audioEngine.currentTime
         : 0
 
-  // URL para elemento fresco (obligatorio tras pause real en iOS)
-  const freshUrl =
+  const mediaUrl =
     (isPodcast && ep?.audioUrl) ||
     (!isPodcast && !state.currentRadioId
       ? peekAudioObjectUrl(state.currentTrackId || '') || audioEngine.mediaUrl
       : null) ||
     null
 
-  const forceFresh = Date.now() < preferFreshRemotePlayUntil
-  // Logs: tras pause, inplace → ok pero advancing=false dt=0. El <audio>
-  // pausado en background queda muerto; hay que crear uno nuevo en el gesto.
-  const useFresh = Boolean(
-    freshUrl && !state.currentRadioId && (elementPaused || forceFresh),
-  )
-  const strategy = useFresh ? 'fresh' : 'inplace'
+  const wantReload =
+    Boolean(mediaUrl) &&
+    !state.currentRadioId &&
+    (elementPaused || Date.now() < preferReloadRemotePlayUntil)
+
+  const strategy: 'inplace' | 'reload' = wantReload && mediaUrl ? 'reload' : 'inplace'
 
   logPlayback('remote-play', {
     paused: snap0.paused,
@@ -365,14 +387,14 @@ function handleRemotePlay() {
 
   audioEngine.forceAudibleOutput()
 
-  // UNA sola llamada play() en este gesto (no dual current+fresh)
-  const kicked = useFresh
-    ? audioEngine.playFreshFromGesture(freshUrl!, resumeAt, {
-        skipCors: isPodcast,
-      })
-    : audioEngine.isSuspendedForUi
-      ? audioEngine.resumeFromUiGesture()
-      : audioEngine.playFromUserGesture()
+  let kicked: Promise<boolean>
+  if (strategy === 'reload' && mediaUrl) {
+    kicked = audioEngine.reloadInPlaceFromGesture(mediaUrl, resumeAt)
+  } else if (audioEngine.isSuspendedForUi) {
+    kicked = audioEngine.resumeFromUiGesture()
+  } else {
+    kicked = audioEngine.playFromUserGesture()
+  }
 
   try {
     requestAnimationFrame(() => {
@@ -392,7 +414,7 @@ function handleRemotePlay() {
   }
 
   void (async () => {
-    const ok = await settlePlayPromise(kicked, 900)
+    const ok = await settlePlayPromise(kicked, 2000)
     audioEngine.forceAudibleOutput()
     audioEngine.applyPlaybackSession()
     let playing = ok && !audioEngine.paused
@@ -402,9 +424,9 @@ function handleRemotePlay() {
     }
 
     if (!playing) {
-      preferFreshRemotePlayUntil = Date.now() + 15000
-    } else if (strategy === 'fresh') {
-      preferFreshRemotePlayUntil = 0
+      preferReloadRemotePlayUntil = Date.now() + 60000
+    } else {
+      preferReloadRemotePlayUntil = 0
     }
 
     logPlayback('remote-play-result', {
@@ -439,10 +461,10 @@ function handleRemotePlay() {
           !probe.advancing ||
           probe.sounds === 'no' ||
           probe.reason === 'stalled' ||
-          probe.reason === 'silent-signal'
+          (probe.reason === 'silent-signal' && probe.peak < 0.005)
 
         if (dead) {
-          preferFreshRemotePlayUntil = Date.now() + 20000
+          preferReloadRemotePlayUntil = Date.now() + 60000
           logPlayback('remote-play-stalled', {
             paused: s.paused,
             podcast: isPodcast,
@@ -475,7 +497,6 @@ function handleRemotePlay() {
     stopSoftPauseSessionGuard()
     reaffirmMediaSession({ playing: true })
     refreshMediaPlaybackState(true, { strong: true })
-    void bindMediaSession([])
   })()
 }
 
@@ -489,8 +510,7 @@ function handleRemotePause() {
   clearMediaPlayingHold()
   clearMediaPlaybackRefresh()
   stopSoftPauseSessionGuard()
-  // Tras pause real, el próximo play remoto DEBE usar <audio> fresco
-  preferFreshRemotePlayUntil = Date.now() + 120000
+  preferReloadRemotePlayUntil = Date.now() + 120000
 
   const state = usePlayerStore.getState()
   const snap = audioEngine.debugSnapshot()
@@ -2073,5 +2093,5 @@ export async function bindMediaSession(tracks: Track[]) {
     seekSkip: false,
   })
   // Tras MediaMetadata, iOS resetea el botón — reafirmar play/pause real
-  refreshMediaPlaybackState()
+  refreshMediaPlaybackState(mediaIsEffectivelyPlaying())
 }

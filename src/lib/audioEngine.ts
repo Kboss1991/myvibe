@@ -1440,6 +1440,75 @@ class AudioEngine {
   }
 
   /**
+   * Mismo <audio>, nuevo src + play() en el gesto (CarPlay tras pause real).
+   * iOS no arranca un HTMLAudioElement nuevo en background; sí puede recargar el actual.
+   */
+  reloadInPlaceFromGesture(url: string, resumeAt = 0): Promise<boolean> {
+    this.scrubOrphanKeepAlives()
+    this.suspendedForUi = false
+    this.mountIntoDom()
+    this.unlockAudioRouteInGesture()
+    this.applyPlaybackSession()
+    this.forceAudibleOutput()
+    this.lastPlayError = null
+    this.lastMediaUrl = url
+    this.markIntentionalPause(1200)
+    this.audio.muted = false
+    if (this.gainNode) {
+      this.gainNode.gain.value = this.volumeValue
+      this.audio.volume = 1
+    } else {
+      this.audio.volume = this.volumeValue
+    }
+    try {
+      this.audio.playbackRate = 1
+    } catch {
+      /* ignore */
+    }
+    try {
+      this.audio.src = url
+    } catch (err) {
+      this.lastPlayError = err instanceof Error ? err.message : 'reload-src'
+      return Promise.resolve(false)
+    }
+    if (resumeAt > 0.25) {
+      const seek = () => {
+        try {
+          this.audio.currentTime = resumeAt
+        } catch {
+          /* ignore */
+        }
+      }
+      if (this.audio.readyState >= 1) seek()
+      else this.audio.addEventListener('loadedmetadata', seek, { once: true })
+    }
+    void this.resumeContext()
+    try {
+      const p = this.audio.play()
+      return Promise.resolve(p)
+        .then(() => {
+          this.forceAudibleOutput()
+          this.emit()
+          if (this.audio.paused) {
+            this.lastPlayError = 'reload-still-paused'
+            return false
+          }
+          return true
+        })
+        .catch((err) => {
+          this.lastPlayError =
+            err instanceof DOMException ? err.name : err instanceof Error ? err.message : 'reload-failed'
+          this.emit()
+          return false
+        })
+    } catch (err) {
+      this.lastPlayError = err instanceof Error ? err.message : 'reload-throw'
+      this.emit()
+      return Promise.resolve(false)
+    }
+  }
+
+  /**
    * Pause de bloqueo/AirPods: NO llama audio.pause().
    * En PWA iOS, tras pause real Now Playing cae a "Sin contenido" y el play
    * de bloqueo no reanuda. Mantener el <audio> sonando (rate 1) muteado y
