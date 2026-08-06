@@ -1,10 +1,14 @@
 /**
  * Reproductor de biblioteca NUEVO (desde cero).
- * No usa playerStore, ni loadAndMaybePlay, ni el laberinto CarPlay/Media Session anterior.
- * Audio propio + Media Session mínima (metadata + play/pause/next/prev + playbackState).
+ * Audio propio + Media Session mínima.
+ *
+ * iOS PWA: un `audio.pause()` real en bloqueo hace que el Play posterior
+ * “avance el reloj” sin sonido. En Apple usamos soft-pause (mute + congelar
+ * posición) y reclamamos `navigator.audioSession.type = 'playback'`.
  */
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
+import { isAppleMobile } from '../lib/folderImport'
 import { getAudioObjectUrl, getCoverObjectUrl, recordPlay } from '../lib/library'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
@@ -59,6 +63,10 @@ audio.style.cssText =
 
 let audioMounted = false
 let loadEpoch = 0
+let handlersBound = false
+/** Soft-pause iOS: el elemento sigue “playing” muteado; la UI cree que está en pause. */
+let softPaused = false
+let softFreezeAt = 0
 let persistTimer: number | null = null
 let pendingPersist: Partial<{
   queue: string[]
@@ -75,6 +83,158 @@ function ensureAudioMounted() {
   if (audioMounted || typeof document === 'undefined') return
   document.body.appendChild(audio)
   audioMounted = true
+}
+
+function claimPlaybackSession() {
+  try {
+    const nav = navigator as Navigator & { audioSession?: { type: string } }
+    if (nav.audioSession) nav.audioSession.type = 'playback'
+  } catch {
+    /* API no disponible */
+  }
+}
+
+/** Despierta la ruta de audio en el mismo gesto (Media Session). */
+function unlockAudioRouteInGesture() {
+  claimPlaybackSession()
+  try {
+    const AC =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
+    if (!AC) return
+    const ctx = new AC()
+    void ctx.resume().catch(() => {})
+    const buf = ctx.createBuffer(1, 1, ctx.sampleRate || 22050)
+    const src = ctx.createBufferSource()
+    src.buffer = buf
+    src.connect(ctx.destination)
+    src.start(0)
+    window.setTimeout(() => {
+      try {
+        void ctx.close()
+      } catch {
+        /* ignore */
+      }
+    }, 300)
+  } catch {
+    /* ignore */
+  }
+}
+
+function forceAudible() {
+  audio.muted = false
+  audio.volume = 1
+  try {
+    audio.playbackRate = 1
+  } catch {
+    /* ignore */
+  }
+}
+
+function setPlaybackStateOnly(playing: boolean) {
+  if (!('mediaSession' in navigator)) return
+  try {
+    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearSoftPause() {
+  softPaused = false
+  softFreezeAt = 0
+  forceAudible()
+}
+
+/** Pause que no rompe el resume de bloqueo en iOS PWA. */
+function enterSoftPause() {
+  softFreezeAt = Number.isFinite(audio.currentTime) ? audio.currentTime : softFreezeAt
+  softPaused = true
+  audio.muted = true
+  // Mantener el elemento en play (si se pausa de verdad, iOS no reanuda con sonido)
+  if (audio.paused) {
+    claimPlaybackSession()
+    void audio.play().catch(() => {})
+  }
+  useLibraryPlayerStore.setState({
+    isPlaying: false,
+    position: softFreezeAt,
+  })
+  setPlaybackStateOnly(false)
+  persistSoon({ position: softFreezeAt })
+}
+
+function exitSoftPauseInGesture() {
+  const freeze = softFreezeAt
+  clearSoftPause()
+  unlockAudioRouteInGesture()
+  forceAudible()
+  if (freeze > 0.25) {
+    try {
+      audio.currentTime = freeze
+    } catch {
+      /* ignore */
+    }
+  }
+  if (audio.paused) {
+    void audio.play().catch(() => {})
+  }
+  useLibraryPlayerStore.setState({
+    isPlaying: !audio.paused,
+    position: Number.isFinite(audio.currentTime) ? audio.currentTime : freeze,
+  })
+  setPlaybackStateOnly(!audio.paused)
+}
+
+function playFromRemoteGesture() {
+  ensureAudioMounted()
+  if (softPaused) {
+    exitSoftPauseInGesture()
+    return
+  }
+  unlockAudioRouteInGesture()
+  forceAudible()
+  const resumeAt = useLibraryPlayerStore.getState().position
+  if (resumeAt > 0.25) {
+    try {
+      audio.currentTime = resumeAt
+    } catch {
+      /* ignore */
+    }
+  }
+  // play() síncrono en el turno del gesto — sin await antes
+  try {
+    const p = audio.play()
+    void Promise.resolve(p)
+      .then(() => {
+        forceAudible()
+        claimPlaybackSession()
+        const playing = !audio.paused
+        useLibraryPlayerStore.getState().syncFromAudio(playing)
+        setPlaybackStateOnly(playing)
+      })
+      .catch(() => {
+        useLibraryPlayerStore.getState().syncFromAudio(false)
+        setPlaybackStateOnly(false)
+      })
+  } catch {
+    useLibraryPlayerStore.getState().syncFromAudio(false)
+    setPlaybackStateOnly(false)
+  }
+}
+
+function pauseFromRemoteOrUi() {
+  if (isAppleMobile()) {
+    enterSoftPause()
+    return
+  }
+  audio.pause()
+  useLibraryPlayerStore.setState({
+    isPlaying: false,
+    position: audio.currentTime || 0,
+  })
+  setPlaybackStateOnly(false)
+  persistSoon({ position: audio.currentTime || 0 })
 }
 
 function shuffleArray(items: string[], stayIndex?: number): string[] {
@@ -117,9 +277,35 @@ async function flushPersist() {
   }
 }
 
-/** Media Session mínima — sin setPositionState (iOS lo usa para volver a Play). */
+function bindMediaHandlersOnce() {
+  if (handlersBound || !('mediaSession' in navigator)) return
+  handlersBound = true
+  const store = () => useLibraryPlayerStore.getState()
+  try {
+    navigator.mediaSession.setActionHandler('play', () => {
+      playFromRemoteGesture()
+    })
+    navigator.mediaSession.setActionHandler('pause', () => {
+      pauseFromRemoteOrUi()
+    })
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      void store().previous()
+    })
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      void store().next()
+    })
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+      if (typeof details.seekTime === 'number') store().seek(details.seekTime)
+    })
+  } catch {
+    /* handlers no soportados */
+  }
+}
+
+/** Media Session: metadata + playbackState. Handlers se bindean una sola vez. */
 async function publishNowPlaying(track: Track, playing: boolean) {
   if (!('mediaSession' in navigator)) return
+  bindMediaHandlersOnce()
 
   let artwork: MediaImage[] = []
   try {
@@ -145,61 +331,7 @@ async function publishNowPlaying(track: Track, playing: boolean) {
     /* ignore */
   }
 
-  try {
-    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
-  } catch {
-    /* ignore */
-  }
-
-  const store = () => useLibraryPlayerStore.getState()
-
-  try {
-    // play: gesto síncrono → audio.play() en el mismo turno (requisito iOS)
-    navigator.mediaSession.setActionHandler('play', () => {
-      void audio.play().then(
-        () => {
-          store().syncFromAudio(true)
-          try {
-            navigator.mediaSession.playbackState = 'playing'
-          } catch {
-            /* ignore */
-          }
-        },
-        () => {
-          void store().play()
-        },
-      )
-    })
-    navigator.mediaSession.setActionHandler('pause', () => {
-      audio.pause()
-      store().syncFromAudio(false)
-      try {
-        navigator.mediaSession.playbackState = 'paused'
-      } catch {
-        /* ignore */
-      }
-    })
-    navigator.mediaSession.setActionHandler('previoustrack', () => {
-      void store().previous()
-    })
-    navigator.mediaSession.setActionHandler('nexttrack', () => {
-      void store().next()
-    })
-    navigator.mediaSession.setActionHandler('seekto', (details) => {
-      if (typeof details.seekTime === 'number') store().seek(details.seekTime)
-    })
-  } catch {
-    /* handlers no soportados */
-  }
-}
-
-function setPlaybackStateOnly(playing: boolean) {
-  if (!('mediaSession' in navigator)) return
-  try {
-    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
-  } catch {
-    /* ignore */
-  }
+  setPlaybackStateOnly(playing)
 }
 
 async function stopRivalPlayers() {
@@ -211,8 +343,7 @@ async function stopRivalPlayers() {
   }
   try {
     const { audioEngine } = await import('../lib/audioEngine')
-    audioEngine.markIntentionalPause(1500)
-    audioEngine.pause()
+    audioEngine.yieldPlaybackRoute()
   } catch {
     /* ignore */
   }
@@ -220,6 +351,8 @@ async function stopRivalPlayers() {
 
 async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   ensureAudioMounted()
+  clearSoftPause()
+  claimPlaybackSession()
   const epoch = ++loadEpoch
   const url = await getAudioObjectUrl(trackId)
   if (!url || epoch !== loadEpoch) return false
@@ -251,6 +384,8 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
     return true
   }
 
+  forceAudible()
+  claimPlaybackSession()
   try {
     await audio.play()
   } catch {
@@ -277,6 +412,17 @@ function wireAudioEvents() {
   audio.addEventListener('timeupdate', () => {
     const s = useLibraryPlayerStore.getState()
     if (!s.currentTrackId) return
+    if (softPaused) {
+      // Congelar reloj real mientras soft-pause (iOS)
+      if (Number.isFinite(softFreezeAt) && Math.abs(audio.currentTime - softFreezeAt) > 0.3) {
+        try {
+          audio.currentTime = softFreezeAt
+        } catch {
+          /* ignore */
+        }
+      }
+      return
+    }
     const position = audio.currentTime || 0
     const duration = Number.isFinite(audio.duration) ? audio.duration : s.duration
     useLibraryPlayerStore.setState({ position, duration })
@@ -290,22 +436,30 @@ function wireAudioEvents() {
   })
   audio.addEventListener('play', () => {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
+    if (softPaused) return
     useLibraryPlayerStore.setState({ isPlaying: true })
     setPlaybackStateOnly(true)
   })
   audio.addEventListener('pause', () => {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
-    // ended también dispara pause; next() lo gestiona
     if (audio.ended) return
+    if (softPaused) {
+      // iOS a veces pausa solo: reanudar muteado para no perder la sesión
+      claimPlaybackSession()
+      void audio.play().catch(() => {})
+      return
+    }
     useLibraryPlayerStore.setState({ isPlaying: false })
     setPlaybackStateOnly(false)
   })
   audio.addEventListener('ended', () => {
+    if (softPaused) return
     void useLibraryPlayerStore.getState().onEnded()
   })
 }
 
 wireAudioEvents()
+bindMediaHandlersOnce()
 
 export const useLibraryPlayerStore = create<
   LibraryPlayerState & {
@@ -331,7 +485,7 @@ export const useLibraryPlayerStore = create<
   syncFromAudio: (playing) => {
     set({
       isPlaying: playing,
-      position: audio.currentTime || 0,
+      position: softPaused ? softFreezeAt : audio.currentTime || 0,
       duration: Number.isFinite(audio.duration) ? audio.duration : get().duration,
     })
   },
@@ -394,6 +548,7 @@ export const useLibraryPlayerStore = create<
   playTracks: async (trackIds, startId, options) => {
     if (!trackIds.length) return
     await stopRivalPlayers()
+    clearSoftPause()
 
     const forceShuffle = options?.shuffle
     const source =
@@ -445,7 +600,7 @@ export const useLibraryPlayerStore = create<
 
   toggle: async () => {
     if (!get().currentTrackId) return
-    if (!audio.paused || get().isPlaying) {
+    if (softPaused || get().isPlaying || !audio.paused) {
       get().pause()
       return
     }
@@ -457,12 +612,26 @@ export const useLibraryPlayerStore = create<
     if (!currentTrackId) return
     await stopRivalPlayers()
     ensureAudioMounted()
+    claimPlaybackSession()
+
+    if (softPaused) {
+      const freeze = softFreezeAt
+      clearSoftPause()
+      if (freeze > 0.25) {
+        try {
+          audio.currentTime = freeze
+        } catch {
+          /* ignore */
+        }
+      }
+    }
 
     if (!audio.src) {
       await loadTrack(currentTrackId, true)
       return
     }
 
+    forceAudible()
     try {
       await audio.play()
       set({ isPlaying: true })
@@ -475,19 +644,19 @@ export const useLibraryPlayerStore = create<
   },
 
   pause: () => {
-    audio.pause()
-    set({ isPlaying: false, position: audio.currentTime || 0 })
-    setPlaybackStateOnly(false)
-    persistSoon({ position: audio.currentTime || 0 })
+    pauseFromRemoteOrUi()
   },
 
   onEnded: async () => {
+    if (softPaused) return
     const { repeat, currentTrackId, queue, index } = get()
     if (!currentTrackId || !queue.length) return
 
     if (repeat === 'one') {
       try {
         audio.currentTime = 0
+        claimPlaybackSession()
+        forceAudible()
         await audio.play()
         set({ isPlaying: true, position: 0 })
         setPlaybackStateOnly(true)
@@ -522,6 +691,7 @@ export const useLibraryPlayerStore = create<
   next: async () => {
     const { queue, index, repeat, currentTrackId } = get()
     if (!queue.length || !currentTrackId) return
+    clearSoftPause()
 
     let nextIndex = index + 1
     if (nextIndex >= queue.length) {
@@ -538,10 +708,12 @@ export const useLibraryPlayerStore = create<
   previous: async () => {
     const { queue, index, position, repeat } = get()
     if (!queue.length) return
-    if (position > 3) {
+    const pos = softPaused ? softFreezeAt : position
+    if (pos > 3) {
       get().seek(0)
       return
     }
+    clearSoftPause()
     const prevIndex =
       index <= 0 ? (repeat === 'all' || repeat === 'one' ? queue.length - 1 : 0) : index - 1
     const trackId = queue[prevIndex]
@@ -554,6 +726,17 @@ export const useLibraryPlayerStore = create<
   seek: (time) => {
     if (!get().currentTrackId) return
     const t = Math.max(0, time)
+    if (softPaused) {
+      softFreezeAt = t
+      try {
+        audio.currentTime = t
+      } catch {
+        /* ignore */
+      }
+      set({ position: t })
+      persistSoon({ position: t })
+      return
+    }
     try {
       audio.currentTime = t
     } catch {
@@ -632,7 +815,7 @@ export const useLibraryPlayerStore = create<
         index: nextIndex,
         currentTrackId: newId,
       })
-      if (newId) void loadTrack(newId, isPlaying)
+      if (newId) void loadTrack(newId, isPlaying || softPaused)
       else get().stop()
       return
     }
@@ -655,6 +838,7 @@ export const useLibraryPlayerStore = create<
 
   stop: () => {
     loadEpoch += 1
+    clearSoftPause()
     audio.pause()
     try {
       audio.removeAttribute('src')
