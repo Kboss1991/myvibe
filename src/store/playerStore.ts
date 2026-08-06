@@ -8,6 +8,7 @@ import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
 import { roundRadioDelayMs } from '../lib/radios'
+import { isAppleMobile } from '../lib/folderImport'
 import {
   getPodcastEpisode,
   getPodcastResumeAt,
@@ -568,6 +569,7 @@ function handleRemotePause() {
       : {}),
   })
   // Mantener ficha Now Playing (sin soft-audio)
+  claimNowPlaying(false, { reclaim: true })
   keepMediaSessionAlivePaused()
   startSoftPauseSessionGuard()
 
@@ -1258,6 +1260,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     const position = audioEngine.currentTime
     const duration = audioEngine.duration
+    const libraryTrackOnApple =
+      Boolean(get().currentTrackId) &&
+      !get().currentRadioId &&
+      !get().currentPodcastEpisodeId &&
+      isAppleMobile()
     set({
       position,
       duration: Number.isFinite(duration) ? duration : 0,
@@ -1266,7 +1273,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       muted: audioEngine.muted,
     })
     // Tras salto de pista, setPositionState en CarPlay vuelve a poner Play
-    if (Date.now() < suppressPositionUntil) {
+    if (libraryTrackOnApple) {
+      if (effectivePlaying) setMediaPlaybackState(true)
+    } else if (Date.now() < suppressPositionUntil) {
       if (effectivePlaying) setMediaPlaybackState(true)
     } else {
       setMediaPositionState(position, duration, effectivePlaying)
