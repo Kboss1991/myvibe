@@ -20,7 +20,7 @@ const KEY = 'myvibe_playback_debug'
 const MAX = 40
 
 /** Debe coincidir con workbox cacheId — confirma que el móvil tiene el build nuevo. */
-export const PLAYBACK_DEBUG_BUILD = 'myvibe-library-carplay-simple-20260806r'
+export const PLAYBACK_DEBUG_BUILD = 'myvibe-library-spotify-path-20260806s'
 
 export function logPlayback(
   event: string,

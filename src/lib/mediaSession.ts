@@ -350,22 +350,25 @@ function publishMetadata(opts: {
 
 /**
  * Reafirma ficha + handlers sin borrar artwork.
- * Tras soft-pause iOS a veces deja "Sin contenido" si no se reescribe.
+ * Importante: con playing=true NO reescribir MediaMetadata (CarPlay vuelve a Play).
+ * Solo reescribe metadata en paused (evita "Sin contenido" / handoff a Podcasts).
  */
 export function reaffirmMediaSession(opts?: { playing?: boolean }) {
   if (!('mediaSession' in navigator)) return
   try {
-    const meta = navigator.mediaSession.metadata
-    const title = meta?.title || lastPublishedMeta?.title
-    if (title) {
-      publishMetadata({
-        title,
-        artist: meta?.artist || lastPublishedMeta?.artist || 'MyVibe',
-        album: meta?.album || lastPublishedMeta?.album || 'MyVibe',
-        artwork: meta?.artwork?.length
-          ? Array.from(meta.artwork)
-          : lastPublishedArtwork,
-      })
+    if (opts?.playing !== true) {
+      const meta = navigator.mediaSession.metadata
+      const title = meta?.title || lastPublishedMeta?.title
+      if (title) {
+        publishMetadata({
+          title,
+          artist: meta?.artist || lastPublishedMeta?.artist || 'MyVibe',
+          album: meta?.album || lastPublishedMeta?.album || 'MyVibe',
+          artwork: meta?.artwork?.length
+            ? Array.from(meta.artwork)
+            : lastPublishedArtwork,
+        })
+      }
     }
     if (softPauseHandlers) bindMediaHandlers(softPauseHandlers)
   } catch {
@@ -669,14 +672,15 @@ export function refreshMediaPlaybackState(
 /**
  * Reclama Now Playing / CarPlay frente a Spotify u otras apps.
  * Por defecto solo reafirma playbackState (reescribir metadata resetea el botón a Play).
- * Usa `reclaim: true` tras llamada / pérdida de sesión.
+ * Usa `reclaim: true` solo si se perdió la ficha (tras llamada / otra app).
+ * Con playing=true nunca reescribe MediaMetadata.
  */
 export function claimNowPlaying(
   playing?: boolean,
   opts?: { reclaim?: boolean },
 ) {
   if (!('mediaSession' in navigator)) return
-  const reclaim = Boolean(opts?.reclaim)
+  const reclaim = Boolean(opts?.reclaim) && playing !== true
   if (reclaim) {
     try {
       const meta = navigator.mediaSession.metadata
