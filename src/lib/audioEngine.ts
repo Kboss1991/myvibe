@@ -585,6 +585,57 @@ class AudioEngine {
     return Boolean(this.sourceNode || this.ctx)
   }
 
+  /**
+   * Biblioteca: salir del grafo Web Audio (radio delay) si estaba activo,
+   * reafirmar playsInline/preload y reanudar AudioContext suspendido.
+   * createMediaElementSource + ctx suspended = tiempo avanza, audio mudo.
+   */
+  prepareLibraryPlayback() {
+    if (this.sourceNode || this.ctx) {
+      this.ensureElementAudioRoute()
+    }
+    this.configureElement(this.audio)
+    try {
+      const src = this.audio.currentSrc || this.audio.src || ''
+      if (src.startsWith('blob:')) {
+        this.audio.removeAttribute('crossorigin')
+      }
+    } catch {
+      /* ignore */
+    }
+    this.forceAudibleOutput()
+    void this.resumeContext()
+  }
+
+  /** Reanuda AudioContext si existe y está suspended (gesto play / onplaying). */
+  resumeAudioContextSync() {
+    if (!this.ctx) return
+    try {
+      const st = String(this.ctx.state)
+      if (st === 'suspended' || st === 'interrupted') {
+        void this.ctx.resume()
+      }
+    } catch {
+      /* ignore */
+    }
+    if (this.meterCtx) {
+      try {
+        const st = String(this.meterCtx.state)
+        if (st === 'suspended' || st === 'interrupted') {
+          void this.meterCtx.resume()
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  /** Quita soft-pause sin play (antes de cambiar de pista). */
+  clearUiSuspendForTrackChange() {
+    this.suspendedForUi = false
+    this.forceAudibleOutput()
+  }
+
   /** URL de media actual (podcast/pista) para playFresh tras pause en bloqueo. */
   get mediaUrl(): string | null {
     return (

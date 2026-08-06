@@ -2,9 +2,10 @@
  * Reproductor de biblioteca — reglas estrictas iOS PWA / Media Session:
  * 1) Una sola instancia <audio> (audioEngine.element). Nunca `new Audio()` al cambiar pista.
  * 2) nexttrack + previoustrack SIEMPRE; seekbackward/seekforward NUNCA.
- * 3) playbackState SOLO desde eventos nativos (playing / pause) del <audio>.
- * 4) Handler play → solo audio.play(); next/prev → src + load() + play() síncrono.
+ * 3) playbackState preferente desde eventos nativos (playing / pause).
+ * 4) Play: resume AudioContext + audio.play(); next/prev → src+load+play solo si cambia URL.
  * 5) setPositionState SOLO en loadedmetadata / timeupdate.
+ * 6) Pause en bloqueo: soft-pause (keep-alive) para no suspender el hilo de audio iOS.
  */
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
@@ -67,6 +68,10 @@ let loadEpoch = 0
 let elementWired: HTMLAudioElement | null = null
 let persistTimer: number | null = null
 let visibilityWired = false
+/** true tras el primer evento `playing` de la sesión actual (OS armó el hilo). */
+let audioSessionArmed = false
+/** pause pedido antes de que `playing` armara la sesión. */
+let pendingKeepAlivePause = false
 let pendingPersist: Partial<{
   queue: string[]
   originalQueue: string[]
@@ -119,8 +124,8 @@ async function flushPersist() {
 }
 
 /**
- * ÚNICO camino para playbackState 'playing'|'paused'.
- * Solo invocado desde listeners nativos del <audio> (playing / pause).
+ * ÚNICO camino habitual para playbackState 'playing'|'paused'.
+ * Soft-pause también lo llama (no hay evento pause nativo).
  */
 function setPlaybackStateFromElement(playing: boolean) {
   if (!('mediaSession' in navigator)) return
@@ -138,7 +143,9 @@ function pushPositionState() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   const el = audio()
   const duration = el.duration
-  const position = el.currentTime
+  const position = audioEngine.isSuspendedForUi
+    ? audioEngine.currentTime
+    : el.currentTime
   const rate = el.playbackRate
   if (!Number.isFinite(duration) || duration < 0) return
   if (!Number.isFinite(position) || position < 0) return
@@ -146,12 +153,62 @@ function pushPositionState() {
   try {
     navigator.mediaSession.setPositionState({
       duration,
-      playbackRate: rate,
+      playbackRate: audioEngine.isSuspendedForUi ? 1 : rate,
       position: Math.min(position, duration),
     })
   } catch {
     /* Safari a veces rechaza estados inconsistentes */
   }
+}
+
+/** Reafirma atributos iOS + resume AudioContext + ruta sin grafo radio. */
+function wakeAudioHardware() {
+  audioEngine.prepareLibraryPlayback()
+  ensureElementWired()
+  const el = audio()
+  el.preload = 'auto'
+  const media = el as HTMLAudioElement & { playsInline?: boolean }
+  media.playsInline = true
+  el.setAttribute('playsinline', 'true')
+  el.setAttribute('webkit-playsinline', 'true')
+  audioEngine.resumeAudioContextSync()
+  audioEngine.forceAudibleOutput()
+}
+
+/**
+ * Keep-alive: no audio.pause() real en bloqueo (iOS suspende el hilo → mudo).
+ * Solo tras `playing` (sesión armada en el OS).
+ */
+function keepAlivePause() {
+  if (!audioSessionArmed) {
+    pendingKeepAlivePause = true
+    return
+  }
+  pendingKeepAlivePause = false
+  audioEngine.suspendForUi()
+  const pos = Math.max(0, audioEngine.currentTime || 0)
+  useLibraryPlayerStore.setState({ isPlaying: false, position: pos })
+  persistSoon({ position: pos })
+  setPlaybackStateFromElement(false)
+  ensureLibraryMediaHandlers()
+  prefetchNeighbors()
+}
+
+function resumeKeepAliveOrPlay() {
+  wakeAudioHardware()
+  if (audioEngine.isSuspendedForUi) {
+    void audioEngine.resumeFromUiGesture().then((ok) => {
+      if (!ok) return
+      useLibraryPlayerStore.setState({ isPlaying: true })
+      setPlaybackStateFromElement(true)
+      ensureLibraryMediaHandlers()
+    })
+    return
+  }
+  const el = audio()
+  el.play().catch(() => {
+    /* ignore */
+  })
 }
 
 function prefetchId(trackId: string | null) {
@@ -192,10 +249,12 @@ function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | nu
 }
 
 /**
- * Misma instancia <audio>: src + load() + play() en la misma pila.
- * playbackState lo pone el evento nativo `playing` — no aquí.
+ * Misma instancia <audio>: src + load() + play() solo si la URL cambia.
+ * Si es la misma canción, no tocar src (evita desvincular hardware iOS).
  */
 function applySrcAndPlay(url: string): void {
+  wakeAudioHardware()
+  audioEngine.clearUiSuspendForTrackChange()
   const el = audio()
   el.muted = false
   el.volume = 1
@@ -204,6 +263,25 @@ function applySrcAndPlay(url: string): void {
   } catch {
     /* ignore */
   }
+  if (url.startsWith('blob:')) {
+    try {
+      el.removeAttribute('crossorigin')
+    } catch {
+      /* ignore */
+    }
+  }
+
+  const current = el.currentSrc || el.getAttribute('src') || el.src || ''
+  const sameSrc = Boolean(url) && (current === url || el.src === url)
+  if (sameSrc) {
+    audioSessionArmed = !el.paused
+    el.play().catch(() => {
+      /* NotAllowedError / AbortError en background */
+    })
+    return
+  }
+
+  audioSessionArmed = false
   el.src = url
   el.load()
   el.play().catch(() => {
@@ -213,7 +291,7 @@ function applySrcAndPlay(url: string): void {
 
 function commitTrackChange(trackId: string, index: number, url: string) {
   loadEpoch += 1
-  // Estado global YA (misma pila que src/load/play)
+  pendingKeepAlivePause = false
   useLibraryPlayerStore.setState({
     currentTrackId: trackId,
     index,
@@ -241,34 +319,32 @@ function commitTrackChange(trackId: string, index: number, url: string) {
 
 /**
  * OBLIGATORIO en iOS: nexttrack + previoustrack SIEMPRE definidos,
- * seek± NUNCA. No tocar playbackState ni setPositionState aquí.
+ * seek± NUNCA. Resume AudioContext en play; keep-alive en pause.
  */
 function ensureLibraryMediaHandlers() {
   if (!('mediaSession' in navigator)) return
 
   navigator.mediaSession.setActionHandler('play', () => {
-    // Única acción: audio.play(). playbackState lo pone el evento `playing`.
-    audio()
-      .play()
-      .catch(() => {
-        /* ignore */
-      })
+    // Resume ctx suspendido + play (o soft-resume). Sin fingir playbackState.
+    audioEngine.resumeAudioContextSync()
+    resumeKeepAliveOrPlay()
   })
 
   navigator.mediaSession.setActionHandler('pause', () => {
-    // Única acción: audio.pause(). playbackState lo pone el evento `pause`.
-    audio().pause()
+    // Keep-alive: no audio.pause() real (congela hilo iOS → mudo al reanudar)
+    keepAlivePause()
   })
 
   navigator.mediaSession.setActionHandler('previoustrack', () => {
     setLibraryOwnsMediaSession(true)
     const target = resolveSkipTarget(-1)
     if (!target) return
-    // Reinicio de la misma pista
     if (
       target.trackId === useLibraryPlayerStore.getState().currentTrackId &&
       target.index === useLibraryPlayerStore.getState().index
     ) {
+      wakeAudioHardware()
+      audioEngine.clearUiSuspendForTrackChange()
       const el = audio()
       try {
         el.currentTime = 0
@@ -276,12 +352,12 @@ function ensureLibraryMediaHandlers() {
         /* ignore */
       }
       useLibraryPlayerStore.setState({ position: 0 })
+      audioEngine.resumeAudioContextSync()
       el.play().catch(() => {})
       return
     }
     const url = peekAudioObjectUrl(target.trackId)
     if (!url) {
-      // Sin URL sincrona: prefetch; no fingir playing
       prefetchId(target.trackId)
       return
     }
@@ -297,7 +373,6 @@ function ensureLibraryMediaHandlers() {
       prefetchId(target.trackId)
       return
     }
-    // src + load() + play() síncrono (sin await)
     commitTrackChange(target.trackId, target.index, url)
   })
 
@@ -383,6 +458,7 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   ensureElementWired()
   setLibraryOwnsMediaSession(true)
   ensureLibraryMediaHandlers()
+  wakeAudioHardware()
   const epoch = ++loadEpoch
   const url = await getAudioObjectUrl(trackId)
   if (!url || epoch !== loadEpoch) return false
@@ -398,8 +474,11 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   })
 
   if (!autoplay) {
-    el.src = url
-    el.load()
+    const current = el.currentSrc || el.getAttribute('src') || el.src || ''
+    if (current !== url && el.src !== url) {
+      el.src = url
+      el.load()
+    }
     useLibraryPlayerStore.setState({
       isPlaying: false,
       position: 0,
@@ -413,7 +492,6 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
 
   if (epoch !== loadEpoch) return false
 
-  // isPlaying / playbackState los pondrá el evento nativo `playing`
   useLibraryPlayerStore.setState({
     position: Math.max(0, el.currentTime || 0),
     duration:
@@ -423,13 +501,17 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   void recordPlay(trackId)
   void persistRecent(trackId)
   prefetchNeighbors()
-  return !el.paused
+  return !el.paused || audioEngine.isSuspendedForUi
 }
 
 function onLibraryTimeUpdate() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   const el = audio()
-  const position = Number.isFinite(el.currentTime) && el.currentTime >= 0 ? el.currentTime : 0
+  const position = audioEngine.isSuspendedForUi
+    ? Math.max(0, audioEngine.currentTime)
+    : Number.isFinite(el.currentTime) && el.currentTime >= 0
+      ? el.currentTime
+      : 0
   const duration =
     Number.isFinite(el.duration) && el.duration >= 0
       ? el.duration
@@ -449,16 +531,24 @@ function onLibraryLoadedMetadata() {
   pushPositionState()
 }
 
-/** ÚNICO origen de playbackState = 'playing'. */
+/** Sesión OS armada + playbackState playing (+ resume ctx). */
 function onLibraryPlaying() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
+  audioEngine.resumeAudioContextSync()
+  audioSessionArmed = true
+  if (pendingKeepAlivePause) {
+    keepAlivePause()
+    return
+  }
+  if (audioEngine.isSuspendedForUi) return
   useLibraryPlayerStore.setState({ isPlaying: true })
   setPlaybackStateFromElement(true)
 }
 
-/** ÚNICO origen de playbackState = 'paused'. */
+/** Pause real del elemento (no soft-pause). */
 function onLibraryPause() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
+  if (audioEngine.isSuspendedForUi) return
   if (audio().ended) return
   useLibraryPlayerStore.setState({ isPlaying: false })
   setPlaybackStateFromElement(false)
@@ -471,6 +561,12 @@ function onLibraryEnded() {
   void useLibraryPlayerStore.getState().onEnded()
 }
 
+/** Resume ctx en el evento play nativo (además de playing). */
+function onLibraryPlayNative() {
+  if (!useLibraryPlayerStore.getState().currentTrackId) return
+  audioEngine.resumeAudioContextSync()
+}
+
 function ensureElementWired() {
   const el = audio()
   if (elementWired === el) return
@@ -478,12 +574,14 @@ function ensureElementWired() {
     elementWired.removeEventListener('timeupdate', onLibraryTimeUpdate)
     elementWired.removeEventListener('loadedmetadata', onLibraryLoadedMetadata)
     elementWired.removeEventListener('playing', onLibraryPlaying)
+    elementWired.removeEventListener('play', onLibraryPlayNative)
     elementWired.removeEventListener('pause', onLibraryPause)
     elementWired.removeEventListener('ended', onLibraryEnded)
   }
   el.addEventListener('timeupdate', onLibraryTimeUpdate)
   el.addEventListener('loadedmetadata', onLibraryLoadedMetadata)
   el.addEventListener('playing', onLibraryPlaying)
+  el.addEventListener('play', onLibraryPlayNative)
   el.addEventListener('pause', onLibraryPause)
   el.addEventListener('ended', onLibraryEnded)
   elementWired = el
@@ -589,6 +687,9 @@ export const useLibraryPlayerStore = create<
     ensureElementWired()
     setLibraryOwnsMediaSession(true)
     ensureLibraryMediaHandlers()
+    wakeAudioHardware()
+    pendingKeepAlivePause = false
+    audioSessionArmed = false
 
     const forceShuffle = options?.shuffle
     const source =
@@ -645,7 +746,8 @@ export const useLibraryPlayerStore = create<
 
   toggle: async () => {
     if (!get().currentTrackId) return
-    if (!audio().paused || get().isPlaying) {
+    // Soft-pause: elemento sigue "playing" muteado → mirar isPlaying / flag
+    if (get().isPlaying || (!audioEngine.isSuspendedForUi && !audio().paused)) {
       get().pause()
       return
     }
@@ -659,6 +761,12 @@ export const useLibraryPlayerStore = create<
     ensureElementWired()
     setLibraryOwnsMediaSession(true)
     ensureLibraryMediaHandlers()
+    wakeAudioHardware()
+
+    if (audioEngine.isSuspendedForUi) {
+      resumeKeepAliveOrPlay()
+      return
+    }
 
     const el = audio()
     if (!el.src && !el.currentSrc) {
@@ -668,9 +776,9 @@ export const useLibraryPlayerStore = create<
 
     el.muted = false
     el.volume = 1
+    audioEngine.resumeAudioContextSync()
     try {
       await el.play()
-      // isPlaying / playbackState: evento nativo `playing`
       const track = await db.tracks.get(currentTrackId)
       if (track) await publishMetadata(track)
     } catch {
@@ -679,14 +787,8 @@ export const useLibraryPlayerStore = create<
   },
 
   pause: () => {
-    // Solo audio.pause(). playbackState lo pone el evento nativo `pause`.
-    // No limpiar metadata ni handlers.
-    audio().pause()
-    const pos = Math.max(0, audio().currentTime || 0)
-    set({ position: pos })
-    persistSoon({ position: pos })
-    ensureLibraryMediaHandlers()
-    prefetchNeighbors()
+    // Keep-alive en iOS: no audio.pause() real
+    keepAlivePause()
   },
 
   onEnded: async () => {
@@ -755,14 +857,9 @@ export const useLibraryPlayerStore = create<
   seek: (time) => {
     if (!get().currentTrackId) return
     const t = Math.max(0, time)
-    try {
-      audio().currentTime = t
-    } catch {
-      /* ignore */
-    }
+    audioEngine.seek(t)
     set({ position: t })
     persistSoon({ position: t })
-    // setPositionState solo en timeupdate/loadedmetadata
   },
 
   toggleShuffle: () => {
@@ -860,6 +957,9 @@ export const useLibraryPlayerStore = create<
 
   stop: () => {
     loadEpoch += 1
+    pendingKeepAlivePause = false
+    audioSessionArmed = false
+    audioEngine.clearUiSuspendForTrackChange()
     audio().pause()
     setLibraryOwnsMediaSession(false)
     set({
