@@ -106,6 +106,9 @@ let pendingBackgroundPlay = false
 let mediaPlayingHoldUntil = 0
 /** No llamar setPositionState justo tras el salto: en CarPlay resetea a Play. */
 let suppressPositionUntil = 0
+/** En iPhone biblioteca: limitar positionState para no resetear el botón en CarPlay. */
+let lastLibraryPositionStateAt = 0
+let lastLibraryPositionTrackId: string | null = null
 let sessionPublishToken = 0
 /** Tras llamada / interrupción del sistema: reintentar play y reclamar Now Playing. */
 let interruptionResumeTimer: number | null = null
@@ -1260,8 +1263,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
     const position = audioEngine.currentTime
     const duration = audioEngine.duration
+    const currentTrackId = get().currentTrackId
     const libraryTrackOnApple =
-      Boolean(get().currentTrackId) &&
+      Boolean(currentTrackId) &&
       !get().currentRadioId &&
       !get().currentPodcastEpisodeId &&
       isAppleMobile()
@@ -1274,6 +1278,18 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     })
     // Tras salto de pista, setPositionState en CarPlay vuelve a poner Play
     if (libraryTrackOnApple) {
+      const now = Date.now()
+      const trackChanged = currentTrackId !== lastLibraryPositionTrackId
+      const shouldPushPosition =
+        trackChanged ||
+        !effectivePlaying ||
+        now - lastLibraryPositionStateAt >= 12000 ||
+        position < 1
+      if (shouldPushPosition) {
+        setMediaPositionState(position, duration, effectivePlaying)
+        lastLibraryPositionStateAt = now
+        lastLibraryPositionTrackId = currentTrackId
+      }
       if (effectivePlaying) setMediaPlaybackState(true)
     } else if (Date.now() < suppressPositionUntil) {
       if (effectivePlaying) setMediaPlaybackState(true)
