@@ -67,7 +67,7 @@ export function PlayerBar() {
   useEffect(() => {
     if (shouldDeferAuxiliaryMediaSessionBind()) return
     void bindMediaSession(tracks)
-  }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl])
+  }, [currentTrackId, currentRadioId, currentPodcastEpisodeId])
 
   useEffect(() => {
     const onResume = () => {
@@ -78,10 +78,8 @@ export function PlayerBar() {
         onResume()
         return
       }
-      // Al bloquear: reafirmar metadatos y el botón Pause si sigue sonando
-      void bindMediaSession(tracks).then(() => {
-        refreshMediaPlaybackState(!audioEngine.paused || isPlaying)
-      })
+      // Al bloquear: reafirmar solo play/pause; evitar reescribir la misma ficha.
+      refreshMediaPlaybackState(!audioEngine.paused || isPlaying)
     }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('pageshow', onResume)
@@ -94,7 +92,7 @@ export function PlayerBar() {
       window.removeEventListener('focus', onResume)
       document.removeEventListener('resume', onResume as EventListener)
     }
-  }, [tracks, currentTrackId, currentRadioId, currentPodcastEpisodeId, coverUrl, isPlaying])
+  }, [currentTrackId, currentRadioId, currentPodcastEpisodeId, isPlaying])
 
   // Si queda un sheet/overlay colgado, quitarlo al sintonizar radio
   useEffect(() => {
