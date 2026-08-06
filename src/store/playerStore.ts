@@ -1045,7 +1045,7 @@ async function loadAndMaybePlay(
       await recordPlay(trackId)
       await persistRecent(trackId)
       prefetchNextForCurrent(usePlayerStore.getState)
-      void publishPlayingMediaSession(trackId)
+      await refreshMediaSessionForTrackId(trackId, true)
     } else {
       refreshMediaPlaybackState(false)
     }
