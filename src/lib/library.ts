@@ -105,7 +105,54 @@ export async function getCoverBlob(id: string): Promise<Blob | null> {
   return pickBestBlob(fromIdb, fromOpfs)
 }
 
+import {
+  deleteLocalAudioFromCache,
+  putLocalAudioInCache,
+} from './localAudioCache'
+
 const objectUrlCache = new Map<string, string>()
+/** IDs pendientes de revoke — solo en primer plano y fuera de uso. */
+const pendingAudioRevoke = new Set<string>()
+/** IDs cuya URL no debe revocarse (cola caliente del reproductor). */
+const protectedAudioIds = new Set<string>()
+
+export function protectAudioUrls(ids: Array<string | null | undefined>) {
+  protectedAudioIds.clear()
+  for (const id of ids) {
+    if (id) protectedAudioIds.add(id)
+  }
+  flushPendingAudioRevokes()
+}
+
+export function scheduleRevokeAudioUrl(id: string) {
+  if (!id) return
+  pendingAudioRevoke.add(id)
+  flushPendingAudioRevokes()
+}
+
+function isDocumentVisible(): boolean {
+  try {
+    return typeof document === 'undefined' || document.visibilityState === 'visible'
+  } catch {
+    return true
+  }
+}
+
+/** Revoca blob: URLs solo en foreground y si el id ya no está protegido. */
+export function flushPendingAudioRevokes() {
+  if (!isDocumentVisible()) return
+  for (const id of [...pendingAudioRevoke]) {
+    if (protectedAudioIds.has(id)) continue
+    revokeCachedUrls(id)
+    pendingAudioRevoke.delete(id)
+  }
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') flushPendingAudioRevokes()
+  })
+}
 
 export async function getAudioObjectUrl(id: string): Promise<string | null> {
   const cached = objectUrlCache.get(`audio:${id}`)
@@ -125,12 +172,20 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
     }
   }
   const playable = ensureAudioMime(blob, mimeHint)
+
+  // Preferir URL same-origin con SW Range (206) — iOS pause/resume
+  const rangeUrl = await putLocalAudioInCache(id, playable)
+  if (rangeUrl) {
+    objectUrlCache.set(`audio:${id}`, rangeUrl)
+    return rangeUrl
+  }
+
   const url = URL.createObjectURL(playable)
   objectUrlCache.set(`audio:${id}`, url)
   return url
 }
 
-/** Cache hit síncrono (para encadenar play tras `ended` sin await). */
+/** Cache hit síncrono (nexttrack/previoustrack en bloqueo — sin IndexedDB). */
 export function peekAudioObjectUrl(id: string): string | null {
   return objectUrlCache.get(`audio:${id}`) ?? null
 }
@@ -149,10 +204,17 @@ export function revokeCachedUrls(id: string): void {
   for (const key of [`audio:${id}`, `cover:${id}`]) {
     const url = objectUrlCache.get(key)
     if (url) {
-      URL.revokeObjectURL(url)
+      if (url.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(url)
+        } catch {
+          /* ignore */
+        }
+      }
       objectUrlCache.delete(key)
     }
   }
+  void deleteLocalAudioFromCache(id)
 }
 
 export async function importAudioFiles(

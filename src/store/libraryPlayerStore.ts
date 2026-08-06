@@ -1,10 +1,10 @@
 /**
- * Reproductor de biblioteca — HTML5 Audio + Media Session (sin hacks).
+ * Reproductor de biblioteca — HTML5 Audio + Media Session.
  *
- * - <audio> propio: señal directa al sistema, sin AudioContext / Web Audio.
- * - pause() / play() reales.
- * - Media Session handlers registrados UNA vez al init (no en cada estado).
- * - next/prev: audio.src = url; audio.play() en el mismo callback.
+ * - <audio> propio (sin Web Audio).
+ * - Blob/local-audio URLs precargadas (current/next/prev) en primer plano.
+ * - nexttrack/previoustrack: solo URLs ya listas → src + play() (sin IndexedDB).
+ * - Revoke de blobs solo en foreground cuando la pista ya no está caliente.
  */
 import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
@@ -13,7 +13,9 @@ import {
   getAudioObjectUrl,
   getCoverObjectUrl,
   peekAudioObjectUrl,
+  protectAudioUrls,
   recordPlay,
+  scheduleRevokeAudioUrl,
 } from '../lib/library'
 import { setLibraryOwnsMediaSession } from '../lib/mediaSession'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
@@ -24,6 +26,10 @@ type LibraryPlayerState = {
   originalQueue: string[]
   index: number
   currentTrackId: string | null
+  /** URL lista para audio.src (local-audio o blob:) — nunca generar en bloqueo. */
+  currentAudioUrl: string | null
+  nextAudioUrl: string | null
+  prevAudioUrl: string | null
   isPlaying: boolean
   shuffle: boolean
   repeat: RepeatMode
@@ -174,15 +180,65 @@ function prefetchId(trackId: string | null) {
   void getAudioObjectUrl(trackId)
 }
 
-function prefetchNeighbors() {
-  const { queue, index, repeat } = useLibraryPlayerStore.getState()
-  if (!queue.length) return
+function neighborIds(): { current: string | null; next: string | null; prev: string | null } {
+  const { queue, index, repeat, currentTrackId } = useLibraryPlayerStore.getState()
+  if (!queue.length || !currentTrackId) {
+    return { current: null, next: null, prev: null }
+  }
   const nextIndex =
-    index + 1 < queue.length ? index + 1 : repeat === 'all' ? 0 : -1
+    index + 1 < queue.length ? index + 1 : repeat === 'all' || repeat === 'one' ? 0 : -1
   const prevIndex =
-    index - 1 >= 0 ? index - 1 : repeat === 'all' ? queue.length - 1 : -1
-  if (nextIndex >= 0) prefetchId(queue[nextIndex] ?? null)
-  if (prevIndex >= 0) prefetchId(queue[prevIndex] ?? null)
+    index - 1 >= 0 ? index - 1 : repeat === 'all' || repeat === 'one' ? queue.length - 1 : -1
+  return {
+    current: currentTrackId,
+    next: nextIndex >= 0 ? queue[nextIndex] ?? null : null,
+    prev: prevIndex >= 0 ? queue[prevIndex] ?? null : null,
+  }
+}
+
+/**
+ * Precarga en primer plano: IndexedDB → Cache Storage / blob URL.
+ * Deja current/next/prev listos en el store para saltos en bloqueo.
+ */
+async function warmReadyAudioUrls() {
+  const neighbors = neighborIds()
+  protectAudioUrls([neighbors.current, neighbors.next, neighbors.prev])
+
+  const ensure = async (id: string | null): Promise<string | null> => {
+    if (!id) return null
+    return peekAudioObjectUrl(id) ?? (await getAudioObjectUrl(id))
+  }
+
+  const [currentAudioUrl, nextAudioUrl, prevAudioUrl] = await Promise.all([
+    ensure(neighbors.current),
+    ensure(neighbors.next),
+    ensure(neighbors.prev),
+  ])
+
+  // Solo actualizar si seguimos en la misma pista
+  if (useLibraryPlayerStore.getState().currentTrackId !== neighbors.current) return
+
+  useLibraryPlayerStore.setState({
+    currentAudioUrl,
+    nextAudioUrl,
+    prevAudioUrl,
+  })
+  protectAudioUrls([neighbors.current, neighbors.next, neighbors.prev])
+}
+
+function prefetchNeighbors() {
+  void warmReadyAudioUrls()
+}
+
+/** URL síncrona ya precargada — NUNCA IndexedDB aquí. */
+function readyUrlForTrack(trackId: string): string | null {
+  const { currentTrackId, currentAudioUrl, nextAudioUrl, prevAudioUrl } =
+    useLibraryPlayerStore.getState()
+  if (trackId === currentTrackId && currentAudioUrl) return currentAudioUrl
+  const neighbors = neighborIds()
+  if (trackId === neighbors.next && nextAudioUrl) return nextAudioUrl
+  if (trackId === neighbors.prev && prevAudioUrl) return prevAudioUrl
+  return peekAudioObjectUrl(trackId)
 }
 
 function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | null {
@@ -218,15 +274,21 @@ function applySrcAndPlay(url: string): void {
 
 function commitTrackChange(trackId: string, index: number, url: string) {
   loadEpoch += 1
+  const prevId = useLibraryPlayerStore.getState().currentTrackId
   useLibraryPlayerStore.setState({
     currentTrackId: trackId,
     index,
     position: 0,
     isPlaying: true,
+    currentAudioUrl: url,
   })
   persistSoon({ currentTrackId: trackId, index, position: 0 })
   setLibraryOwnsMediaSession(true)
   applySrcAndPlay(url)
+  if (prevId && prevId !== trackId) {
+    // Revoke solo cuando vuelva a primer plano y la pista ya no esté caliente
+    scheduleRevokeAudioUrl(prevId)
+  }
   void db.tracks.get(trackId).then((track) => {
     if (track && useLibraryPlayerStore.getState().currentTrackId === trackId) {
       void publishMetadata(track)
@@ -280,11 +342,9 @@ function bindLibraryMediaHandlersOnce() {
       el.play().catch(() => {})
       return
     }
-    const url = peekAudioObjectUrl(target.trackId)
-    if (!url) {
-      prefetchId(target.trackId)
-      return
-    }
+    // Solo URL precargada — sin IndexedDB / createObjectURL en bloqueo
+    const url = readyUrlForTrack(target.trackId)
+    if (!url) return
     commitTrackChange(target.trackId, target.index, url)
   })
 
@@ -292,11 +352,8 @@ function bindLibraryMediaHandlersOnce() {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
     const target = resolveSkipTarget(1)
     if (!target) return
-    const url = peekAudioObjectUrl(target.trackId)
-    if (!url) {
-      prefetchId(target.trackId)
-      return
-    }
+    const url = readyUrlForTrack(target.trackId)
+    if (!url) return
     commitTrackChange(target.trackId, target.index, url)
   })
 
@@ -372,6 +429,8 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   const track = await db.tracks.get(trackId)
   if (!track || epoch !== loadEpoch) return false
 
+  useLibraryPlayerStore.setState({ currentAudioUrl: url })
+
   void getCoverObjectUrl(trackId).then((coverUrl) => {
     if (useLibraryPlayerStore.getState().currentTrackId === trackId) {
       useLibraryPlayerStore.setState({ coverUrl })
@@ -386,6 +445,7 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
       duration: Number.isFinite(el.duration) && el.duration > 0 ? el.duration : track.duration || 0,
     })
     await publishMetadata(track)
+    await warmReadyAudioUrls()
     return true
   }
 
@@ -401,7 +461,7 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   await publishMetadata(track)
   void recordPlay(trackId)
   void persistRecent(trackId)
-  prefetchNeighbors()
+  await warmReadyAudioUrls()
   return !el.paused
 }
 
@@ -454,6 +514,14 @@ libraryAudio.addEventListener('pause', onLibraryPause)
 libraryAudio.addEventListener('ended', onLibraryEnded)
 bindLibraryMediaHandlersOnce()
 
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return
+    if (!useLibraryPlayerStore.getState().currentTrackId) return
+    void warmReadyAudioUrls()
+  })
+}
+
 export const useLibraryPlayerStore = create<
   LibraryPlayerState & {
     syncFromAudio: (playing: boolean) => void
@@ -464,6 +532,9 @@ export const useLibraryPlayerStore = create<
   originalQueue: [],
   index: 0,
   currentTrackId: null,
+  currentAudioUrl: null,
+  nextAudioUrl: null,
+  prevAudioUrl: null,
   isPlaying: false,
   shuffle: false,
   repeat: 'off',
@@ -538,7 +609,7 @@ export const useLibraryPlayerStore = create<
         }
         set({ position: snap.position })
       }
-      prefetchNeighbors()
+      await warmReadyAudioUrls()
     }
   },
 
@@ -577,6 +648,9 @@ export const useLibraryPlayerStore = create<
       shuffle: shuffleOn,
       playbackSource: source,
       position: 0,
+      currentAudioUrl: null,
+      nextAudioUrl: null,
+      prevAudioUrl: null,
     })
     persistSoon({
       queue,
@@ -588,9 +662,11 @@ export const useLibraryPlayerStore = create<
       playbackSource: source,
     })
 
+    // Precarga current + vecinos EN PRIMER PLANO antes de play
     for (const id of queue.slice(index, index + 3)) {
       prefetchId(id)
     }
+    await warmReadyAudioUrls()
 
     for (let i = index; i < queue.length; i++) {
       const id = queue[i]!
@@ -660,11 +736,12 @@ export const useLibraryPlayerStore = create<
       set({ isPlaying: false, position: 0 })
       return
     }
-    const url = peekAudioObjectUrl(target.trackId)
+    const url = readyUrlForTrack(target.trackId)
     if (url) {
       commitTrackChange(target.trackId, target.index, url)
       return
     }
+    // ended en foreground: generar URL si faltaba
     set({ index: target.index, currentTrackId: target.trackId, position: 0 })
     await loadTrack(target.trackId, true)
   },
@@ -672,14 +749,13 @@ export const useLibraryPlayerStore = create<
   next: async () => {
     const target = resolveSkipTarget(1)
     if (!target) return
-    const url = peekAudioObjectUrl(target.trackId)
-    if (url) {
-      commitTrackChange(target.trackId, target.index, url)
-      return
+    let url = readyUrlForTrack(target.trackId)
+    if (!url) {
+      // Solo en primer plano (gesto in-app): permitir generar URL
+      url = await getAudioObjectUrl(target.trackId)
     }
-    set({ index: target.index, currentTrackId: target.trackId, position: 0 })
-    persistSoon({ index: target.index, currentTrackId: target.trackId, position: 0 })
-    await loadTrack(target.trackId, true)
+    if (!url) return
+    commitTrackChange(target.trackId, target.index, url)
   },
 
   previous: async () => {
@@ -690,14 +766,12 @@ export const useLibraryPlayerStore = create<
     }
     const target = resolveSkipTarget(-1)
     if (!target) return
-    const url = peekAudioObjectUrl(target.trackId)
-    if (url) {
-      commitTrackChange(target.trackId, target.index, url)
-      return
+    let url = readyUrlForTrack(target.trackId)
+    if (!url) {
+      url = await getAudioObjectUrl(target.trackId)
     }
-    set({ index: target.index, currentTrackId: target.trackId, position: 0 })
-    persistSoon({ index: target.index, currentTrackId: target.trackId, position: 0 })
-    await loadTrack(target.trackId, true)
+    if (!url) return
+    commitTrackChange(target.trackId, target.index, url)
   },
 
   seek: (time) => {
@@ -807,10 +881,16 @@ export const useLibraryPlayerStore = create<
 
   stop: () => {
     loadEpoch += 1
+    const prevId = get().currentTrackId
     audio().pause()
     setLibraryOwnsMediaSession(false)
+    protectAudioUrls([])
+    if (prevId) scheduleRevokeAudioUrl(prevId)
     set({
       currentTrackId: null,
+      currentAudioUrl: null,
+      nextAudioUrl: null,
+      prevAudioUrl: null,
       queue: [],
       originalQueue: [],
       index: 0,

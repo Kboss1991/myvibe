@@ -61,15 +61,18 @@ export default defineConfig({
       },
       workbox: {
         // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
-        cacheId: 'myvibe-lib-clean-html5-ms-20260807',
+        cacheId: 'myvibe-lib-local-audio-range-20260807',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
+        // Range/206 para audio local en Cache Storage (iOS pause/resume)
+        importScripts: ['sw-local-audio-range.js'],
         navigateFallback: '/index.html',
         // Never treat JS/CSS/assets as SPA navigations (avoids HTML MIME errors).
         navigateFallbackDenylist: [
           /^\/api/,
+          /^\/local-audio\//,
           /^\/assets\//,
           /\/assets\//,
           /\.[a-zA-Z0-9]+$/,
