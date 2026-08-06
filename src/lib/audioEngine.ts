@@ -1407,7 +1407,7 @@ class AudioEngine {
    * Play en el mismo turno del gesto (Media Session / tap).
    * En iOS, cualquier await antes de audio.play() pierde el permiso.
    */
-  playFromUserGesture(): Promise<boolean> {
+  playFromUserGesture(resumeAt = 0): Promise<boolean> {
     this.scrubOrphanKeepAlives()
     if (this.suspendedForUi) {
       return this.resumeFromUiGesture()
@@ -1417,6 +1417,13 @@ class AudioEngine {
     this.applyPlaybackSession()
     this.forceAudibleOutput()
     this.lastPlayError = null
+    if (resumeAt > 0.25 && !this.live) {
+      try {
+        this.audio.currentTime = resumeAt
+      } catch {
+        /* ignore */
+      }
+    }
     void this.resumeContext()
     try {
       const p = this.audio.play()

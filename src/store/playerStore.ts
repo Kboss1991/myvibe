@@ -19,7 +19,7 @@ import {
   type PodcastEpisode,
   type PodcastShow,
 } from '../lib/podcasts'
-import { logPlayback } from '../lib/playbackDebug'
+import { logPlayback, PLAYBACK_DEBUG_BUILD } from '../lib/playbackDebug'
 
 interface PlayerState {
   queue: string[]
@@ -323,7 +323,7 @@ function settlePlayPromise(p: Promise<boolean>, ms = 2000): Promise<boolean> {
   })
 }
 
-/** Tras fallo de resume, forzar reload src en el siguiente play remoto. */
+/** Solo en primer plano: tras fallo, permitir reload src en el siguiente play. */
 let preferReloadRemotePlayUntil = 0
 
 function handleRemotePlay() {
@@ -382,12 +382,19 @@ function handleRemotePlay() {
       : null) ||
     null
 
-  const wantReload =
+  const visible =
+    typeof document === 'undefined' || document.visibilityState === 'visible'
+
+  // CarPlay / bloqueo: reload src destruye el buffer (ready 4→1) y play() falla.
+  // Solo reload con la PWA visible; si no, play() sobre el mismo src en el gesto.
+  const useReload =
+    visible &&
     Boolean(mediaUrl) &&
     !state.currentRadioId &&
-    (elementPaused || Date.now() < preferReloadRemotePlayUntil)
+    elementPaused &&
+    (audioEngine.element.readyState < 3 || Date.now() < preferReloadRemotePlayUntil)
 
-  const strategy: 'inplace' | 'reload' = wantReload && mediaUrl ? 'reload' : 'inplace'
+  const strategy: 'inplace' | 'reload' = useReload && mediaUrl ? 'reload' : 'inplace'
 
   logPlayback('remote-play', {
     paused: snap0.paused,
@@ -396,7 +403,7 @@ function handleRemotePlay() {
     suspended: snap0.suspended,
     isPlaying: state.isPlaying,
     podcast: isPodcast,
-    detail: `strategy=${strategy} elPaused=${snap0.elementPaused} ready=${snap0.readyState} graph=${snap0.hasGraph} vol=${snap0.volume}`,
+    detail: `build=${PLAYBACK_DEBUG_BUILD} visible=${visible} strategy=${strategy} elPaused=${snap0.elementPaused} ready=${snap0.readyState} graph=${snap0.hasGraph} vol=${snap0.volume}`,
   })
 
   audioEngine.forceAudibleOutput()
@@ -407,7 +414,7 @@ function handleRemotePlay() {
   } else if (audioEngine.isSuspendedForUi) {
     kicked = audioEngine.resumeFromUiGesture()
   } else {
-    kicked = audioEngine.playFromUserGesture()
+    kicked = audioEngine.playFromUserGesture(resumeAt)
   }
 
   try {
@@ -438,7 +445,13 @@ function handleRemotePlay() {
     }
 
     if (!playing) {
-      preferReloadRemotePlayUntil = Date.now() + 60000
+      if (visible) preferReloadRemotePlayUntil = Date.now() + 30000
+      pendingBackgroundPlay = true
+      logPlayback('remote-play-fail', {
+        paused: snap1.paused,
+        isPlaying: false,
+        detail: `build=${PLAYBACK_DEBUG_BUILD} visible=${visible} strategy=${strategy} ready=${snap1.readyState} err=${snap1.playErr ?? '-'}`,
+      })
     } else {
       preferReloadRemotePlayUntil = 0
     }
@@ -523,7 +536,6 @@ function handleRemotePause() {
   clearMediaPlayingHold()
   clearMediaPlaybackRefresh()
   stopSoftPauseSessionGuard()
-  preferReloadRemotePlayUntil = Date.now() + 120000
 
   const state = usePlayerStore.getState()
   const snap = audioEngine.debugSnapshot()
