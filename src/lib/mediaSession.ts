@@ -476,6 +476,27 @@ export async function updateMediaSession(
   bindMediaHandlers(handlers)
 
   const playingHint = opts?.playing
+  let samePublishedTrack = false
+  try {
+    const meta = navigator.mediaSession.metadata
+    samePublishedTrack =
+      Boolean(meta) &&
+      String(meta?.title || '') === track.title &&
+      String(meta?.artist || '') === track.artist &&
+      String(meta?.album || '') === track.album
+  } catch {
+    /* ignore */
+  }
+
+  // Si ya es la misma pista y solo queremos mantener "playing",
+  // NO reescribir MediaMetadata: en CarPlay eso vuelve el botón a Play.
+  if (playingHint === true && samePublishedTrack) {
+    stopSoftPauseSessionGuard()
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+    return
+  }
+
   const cachedArt = peekCachedLockScreenArtwork(track.id)
 
   publishMetadata({
