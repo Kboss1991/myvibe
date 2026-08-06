@@ -534,8 +534,8 @@ function handleRemotePlay() {
 }
 
 function handleRemotePause() {
-  // Pause REAL. Soft-pause (mute + elemento “playing”) hace que iOS
-  // cambie el icono a Play SIN llamar al handler → silencio (log sin remote-play).
+  // Para canciones locales, mantener la sesión viva evita que CarPlay ceda
+  // el Play a Podcasts tras pausar. Radio/podcast siguen en hard pause.
   audioEngine.markIntentionalPause(4000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
@@ -560,7 +560,12 @@ function handleRemotePause() {
     persistPodcastProgressNow(usePlayerStore.setState, usePlayerStore.getState)
   }
 
-  audioEngine.pause()
+  const useSoftPause = Boolean(state.currentTrackId) && !state.currentRadioId && !state.currentPodcastEpisodeId
+  if (useSoftPause) {
+    audioEngine.suspendForUi()
+  } else {
+    audioEngine.pause()
+  }
 
   usePlayerStore.setState({
     isPlaying: false,
@@ -580,7 +585,7 @@ function handleRemotePause() {
     suspended: snap2.suspended,
     isPlaying: false,
     podcast: Boolean(state.currentPodcastEpisodeId),
-    detail: `elPaused=${snap2.elementPaused}`,
+    detail: `soft=${useSoftPause} elPaused=${snap2.elementPaused}`,
   })
 }
 
