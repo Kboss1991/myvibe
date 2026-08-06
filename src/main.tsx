@@ -4,11 +4,17 @@ import { BrowserRouter } from 'react-router-dom'
 import { registerSW } from 'virtual:pwa-register'
 import App from './App'
 import { audioEngine } from './lib/audioEngine'
-// Media Session next/prev desde el minuto uno (antes de montar React)
-import { ensureLibraryMediaSessionBound } from './store/libraryPlayerStore'
 import './styles/tokens.css'
 
-ensureLibraryMediaSessionBound()
+// iOS WebKit: anular ±10s desde el arranque. next/prev se registran en el primer play() del usuario.
+if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+  try {
+    navigator.mediaSession.setActionHandler('seekforward', null)
+    navigator.mediaSession.setActionHandler('seekbackward', null)
+  } catch {
+    /* ignore */
+  }
+}
 
 /** Intenta fijar portrait (PWA). Sin trucos CSS de rotar el html. */
 function tryLockPortrait() {

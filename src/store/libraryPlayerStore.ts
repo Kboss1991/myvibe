@@ -14,6 +14,7 @@ import {
   getCoverObjectUrl,
   peekAudioObjectUrl,
   protectAudioUrls,
+  reassignAudioObjectUrl,
   recordPlay,
   scheduleRevokeAudioUrl,
 } from '../lib/library'
@@ -230,8 +231,10 @@ function prefetchNeighbors() {
   void warmReadyAudioUrls()
 }
 
-/** URL síncrona ya precargada — NUNCA IndexedDB aquí. */
+/** URL síncrona desde Blob en RAM (reasigna blob: tras suspensión). */
 function readyUrlForTrack(trackId: string): string | null {
+  const fresh = reassignAudioObjectUrl(trackId)
+  if (fresh) return fresh
   const { currentTrackId, currentAudioUrl, nextAudioUrl, prevAudioUrl } =
     useLibraryPlayerStore.getState()
   if (trackId === currentTrackId && currentAudioUrl) return currentAudioUrl
@@ -261,12 +264,15 @@ function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | nu
   return { trackId, index: nextIndex }
 }
 
-/** src + play() en la misma pila. Sin load() extra ni Web Audio. */
-function applySrcAndPlay(url: string): void {
+/** Reasigna src desde Blob en RAM + play() en la misma pila. */
+function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
+  const url = reassignAudioObjectUrl(trackId) ?? urlHint ?? peekAudioObjectUrl(trackId)
+  if (!url) return
   const el = audio()
   el.muted = false
   el.volume = 1
   el.src = url
+  useLibraryPlayerStore.setState({ currentAudioUrl: url })
   el.play().catch(() => {
     /* NotAllowedError / AbortError */
   })
@@ -284,9 +290,8 @@ function commitTrackChange(trackId: string, index: number, url: string) {
   })
   persistSoon({ currentTrackId: trackId, index, position: 0 })
   setLibraryOwnsMediaSession(true)
-  applySrcAndPlay(url)
+  applySrcAndPlay(trackId, url)
   if (prevId && prevId !== trackId) {
-    // Revoke solo cuando vuelva a primer plano y la pista ya no esté caliente
     scheduleRevokeAudioUrl(prevId)
   }
   void db.tracks.get(trackId).then((track) => {
@@ -305,19 +310,37 @@ function commitTrackChange(trackId: string, index: number, url: string) {
 }
 
 /**
- * Registro ESTÁTICO y permanente de Media Session al arrancar.
- * nexttrack/previoustrack SIEMPRE registrados (aunque la URL aún no esté lista:
- * el handler hace return). Nunca seek±.
+ * Media Session: solo tras el primer play() del usuario (gesto).
+ * seekforward/seekbackward siempre null. next/prev registrados aquí, no en cold start.
  */
 function bindLibraryMediaHandlersOnce() {
   if (mediaHandlersBound || !('mediaSession' in navigator)) return
   mediaHandlersBound = true
 
+  try {
+    navigator.mediaSession.setActionHandler('seekforward', null)
+    navigator.mediaSession.setActionHandler('seekbackward', null)
+    navigator.mediaSession.setActionHandler('seekto', null)
+  } catch {
+    /* ignore */
+  }
+
   navigator.mediaSession.setActionHandler('play', () => {
-    if (!useLibraryPlayerStore.getState().currentTrackId) return
-    audio()
-      .play()
-      .catch(() => {})
+    const { currentTrackId } = useLibraryPlayerStore.getState()
+    if (!currentTrackId) return
+    // Reasignar desde Blob en RAM antes de play (blob: puede haber muerto al suspender)
+    const url = reassignAudioObjectUrl(currentTrackId)
+    const el = audio()
+    if (url && el.src !== url && el.currentSrc !== url) {
+      const pos = el.currentTime
+      el.src = url
+      try {
+        if (pos > 0.25) el.currentTime = pos
+      } catch {
+        /* ignore */
+      }
+    }
+    el.play().catch(() => {})
   })
 
   navigator.mediaSession.setActionHandler('pause', () => {
@@ -325,7 +348,6 @@ function bindLibraryMediaHandlersOnce() {
     audio().pause()
   })
 
-  // Registrados de forma incondicional e inmediata — no esperar urlReady
   navigator.mediaSession.setActionHandler('previoustrack', () => {
     if (!useLibraryPlayerStore.getState().currentTrackId) return
     const target = resolveSkipTarget(-1)
@@ -357,27 +379,19 @@ function bindLibraryMediaHandlersOnce() {
     if (!url) return
     commitTrackChange(target.trackId, target.index, url)
   })
-
-  try {
-    navigator.mediaSession.setActionHandler('seekto', null)
-    navigator.mediaSession.setActionHandler('seekbackward', null)
-    navigator.mediaSession.setActionHandler('seekforward', null)
-  } catch {
-    /* ignore */
-  }
 }
 
-/** Fuerza re-registro de next/prev (p.ej. tras podcast) y anula seek±. */
-export function ensureLibraryMediaSessionBound() {
-  if (!('mediaSession' in navigator)) return
+/** Re-registro tras radio/podcast. */
+function reclaimLibraryMediaSession() {
+  setLibraryOwnsMediaSession(true)
   mediaHandlersBound = false
   bindLibraryMediaHandlersOnce()
 }
 
-/** Solo al recuperar el control tras radio/podcast (ellos pisan Media Session). */
-function reclaimLibraryMediaSession() {
+/** Primer play del usuario (o play posterior): registra MS si aún no. */
+function bindMediaSessionOnUserPlay() {
   setLibraryOwnsMediaSession(true)
-  ensureLibraryMediaSessionBound()
+  bindLibraryMediaHandlersOnce()
 }
 
 async function publishMetadata(track: Track) {
@@ -418,6 +432,7 @@ async function stopRivalPlayers() {
     const rivalActive = Boolean(ps.currentRadioId || ps.currentPodcastEpisodeId)
     ps.yieldToLibraryPlayer()
     if (rivalActive) {
+      mediaHandlersBound = false
       audioEngine.markIntentionalPause(1500)
       audioEngine.pause()
     }
@@ -456,7 +471,7 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
     return true
   }
 
-  applySrcAndPlay(url)
+  applySrcAndPlay(trackId, url)
 
   if (epoch !== loadEpoch) return false
 
@@ -519,7 +534,7 @@ libraryAudio.addEventListener('loadedmetadata', onLibraryLoadedMetadata)
 libraryAudio.addEventListener('playing', onLibraryPlaying)
 libraryAudio.addEventListener('pause', onLibraryPause)
 libraryAudio.addEventListener('ended', onLibraryEnded)
-bindLibraryMediaHandlersOnce()
+// Media Session next/prev: NO en cold start — solo en el primer play() del usuario
 
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
@@ -623,7 +638,8 @@ export const useLibraryPlayerStore = create<
   playTracks: async (trackIds, startId, options) => {
     if (!trackIds.length) return
     await stopRivalPlayers()
-    reclaimLibraryMediaSession()
+    // Primer play del usuario: registrar Media Session aquí (no en cold start)
+    bindMediaSessionOnUserPlay()
 
     const forceShuffle = options?.shuffle
     const source =
@@ -695,12 +711,26 @@ export const useLibraryPlayerStore = create<
     const { currentTrackId } = get()
     if (!currentTrackId) return
     await stopRivalPlayers()
-    reclaimLibraryMediaSession()
+    bindMediaSessionOnUserPlay()
 
     const el = audio()
-    if (!el.src && !el.currentSrc) {
+    // Reasignar desde Blob en RAM antes de play (tras suspensión)
+    const url = reassignAudioObjectUrl(currentTrackId)
+    if (!url && !el.src && !el.currentSrc) {
       await loadTrack(currentTrackId, true)
       return
+    }
+    if (url) {
+      const pos = Math.max(0, el.currentTime || get().position || 0)
+      if (el.src !== url && el.currentSrc !== url) {
+        el.src = url
+        try {
+          if (pos > 0.25) el.currentTime = pos
+        } catch {
+          /* ignore */
+        }
+      }
+      set({ currentAudioUrl: url })
     }
 
     el.muted = false

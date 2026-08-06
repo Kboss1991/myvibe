@@ -106,6 +106,8 @@ export async function getCoverBlob(id: string): Promise<Blob | null> {
 }
 
 const objectUrlCache = new Map<string, string>()
+/** Blobs en RAM: fuente persistente tras suspensión (blob: URLs se invalidan). */
+const audioBlobCache = new Map<string, Blob>()
 /** IDs pendientes de revoke — solo en primer plano y fuera de uso. */
 const pendingAudioRevoke = new Set<string>()
 /** IDs cuya URL no debe revocarse (cola caliente del reproductor). */
@@ -149,9 +151,41 @@ if (typeof document !== 'undefined') {
   })
 }
 
+function cachePlayableBlob(id: string, blob: Blob, mimeHint?: string): Blob {
+  const playable = ensureAudioMime(blob, mimeHint)
+  audioBlobCache.set(id, playable)
+  return playable
+}
+
+/**
+ * Reasigna audio.src desde el Blob en memoria (sin IndexedDB).
+ * Tras suspensión iOS, las blob: URLs quedan inválidas; el Blob en RAM sigue vivo.
+ */
+export function reassignAudioObjectUrl(id: string): string | null {
+  const blob = audioBlobCache.get(id)
+  if (!blob) return objectUrlCache.get(`audio:${id}`) ?? null
+  const old = objectUrlCache.get(`audio:${id}`)
+  if (old?.startsWith('blob:')) {
+    try {
+      URL.revokeObjectURL(old)
+    } catch {
+      /* ignore */
+    }
+  }
+  const url = URL.createObjectURL(blob)
+  objectUrlCache.set(`audio:${id}`, url)
+  return url
+}
+
+export function peekAudioBlob(id: string): Blob | null {
+  return audioBlobCache.get(id) ?? null
+}
+
 export async function getAudioObjectUrl(id: string): Promise<string | null> {
-  const cached = objectUrlCache.get(`audio:${id}`)
-  if (cached) return cached
+  const existingBlob = audioBlobCache.get(id)
+  if (existingBlob) {
+    return reassignAudioObjectUrl(id)
+  }
   const blob = await getAudioBlob(id)
   if (!blob) return null
   let mimeHint = blob.type
@@ -166,14 +200,11 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
       mimeHint = 'audio/mpeg'
     }
   }
-  const playable = ensureAudioMime(blob, mimeHint)
-  // Blob URL en memoria — sin rutas sintéticas del Service Worker
-  const url = URL.createObjectURL(playable)
-  objectUrlCache.set(`audio:${id}`, url)
-  return url
+  cachePlayableBlob(id, blob, mimeHint)
+  return reassignAudioObjectUrl(id)
 }
 
-/** Cache hit síncrono (nexttrack/previoustrack en bloqueo — sin IndexedDB). */
+/** Cache hit síncrono de URL (puede estar stale tras suspensión — preferir reassign). */
 export function peekAudioObjectUrl(id: string): string | null {
   return objectUrlCache.get(`audio:${id}`) ?? null
 }
@@ -201,6 +232,10 @@ export function revokeCachedUrls(id: string): void {
       }
       objectUrlCache.delete(key)
     }
+  }
+  // Mantener Blob en RAM si sigue protegido; si no, liberar
+  if (!protectedAudioIds.has(id)) {
+    audioBlobCache.delete(id)
   }
 }
 
