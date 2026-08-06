@@ -109,7 +109,6 @@ let suppressPositionUntil = 0
 /** En iPhone biblioteca: limitar positionState para no resetear el botón en CarPlay. */
 let lastLibraryPositionStateAt = 0
 let lastLibraryPositionTrackId: string | null = null
-let sessionPublishToken = 0
 /** Tras llamada / interrupción del sistema: reintentar play y reclamar Now Playing. */
 let interruptionResumeTimer: number | null = null
 let interruptionResumeUntil = 0
@@ -133,52 +132,16 @@ function beginTrackChangeMediaGuard(ms = 6000) {
   suppressPositionUntil = Math.max(suppressPositionUntil, Date.now() + Math.min(ms, 3000))
 }
 
-/**
- * Publica Now Playing SOLO cuando el <audio> ya no está en pause.
- * Si se publica antes, iOS/CarPlay deja el botón en Play aunque luego suene.
- */
+/** Biblioteca: refresco simple de Now Playing sin esperas ni reintentos internos. */
 async function publishPlayingMediaSession(trackId: string) {
-  const token = ++sessionPublishToken
   beginTrackChangeMediaGuard(8000)
-  setMediaPlaybackState(true)
-  for (let i = 0; i < 40; i++) {
-    if (token !== sessionPublishToken) return
-    if (usePlayerStore.getState().currentTrackId !== trackId) return
-    if (!audioEngine.paused) break
-    await new Promise<void>((r) => window.setTimeout(r, 50))
-  }
-  if (token !== sessionPublishToken) return
-  if (usePlayerStore.getState().currentTrackId !== trackId) return
-  if (audioEngine.paused) {
-    try {
-      await audioEngine.play()
-    } catch {
-      /* ignore */
-    }
-  }
-
-  // No bloquear el primer publish por la portada: updateMediaSession ya sabe
-  // arrancar con artwork en caché y luego mejorarla si llega.
   void getCoverObjectUrl(trackId).then((coverUrl) => {
-    if (token !== sessionPublishToken) return
     if (coverUrl && usePlayerStore.getState().currentTrackId === trackId) {
       usePlayerStore.setState({ coverUrl })
     }
   })
-
-  if (token !== sessionPublishToken) return
-  if (usePlayerStore.getState().currentTrackId !== trackId) return
-  beginTrackChangeMediaGuard(8000)
   setMediaPlaybackState(true)
   await refreshMediaSessionForTrackId(trackId, true)
-  // Reafirmar sin volver a escribir metadata
-  for (const delay of [120, 400, 900, 1800, 3500]) {
-    window.setTimeout(() => {
-      if (token !== sessionPublishToken) return
-      if (usePlayerStore.getState().currentTrackId !== trackId) return
-      if (mediaIsEffectivelyPlaying()) setMediaPlaybackState(true)
-    }, delay)
-  }
 }
 /** Cola de episodios del show abierto (ids). */
 let podcastEpisodeQueue: string[] = []

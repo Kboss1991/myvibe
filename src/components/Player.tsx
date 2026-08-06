@@ -6,7 +6,7 @@ import { formatRadioDelay, getRadioStation } from '../lib/radios'
 import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
 import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
 import { useLibraryStore } from '../store/libraryStore'
-import { bindMediaSession, resumeAfterInterruption, shouldDeferAuxiliaryMediaSessionBind, usePlayerStore } from '../store/playerStore'
+import { bindMediaSession, resumeAfterInterruption, usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
 import {
   IconHeart,
@@ -65,7 +65,8 @@ export function PlayerBar() {
   const displayDelay = useDisplayedRadioDelay(radioDelay, radioPauseStartedAt, maxDelay)
 
   useEffect(() => {
-    if (shouldDeferAuxiliaryMediaSessionBind()) return
+    // Biblioteca: Media Session la controla el store; aquí solo radio/podcast.
+    if (currentTrackId && !currentRadioId && !currentPodcastEpisodeId) return
     void bindMediaSession(tracks)
   }, [currentTrackId, currentRadioId, currentPodcastEpisodeId])
 
