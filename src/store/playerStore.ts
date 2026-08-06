@@ -358,6 +358,13 @@ function handleRemotePlay() {
     pendingBackgroundPlay = false
     holdMediaPlaying(8000)
     usePlayerStore.setState({ isPlaying: true })
+    void bindMediaSession([])
+      .then(() => {
+        claimNowPlaying(true, { reclaim: true })
+      })
+      .catch(() => {
+        claimNowPlaying(true, { reclaim: true })
+      })
     setMediaPlaybackState(true)
     reaffirmMediaSession({ playing: true })
     return
