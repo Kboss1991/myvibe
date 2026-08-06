@@ -282,13 +282,70 @@ function mediaIsEffectivelyPlaying() {
 }
 
 
-/** STRIP MODE: play/pause remoto desactivado (bloqueo/CarPlay no controlan audio). */
+/** Play remoto mínimo: mismo gesto → audioEngine.play / store.play. Sin laberinto. */
 function handleRemotePlay() {
-  /* intentionally empty — verify lock-screen Play does nothing */
+  stopInterruptionResumeWatcher()
+  const state = usePlayerStore.getState()
+  if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
+    return
+  }
+
+  if (!audioEngine.paused) {
+    pendingBackgroundPlay = false
+    usePlayerStore.setState({ isPlaying: true })
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+    return
+  }
+
+  pendingBackgroundPlay = true
+  usePlayerStore.setState({ isPlaying: true })
+  const resumeAt =
+    state.position > 0.25
+      ? state.position
+      : Number.isFinite(audioEngine.currentTime)
+        ? audioEngine.currentTime
+        : 0
+
+  // Crítico en iOS: play() en el mismo turno del gesto de Media Session
+  void audioEngine.playFromUserGesture(resumeAt).then((ok) => {
+    const playing = Boolean(ok) && !audioEngine.paused
+    if (playing) {
+      pendingBackgroundPlay = false
+      usePlayerStore.setState({ isPlaying: true })
+      setMediaPlaybackState(true)
+      refreshMediaPlaybackState(true, { strong: true })
+      return
+    }
+    void usePlayerStore
+      .getState()
+      .play()
+      .then(() => {
+        const nowPlaying = !audioEngine.paused
+        pendingBackgroundPlay = nowPlaying
+        usePlayerStore.setState({ isPlaying: nowPlaying })
+        refreshMediaPlaybackState(nowPlaying, { strong: nowPlaying })
+      })
+      .catch(() => {
+        pendingBackgroundPlay = false
+        clearMediaPlayingHold()
+        usePlayerStore.setState({ isPlaying: false })
+        refreshMediaPlaybackState(false)
+      })
+  })
 }
 
 function handleRemotePause() {
-  /* intentionally empty — verify lock-screen Pause does nothing */
+  audioEngine.markIntentionalPause(2000)
+  interruptionBurstToken += 1
+  stopInterruptionResumeWatcher()
+  pendingBackgroundPlay = false
+  clearMediaPlayingHold()
+  usePlayerStore.getState().pause()
+  if (!audioEngine.paused) audioEngine.pause()
+  usePlayerStore.setState({ isPlaying: false })
+  setMediaPlaybackState(false)
+  refreshMediaPlaybackState(false)
 }
 
 /**

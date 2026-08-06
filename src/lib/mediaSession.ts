@@ -232,9 +232,8 @@ async function resolveLockScreenArtwork(
 
 
 /**
- * STRIP MODE (2026-08-06): play/pause de bloqueo/CarPlay son NO-OP a propósito.
- * Queremos comprobar que el laberinto remoto ya no controla el audio.
- * next/previous/seek siguen opcionales.
+ * Media Session handlers. Play/Pause remotos vuelven a controlar el audio
+ * de forma mínima (sin soft-pause / ghost / reclaim).
  */
 function bindMediaHandlers(handlers: {
   play?: () => void
@@ -245,12 +244,19 @@ function bindMediaHandlers(handlers: {
   getPosition?: () => number
   seekSkip?: boolean
 }) {
-  // NO-OP: no ejecutar handlers de play/pause remotos
   navigator.mediaSession.setActionHandler('play', () => {
-    /* stripped: lock-screen Play does nothing */
+    try {
+      handlers.play?.()
+    } catch {
+      /* ignore */
+    }
   })
   navigator.mediaSession.setActionHandler('pause', () => {
-    /* stripped: lock-screen Pause does nothing */
+    try {
+      handlers.pause?.()
+    } catch {
+      /* ignore */
+    }
   })
   navigator.mediaSession.setActionHandler(
     'previoustrack',
@@ -319,7 +325,7 @@ function publishMetadata(opts: {
   })
 }
 
-/** Stubs vacíos: API antigua eliminada del laberinto. */
+/** Compat no-ops (APIs antiguas eliminadas). */
 export function setGhostPlayHandler(_fn: (() => void) | null) {}
 export function markMediaPlayGesture() {}
 export function reaffirmMediaSession(_opts?: { playing?: boolean }) {}
@@ -328,11 +334,20 @@ export function startSoftPauseSessionGuard() {}
 export function stopSoftPauseSessionGuard() {}
 export function claimNowPlaying(_playing?: boolean, _opts?: { reclaim?: boolean }) {}
 export function setPlaybackStateResolver(_fn: (() => boolean) | null) {}
-export function clearMediaPlaybackRefresh() {}
+
+let playbackRefreshTimers: number[] = []
+
+export function clearMediaPlaybackRefresh() {
+  try {
+    for (const t of playbackRefreshTimers) window.clearTimeout(t)
+    playbackRefreshTimers = []
+  } catch {
+    /* ignore */
+  }
+}
 
 /**
- * Now Playing: solo ficha (título/artista/carátula) + playbackState.
- * Play/Pause remotos están desactivados (strip mode).
+ * Now Playing: ficha + playbackState. Una sola escritura de metadata.
  */
 export async function updateMediaSession(
   track: Track | null,
@@ -351,6 +366,7 @@ export async function updateMediaSession(
   if (!('mediaSession' in navigator)) return
   if (!track) return
 
+  // Handlers YA (antes de await artwork)
   bindMediaHandlers(handlers)
 
   let artwork = peekCachedLockScreenArtwork(track.id)
@@ -371,8 +387,13 @@ export async function updateMediaSession(
   })
   bindMediaHandlers(handlers)
 
-  if (opts?.playing === true) setMediaPlaybackState(true)
-  else if (opts?.playing === false) setMediaPlaybackState(false)
+  if (opts?.playing === true) {
+    setMediaPlaybackState(true)
+    refreshMediaPlaybackState(true, { strong: true })
+  } else if (opts?.playing === false) {
+    setMediaPlaybackState(false)
+    refreshMediaPlaybackState(false)
+  }
 }
 
 export async function updateRadioMediaSession(
@@ -438,10 +459,23 @@ export function setMediaPlaybackState(playing: boolean) {
   }
 }
 
-/** Simple refresh — sin timers laberínticos. */
-export function refreshMediaPlaybackState(playing?: boolean, _opts?: { strong?: boolean }) {
-  if (playing === true) setMediaPlaybackState(true)
-  else if (playing === false) setMediaPlaybackState(false)
+/** Pocas pasadas — sin laberinto de 8s. */
+export function refreshMediaPlaybackState(
+  playing?: boolean,
+  opts?: { strong?: boolean },
+) {
+  if (playing !== true && playing !== false) return
+  const apply = () => setMediaPlaybackState(playing)
+  apply()
+  try {
+    clearMediaPlaybackRefresh()
+    const delays = opts?.strong ? [50, 200, 600, 1500, 3000] : [40, 200, 800]
+    for (const delay of delays) {
+      playbackRefreshTimers.push(window.setTimeout(apply, delay))
+    }
+  } catch {
+    /* ignore */
+  }
 }
 
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
