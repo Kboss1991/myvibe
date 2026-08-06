@@ -840,6 +840,18 @@ export function resumeAfterInterruption() {
   if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
     return
   }
+  if (isLibraryTrackState(state)) {
+    audioEngine.applyPlaybackSession()
+    const wantPlaying = pendingBackgroundPlay || state.isPlaying
+    void syncLibraryTrackMediaSession(wantPlaying, { reclaim: true })
+    if (wantPlaying && audioEngine.paused) {
+      pendingBackgroundPlay = true
+      void burstResumeAfterCall()
+      startInterruptionResumeWatcher()
+      return
+    }
+    return
+  }
   audioEngine.applyPlaybackSession()
   const wantPlaying = pendingBackgroundPlay || state.isPlaying
   void bindMediaSession([]).then(() =>
@@ -1621,6 +1633,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
   pause: () => {
     const { currentRadioId, radioPauseStartedAt, currentPodcastEpisodeId } = get()
+    const libraryTrack = Boolean(get().currentTrackId) && !currentRadioId && !currentPodcastEpisodeId
     if (currentPodcastEpisodeId) {
       persistPodcastProgressNow(set, get)
     }
@@ -1637,6 +1650,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     refreshMediaPlaybackState(false)
     keepMediaSessionAlivePaused()
     startSoftPauseSessionGuard()
+    if (libraryTrack) void syncLibraryTrackMediaSession(false, { reclaim: true })
     set({
       isPlaying: false,
       ...(currentRadioId && radioPauseStartedAt == null
@@ -1667,6 +1681,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         isPlaying: true,
         ...(currentRadioId ? { radioPauseStartedAt: null } : {}),
       })
+      if (currentTrackId && !currentRadioId && !currentPodcastEpisodeId) {
+        void syncLibraryTrackMediaSession(true, { reclaim: true })
+      }
       refreshMediaPlaybackState(true, { strong: true })
       return
     }
@@ -1795,12 +1812,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         set({ isPlaying: true })
         setMediaPlaybackState(true)
         refreshMediaPlaybackState(true, { strong: true })
+        void syncLibraryTrackMediaSession(true, { reclaim: true })
       }
       return
     }
     set({ isPlaying: true })
     setMediaPlaybackState(true)
-    await bindMediaSession([])
+    await syncLibraryTrackMediaSession(true, { reclaim: true })
     refreshMediaPlaybackState(true, { strong: true })
   },
 
