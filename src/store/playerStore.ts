@@ -105,6 +105,9 @@ let pendingBackgroundPlay = false
 let mediaPlayingHoldUntil = 0
 /** No llamar setPositionState justo tras el salto: en CarPlay resetea a Play. */
 let suppressPositionUntil = 0
+/** Throttle de setPositionState (cada tick lo pisa a Play en iOS). */
+let lastPositionPushAt = 0
+let lastPositionPushKey: string | null = null
 /** Tras llamada / interrupción del sistema: reintentar play y reclamar Now Playing. */
 let interruptionResumeTimer: number | null = null
 let interruptionResumeUntil = 0
@@ -233,9 +236,9 @@ async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = fal
   const wantPlaying = forcePlaying || mediaIsEffectivelyPlaying()
   logPlayback('library-session-sync', {
     isPlaying: wantPlaying,
-    detail: `build=${PLAYBACK_DEBUG_BUILD} library-spotify-path track=${trackId}`,
+    detail: `build=${PLAYBACK_DEBUG_BUILD} library-lockfix track=${trackId}`,
   })
-  // Igual que playPodcastEpisode: updateMediaSession una vez, sin reclaim.
+  // Igual que playPodcastEpisode: updateMediaSession una vez.
   await updateMediaSession(
     track,
     cover,
@@ -250,7 +253,8 @@ async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = fal
     },
     { playing: wantPlaying },
   )
-  refreshMediaPlaybackState(wantPlaying, wantPlaying ? { strong: true } : undefined)
+  // updateMediaSession ya refresca si playing; aquí solo si paused/unknown
+  if (!wantPlaying) refreshMediaPlaybackState(false)
 }
 
 function isLibraryTrackState(
@@ -348,9 +352,8 @@ function handleRemotePlay() {
     pendingBackgroundPlay = false
     holdMediaPlaying(8000)
     usePlayerStore.setState({ isPlaying: true })
-    // Solo playbackState. Ni reclaim ni reaffirm: reescribir metadata → Play en CarPlay.
-    setMediaPlaybackState(true)
-    refreshMediaPlaybackState(true, { strong: true })
+    // Solo playbackState + handlers. Sin reescribir MediaMetadata.
+    reaffirmMediaSession({ playing: true })
     return
   }
 
@@ -512,7 +515,7 @@ function handleRemotePlay() {
       return
     }
     stopSoftPauseSessionGuard()
-    // Misma pista: no reescribir MediaMetadata (CarPlay → Play). Solo playbackState.
+    // Tras resume: solo playbackState (metadata ya publicada al iniciar la pista)
     setMediaPlaybackState(true)
     refreshMediaPlaybackState(true, { strong: true })
   })()
@@ -1011,7 +1014,6 @@ async function loadAndMaybePlay(
         beginTrackChangeMediaGuard(8000)
         set({ isPlaying: true })
         setMediaPlaybackState(true)
-        refreshMediaPlaybackState(true, { strong: true })
         void syncLibraryTrackMediaSession(true)
         return true
       }
@@ -1020,13 +1022,13 @@ async function loadAndMaybePlay(
     const playing = !audioEngine.paused
     set({ isPlaying: playing })
     if (playing) {
+      // Mismo orden que playPodcastEpisode: play → metadata una vez → playbackState
       beginTrackChangeMediaGuard(8000)
       setMediaPlaybackState(true)
-      refreshMediaPlaybackState(true, { strong: true })
+      await refreshMediaSessionForTrackId(trackId, true)
       await recordPlay(trackId)
       await persistRecent(trackId)
       prefetchNextForCurrent(usePlayerStore.getState)
-      await refreshMediaSessionForTrackId(trackId, true)
     } else {
       refreshMediaPlaybackState(false)
     }
@@ -1250,11 +1252,28 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       volume: audioEngine.volume,
       muted: audioEngine.muted,
     })
-    // Igual que podcasts: tras salto de pista no tocar setPositionState
+    // setPositionState en iOS resetea a Play: no cada tick; solo ~2s o al cambiar pista/pausar
     if (Date.now() < suppressPositionUntil) {
       if (effectivePlaying) setMediaPlaybackState(true)
     } else {
-      setMediaPositionState(position, duration, effectivePlaying)
+      const posKey =
+        get().currentTrackId ||
+        get().currentPodcastEpisodeId ||
+        get().currentRadioId ||
+        null
+      const now = Date.now()
+      const trackChanged = posKey !== lastPositionPushKey
+      const due =
+        trackChanged ||
+        !effectivePlaying ||
+        now - lastPositionPushAt >= 2000
+      if (due) {
+        setMediaPositionState(position, duration, effectivePlaying)
+        lastPositionPushAt = now
+        lastPositionPushKey = posKey
+      } else if (effectivePlaying) {
+        setMediaPlaybackState(true)
+      }
     }
     persistSoon({ position })
 
