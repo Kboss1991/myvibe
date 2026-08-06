@@ -249,6 +249,24 @@ async function refreshMediaSessionForTrackId(trackId: string, forcePlaying = fal
   else refreshMediaPlaybackState(wantPlaying)
 }
 
+function isLibraryTrackState(
+  state: Pick<PlayerState, 'currentTrackId' | 'currentRadioId' | 'currentPodcastEpisodeId'>,
+): boolean {
+  return Boolean(state.currentTrackId) && !state.currentRadioId && !state.currentPodcastEpisodeId
+}
+
+async function syncLibraryTrackMediaSession(
+  playing: boolean,
+  opts?: { reclaim?: boolean },
+) {
+  const state = usePlayerStore.getState()
+  if (!isLibraryTrackState(state) || !state.currentTrackId) return
+  await refreshMediaSessionForTrackId(state.currentTrackId, playing)
+  if (opts?.reclaim) {
+    claimNowPlaying(playing, { reclaim: true })
+  }
+}
+
 function mediaIsEffectivelyPlaying() {
   // Audio real manda.
   if (!audioEngine.paused) return true
@@ -302,6 +320,55 @@ function handleRemotePlay() {
   const state = usePlayerStore.getState()
   if (!state.currentTrackId && !state.currentRadioId && !state.currentPodcastEpisodeId) {
     logPlayback('remote-play-empty')
+    return
+  }
+
+  if (isLibraryTrackState(state)) {
+    stopInterruptionResumeWatcher()
+    clearMediaPlaybackRefresh()
+    stopSoftPauseSessionGuard()
+
+    if (!audioEngine.paused) {
+      logPlayback('remote-play-sync', {
+        isPlaying: true,
+        detail: 'library elPaused=false',
+      })
+      pendingBackgroundPlay = false
+      holdMediaPlaying(8000)
+      usePlayerStore.setState({ isPlaying: true })
+      setMediaPlaybackState(true)
+      void syncLibraryTrackMediaSession(true, { reclaim: true })
+      return
+    }
+
+    const resumeAt =
+      state.position > 0.25
+        ? state.position
+        : Number.isFinite(audioEngine.currentTime)
+          ? audioEngine.currentTime
+          : 0
+
+    logPlayback('remote-play', {
+      paused: true,
+      isPlaying: state.isPlaying,
+      detail: `library strategy=inplace ready=${audioEngine.element.readyState}`,
+    })
+
+    const kicked = audioEngine.playFromUserGesture(resumeAt)
+    void (async () => {
+      const ok = await settlePlayPromise(kicked, 2000)
+      const playing = ok && !audioEngine.paused
+      pendingBackgroundPlay = false
+      usePlayerStore.setState({ isPlaying: playing })
+      if (playing) {
+        setMediaPlaybackState(true)
+        await syncLibraryTrackMediaSession(true, { reclaim: true })
+        return
+      }
+      await syncLibraryTrackMediaSession(false, { reclaim: true })
+      keepMediaSessionAlivePaused()
+      startSoftPauseSessionGuard()
+    })()
     return
   }
 
@@ -510,6 +577,33 @@ function handleRemotePause() {
 
   const state = usePlayerStore.getState()
   const snap = audioEngine.debugSnapshot()
+
+  if (isLibraryTrackState(state)) {
+    logPlayback('remote-pause', {
+      paused: snap.paused,
+      muted: snap.muted,
+      rate: snap.rate,
+      suspended: snap.suspended,
+      isPlaying: state.isPlaying,
+      detail: `library elPaused=${snap.elementPaused}`,
+    })
+    audioEngine.pause()
+    usePlayerStore.setState({ isPlaying: false })
+    void syncLibraryTrackMediaSession(false, { reclaim: true })
+    keepMediaSessionAlivePaused()
+    startSoftPauseSessionGuard()
+    const snap2 = audioEngine.debugSnapshot()
+    logPlayback('remote-pause-done', {
+      paused: snap2.paused,
+      muted: snap2.muted,
+      rate: snap2.rate,
+      suspended: snap2.suspended,
+      isPlaying: false,
+      detail: `library elPaused=${snap2.elementPaused}`,
+    })
+    return
+  }
+
   logPlayback('remote-pause', {
     paused: snap.paused,
     muted: snap.muted,
