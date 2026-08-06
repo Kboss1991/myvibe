@@ -14,6 +14,7 @@ import {
   IconPlay,
   IconQueue,
   IconRepeat,
+  IconRepeatOne,
   IconShuffle,
   IconSkipBack,
   IconSkipForward,
@@ -30,6 +31,18 @@ import './TrackList.css'
 function seekProgressStyle(position: number, duration: number): CSSProperties {
   const p = duration > 0 ? Math.min(100, Math.max(0, (position / duration) * 100)) : 0
   return { ['--seek-p' as string]: `${p}%` }
+}
+
+function formatRemaining(position: number, duration: number): string {
+  if (!duration || !Number.isFinite(duration)) return formatTime(0)
+  const left = Math.max(0, duration - position)
+  return `-${formatTime(left)}`
+}
+
+function repeatAriaLabel(repeat: 'off' | 'all' | 'one'): string {
+  if (repeat === 'all') return 'Repetir lista'
+  if (repeat === 'one') return 'Repetir canción'
+  return 'Repetición desactivada'
 }
 
 export function PlayerBar() {
@@ -277,10 +290,12 @@ export function PlayerBar() {
             <button
               type="button"
               className={`icon-btn player-bar__ctrl ${repeat !== 'off' ? 'is-on' : ''}`}
-              aria-label="Repetir"
+              aria-label={repeatAriaLabel(repeat)}
+              aria-pressed={repeat !== 'off'}
+              title={repeatAriaLabel(repeat)}
               onClick={() => cycleRepeat()}
             >
-              <IconRepeat size={16} />
+              {repeat === 'one' ? <IconRepeatOne size={16} /> : <IconRepeat size={16} />}
             </button>
           )}
         </div>
@@ -297,7 +312,7 @@ export function PlayerBar() {
             aria-label="Progreso"
             style={seekProgressStyle(position, duration || 0)}
           />
-          <span className="player-bar__time">{formatTime(duration)}</span>
+          <span className="player-bar__time">{formatRemaining(position, duration || 0)}</span>
         </div>
       </div>
 
@@ -522,7 +537,7 @@ export function NowPlaying() {
           />
           <div className="seek-times">
             <span>{formatTime(position)}</span>
-            <span>{formatTime(duration)}</span>
+            <span>{formatRemaining(position, duration || 0)}</span>
           </div>
         </div>
 
@@ -625,7 +640,7 @@ export function NowPlaying() {
         />
         <div className="seek-times">
           <span>{formatTime(position)}</span>
-          <span>{formatTime(duration)}</span>
+          <span>{formatRemaining(position, duration || 0)}</span>
         </div>
       </div>
 
@@ -657,10 +672,12 @@ export function NowPlaying() {
         <button
           type="button"
           className={`icon-btn ${repeat !== 'off' ? 'is-on' : ''}`}
-          aria-label="Repetir"
+          aria-label={repeatAriaLabel(repeat)}
+          aria-pressed={repeat !== 'off'}
+          title={repeatAriaLabel(repeat)}
           onClick={() => cycleRepeat()}
         >
-          <IconRepeat size={22} />
+          {repeat === 'one' ? <IconRepeatOne size={22} /> : <IconRepeat size={22} />}
         </button>
       </div>
 
@@ -678,6 +695,7 @@ export function QueueSheet() {
   const setOpen = usePlayerStore((s) => s.setQueueOpen)
   const queue = usePlayerStore((s) => s.queue)
   const removeFromQueue = usePlayerStore((s) => s.removeFromQueue)
+  const playTracks = usePlayerStore((s) => s.playTracks)
   const tracks = useLibraryStore((s) => s.tracks)
   const currentTrackId = usePlayerStore((s) => s.currentTrackId)
 
@@ -702,13 +720,17 @@ export function QueueSheet() {
               if (!t) return null
               return (
                 <li key={`${id}-${i}`} className={id === currentTrackId ? 'is-active' : ''}>
-                  <div className="queue-list__main">
+                  <button
+                    type="button"
+                    className="queue-list__main"
+                    onClick={() => void playTracks(queue, id)}
+                  >
                     <CoverArt trackId={t.id} hasCover={t.hasCover} size={40} />
                     <div>
                       <strong>{t.title}</strong>
                       <span>{t.artist}</span>
                     </div>
-                  </div>
+                  </button>
                   <button
                     type="button"
                     className="icon-btn"

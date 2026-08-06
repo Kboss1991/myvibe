@@ -1,4 +1,4 @@
-export type RepeatMode = 'off' | 'all'
+export type RepeatMode = 'off' | 'all' | 'one'
 
 /** Origen de la cola actual (solo UI MyVibe; no va a CarPlay). */
 export type PlaybackSource =

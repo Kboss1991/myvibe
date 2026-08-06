@@ -1,17 +1,10 @@
-# Rebuild: reproductor de biblioteca
+# Reproductor de biblioteca (rebuild)
 
-Esta rama (`rebuild-library-player`) **no reproduce canciones de la biblioteca**.
+Motor de biblioteca reactivado estilo Spotify:
 
-- `playTracks` / `addToQueue` / `playNext` están desactivados a propósito.
-- La UI ya no permite clicar una canción (ni álbum/artista/lista) para reproducir.
-- Radios y podcasts siguen funcionando.
+- Play / pause, anterior / siguiente
+- Timeline con tiempo transcurrido y restante
+- Shuffle (aleatorio vs orden de lista)
+- Repeat: off → lista → canción → off
 
-## Código completo anterior
-
-Rama: `archive/full-library-player`
-
-```bash
-git checkout archive/full-library-player
-```
-
-Cuando rehagas el motor de reproducción de biblioteca, parte de ahí o fusiona piezas.
+Código completo anterior (con el laberinto CarPlay): rama `archive/full-library-player`.

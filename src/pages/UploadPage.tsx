@@ -14,6 +14,7 @@ import {
   isZipFile,
 } from '../lib/zip'
 import { useLibraryStore } from '../store/libraryStore'
+import { usePlayerStore } from '../store/playerStore'
 import './pages.css'
 
 export function UploadPage() {
@@ -22,6 +23,7 @@ export function UploadPage() {
   const importShare = useLibraryStore((s) => s.importShare)
   const importProgress = useLibraryStore((s) => s.importProgress)
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
+  const playTracks = usePlayerStore((s) => s.playTracks)
   const navigate = useNavigate()
   const [dragOver, setDragOver] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -43,6 +45,7 @@ export function UploadPage() {
               ? `Importadas ${result.trackIds.length} canciones`
               : `Canción importada`,
       )
+      if (result.trackIds.length) void playTracks(result.trackIds)
       navigate(
         result.playlistCount > 1
           ? '/library'
@@ -105,6 +108,7 @@ export function UploadPage() {
       }
 
       setStatus(`Listo: ${imported.length} canciones${accountImported ? ' · cuenta OK' : ''}`)
+      void playTracks(imported.map((t) => t.id))
       navigate('/library')
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'No se pudo importar el ZIP'
@@ -167,6 +171,7 @@ export function UploadPage() {
           ? `Listo: ${imported.length} canciones (${skipped} fallaron; prueba de nuevo esas)`
           : `Listo: ${imported.length} canciones`,
       )
+      void playTracks(imported.map((t) => t.id))
       navigate('/library')
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'Error desconocido'

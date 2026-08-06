@@ -1,4 +1,3 @@
-// REBUILD: library playback UI removed — see archive/full-library-player
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { Track } from '../types'
@@ -6,12 +5,15 @@ import { isAppleMobile } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
 import { saveFilesVisibly, myVibeDownloadName, deleteVisibleCopies } from '../lib/visibleStorage'
 import { useLibraryStore } from '../store/libraryStore'
+import { usePlayerStore } from '../store/playerStore'
 import { CoverArt } from './CoverArt'
 import { CoverCropSheet } from './CoverCropSheet'
 import {
   IconHeart,
   IconMore,
+  IconPlay,
   IconPlus,
+  IconQueue,
   IconTrash,
   IconEdit,
   IconSearch,
@@ -62,6 +64,11 @@ export function TrackList({
   onSelectModeChange,
   showSelectToggle = true,
 }: Props) {
+  const currentTrackId = usePlayerStore((s) => s.currentTrackId)
+  const isPlaying = usePlayerStore((s) => s.isPlaying)
+  const playTracks = usePlayerStore((s) => s.playTracks)
+  const playNext = usePlayerStore((s) => s.playNext)
+  const addToQueue = usePlayerStore((s) => s.addToQueue)
   const toggleLike = useLibraryStore((s) => s.toggleLike)
   const deleteTrack = useLibraryStore((s) => s.deleteTrack)
   const deleteTracks = useLibraryStore((s) => s.deleteTracks)
@@ -350,6 +357,7 @@ export function TrackList({
           </li>
         )}
         {tracks.map((track, i) => {
+          const active = track.id === currentTrackId
           const isSelected = selected.has(track.id)
           const remote = track.hasLocalAudio === false
           const needsUpdate =
@@ -366,7 +374,7 @@ export function TrackList({
           return (
             <li
               key={track.id}
-              className={`track-row fade-up ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''} ${desktopDrag && selectMode && isSelected ? 'is-draggable' : ''}`}
+              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''} ${desktopDrag && selectMode && isSelected ? 'is-draggable' : ''}`}
               style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}
               draggable={desktopDrag && selectMode && isSelected}
               title={
@@ -418,6 +426,7 @@ export function TrackList({
                   />
                   <div className="track-row__meta">
                     <span className="track-row__title">
+                      {active && isPlaying ? <IconPlay size={12} /> : null}
                       {track.title}
                       {remote && !downloading ? (
                         <em className="track-remote-tag"> · sin audio</em>
@@ -433,25 +442,19 @@ export function TrackList({
                   </div>
                 </div>
               ) : (
-              <div
+              <button
+                type="button"
                 className="track-row__main track-col--title"
-                role={remote || needsUpdate ? 'button' : undefined}
-                tabIndex={remote || needsUpdate ? 0 : undefined}
                 onClick={() => {
-                  if (remote) void downloadIds([track.id])
-                  else if (needsUpdate) void downloadIds([track.id], { quiet: true })
+                  if (remote) {
+                    void downloadIds([track.id])
+                    return
+                  }
+                  void playTracks(
+                    tracks.filter((t) => t.hasLocalAudio !== false).map((t) => t.id),
+                    track.id,
+                  )
                 }}
-                onKeyDown={
-                  remote || needsUpdate
-                    ? (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          if (remote) void downloadIds([track.id])
-                          else if (needsUpdate) void downloadIds([track.id], { quiet: true })
-                        }
-                      }
-                    : undefined
-                }
               >
                 <CoverArt
                   trackId={track.id}
@@ -461,6 +464,7 @@ export function TrackList({
                 />
                 <div className="track-row__meta">
                   <span className="track-row__title">
+                    {active && isPlaying ? <IconPlay size={12} /> : null}
                     {track.title}
                     {remote && !downloading ? (
                       <em className="track-remote-tag"> · sin audio</em>
@@ -474,7 +478,7 @@ export function TrackList({
                   </span>
                   <span className="track-row__sub">{track.artist}</span>
                 </div>
-              </div>
+              </button>
               )}
               {showColumns && (
                 <>
@@ -674,11 +678,39 @@ export function TrackList({
               disabled={bulkBusy}
               onClick={() =>
                 void runBulk(async () => {
+                  const playable = selectedTracks.filter((t) => t.hasLocalAudio !== false)
+                  if (!playable.length) {
+                    alert('Esas canciones aún no están en el móvil. Descárgalas antes.')
+                    return
+                  }
+                  void playTracks(playable.map((t) => t.id))
+                })
+              }
+            >
+              <IconPlay size={18} /> Reproducir
+            </button>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={() =>
+                void runBulk(async () => {
                   await setLiked([...selected], true)
                 })
               }
             >
               <IconHeart size={18} filled /> Me gusta
+            </button>
+            <button
+              type="button"
+              disabled={bulkBusy}
+              onClick={() =>
+                void runBulk(async () => {
+                  const ids = [...selected]
+                  ids.forEach((id) => addToQueue(id))
+                })
+              }
+            >
+              <IconQueue size={18} /> A la cola
             </button>
             <button
               type="button"
@@ -842,6 +874,26 @@ export function TrackList({
               }}
             >
               <IconShare size={18} /> Compartir con MyVibe
+            </button>
+            <button
+              type="button"
+              className="sheet__item"
+              onClick={() => {
+                playNext(menuTrack.id)
+                setMenuTrack(null)
+              }}
+            >
+              <IconQueue size={18} /> Reproducir a continuación
+            </button>
+            <button
+              type="button"
+              className="sheet__item"
+              onClick={() => {
+                addToQueue(menuTrack.id)
+                setMenuTrack(null)
+              }}
+            >
+              <IconPlus size={18} /> Añadir a la cola
             </button>
             <button
               type="button"

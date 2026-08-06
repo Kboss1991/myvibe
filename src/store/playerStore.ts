@@ -361,6 +361,27 @@ function tryAdvanceLibraryTrack(
   if (get().currentRadioId || audioEngine.isLive) return false
   if (get().currentPodcastEpisodeId) return false
 
+  // Repetir canción: al terminar, reinicia la misma pista (no en early: cortaría el final)
+  const oneId = get().currentTrackId
+  if (mode !== 'early' && get().repeat === 'one' && oneId) {
+    trackAdvanceLockUntil = Date.now() + 800
+    audioEngine.seek(0)
+    pendingBackgroundPlay = true
+    set({ isPlaying: true, position: 0 })
+    setMediaPlaybackState(true)
+    void audioEngine.play().then(() => {
+      if (usePlayerStore.getState().currentTrackId !== oneId) return
+      const playing = !audioEngine.paused
+      set({ isPlaying: playing })
+      setMediaPlaybackState(playing)
+      if (!playing) void loadAndMaybePlay(oneId, 0, true, set)
+    })
+    return true
+  }
+
+  // Con repeat one, el poller early no debe avanzar
+  if (get().repeat === 'one') return false
+
   const resolved = resolveNextLibraryTrack(get())
   if (!resolved) {
     if (mode === 'ended') {
@@ -607,6 +628,24 @@ type PlaybackPersistPartial = Partial<{
   volume: number
   playbackSource: PlaybackSource | null
 }>
+
+function normalizePlaybackSource(raw: unknown): PlaybackSource | null {
+  if (!raw || typeof raw !== 'object') return null
+  const s = raw as Record<string, unknown>
+  if (s.kind === 'liked' && typeof s.title === 'string' && s.title.trim()) {
+    return { kind: 'liked', title: s.title.trim() }
+  }
+  if (
+    s.kind === 'playlist' &&
+    typeof s.id === 'string' &&
+    s.id &&
+    typeof s.title === 'string' &&
+    s.title.trim()
+  ) {
+    return { kind: 'playlist', id: s.id, title: s.title.trim() }
+  }
+  return null
+}
 
 let pendingPersist: PlaybackPersistPartial = {}
 
@@ -878,11 +917,10 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId = null
     }
 
-    // REBUILD: no restaurar cola/pista de biblioteca (reproductor eliminado)
-    queue = []
-    originalQueue = []
-    index = 0
-    currentTrackId = null
+    const repeatSnap =
+      snap.repeat === 'all' || snap.repeat === 'one'
+        ? snap.repeat
+        : 'off'
 
     set({
       queue,
@@ -891,20 +929,11 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId,
       // Restaurar aleatorio; si no había valor guardado, ON
       shuffle: snap.shuffle !== false,
-      // Migrar estado antiguo 'one' → 'all'
-      repeat: snap.repeat === 'all' || (snap.repeat as string) === 'one' ? 'all' : 'off',
-      position: 0,
+      repeat: repeatSnap,
+      position: snap.position || 0,
       volume: snap.volume,
-      playbackSource: null,
+      playbackSource: normalizePlaybackSource(snap.playbackSource),
       hydrated: true,
-    })
-    persistSoon({
-      queue: [],
-      originalQueue: [],
-      index: 0,
-      currentTrackId: null,
-      position: 0,
-      playbackSource: null,
     })
     bindPersistLifecycle()
 
@@ -1220,18 +1249,68 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 
-  playTracks: async (_trackIds, _startId, _options) => {
-    // REBUILD: reproducción de biblioteca desactivada a propósito.
-    // Restaurar desde archive/full-library-player cuando se rehaga el motor.
-    console.info('[rebuild] playTracks desactivado — biblioteca sin reproductor')
+  playTracks: async (trackIds, startId, options) => {
+    if (!trackIds.length) return
+    audioEngine.clearStandby()
+    prefetchedNextId = null
+    const forceShuffle = options?.shuffle
+    const source =
+      options && 'source' in options ? (options.source ?? null) : null
+    const shuffleOn =
+      forceShuffle === true
+        ? true
+        : forceShuffle === false
+          ? false
+          : get().shuffle !== false
+    let queue = [...trackIds]
+    let index = startId ? Math.max(0, queue.indexOf(startId)) : 0
+    if (index < 0) index = 0
+    const originalQueue = [...queue]
+    if (shuffleOn) {
+      // Play general (sin canción concreta): mezcla TODO, incluida la primera.
+      // Si el usuario eligió una pista, esa queda la primera.
+      const stay = startId ? index : undefined
+      queue = shuffleArray(queue, stay)
+      index = 0
+    }
+    set({
+      queue,
+      originalQueue,
+      index,
+      currentTrackId: queue[index] ?? null,
+      shuffle: shuffleOn,
+      playbackSource: source,
+    })
+    persistSoon({
+      queue,
+      originalQueue,
+      index,
+      currentTrackId: queue[index] ?? null,
+      shuffle: shuffleOn,
+      position: 0,
+      playbackSource: source,
+    })
+    for (let i = index; i < queue.length; i++) {
+      const trackId = queue[i]!
+      set({ index: i, currentTrackId: trackId })
+      if (await loadAndMaybePlay(trackId, 0, true, set)) return
+    }
   },
 
-  addToQueue: (_trackId) => {
-    console.info('[rebuild] addToQueue desactivado')
+  addToQueue: (trackId) => {
+    const queue = [...get().queue, trackId]
+    const originalQueue = get().shuffle ? get().originalQueue : queue
+    set({ queue, originalQueue })
+    persistSoon({ queue, originalQueue })
   },
 
-  playNext: (_trackId) => {
-    console.info('[rebuild] playNext desactivado')
+  playNext: (trackId) => {
+    const { queue, index } = get()
+    const next = [...queue]
+    next.splice(index + 1, 0, trackId)
+    const originalQueue = get().shuffle ? get().originalQueue : next
+    set({ queue: next, originalQueue })
+    persistSoon({ queue: next, originalQueue })
   },
 
   toggle: async () => {
@@ -1454,6 +1533,15 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     const { queue, index, repeat, currentTrackId } = get()
     if (!queue.length) return
 
+    // Al terminar con "repetir canción", reinicia la misma (el skip manual sí avanza)
+    if (fromEnded && repeat === 'one' && currentTrackId) {
+      trackAdvanceLockUntil = Date.now() + 800
+      pendingBackgroundPlay = true
+      beginTrackChangeMediaGuard(4000)
+      await loadAndMaybePlay(currentTrackId, 0, true, set)
+      return
+    }
+
     const resolved = resolveNextLibraryTrack({ queue, index, currentTrackId, repeat })
     if (!resolved) {
       pendingBackgroundPlay = false
@@ -1667,7 +1755,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   },
 
   cycleRepeat: () => {
-    const next: RepeatMode = get().repeat === 'off' ? 'all' : 'off'
+    const cur = get().repeat
+    const next: RepeatMode =
+      cur === 'off' ? 'all' : cur === 'all' ? 'one' : 'off'
     set({ repeat: next })
     persistSoon({ repeat: next })
   },
