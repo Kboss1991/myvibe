@@ -1,7 +1,6 @@
 import { getCoverBlob } from './library'
 import type { RadioStation } from './radios'
 import type { Track } from '../types'
-import { logPlayback } from './playbackDebug'
 
 export function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -33,23 +32,6 @@ const artworkCache = new Map<string, MediaImage[]>()
 /** Última carátula publicada — iOS borra Now Playing si reescribimos artwork: []. */
 let lastPublishedArtwork: MediaImage[] = []
 let lastPublishedMeta: { title: string; artist: string; album: string } | null = null
-let softPauseGuardTimer: number | null = null
-let softPauseHandlers: {
-  play: () => void
-  pause: () => void
-  previoustrack: () => void
-  nexttrack: () => void
-  seekto?: (time: number) => void
-  getPosition?: () => number
-  seekSkip?: boolean
-} | null = null
-/** Si iOS pone playbackState=playing sin llamar al handler play */
-let ghostPlayHandler: (() => void) | null = null
-
-export function setGhostPlayHandler(fn: (() => void) | null) {
-  ghostPlayHandler = fn
-}
-
 export function clearMediaArtworkCache(trackId?: string) {
   if (trackId) artworkCache.delete(trackId)
   else artworkCache.clear()
@@ -60,13 +42,6 @@ export function peekCachedLockScreenArtwork(trackId: string): MediaImage[] {
   const cached = artworkCache.get(trackId)
   if (cached?.length) return cached
   return lastPublishedArtwork
-}
-
-/** Evita ghost-play justo después de un play real del usuario. */
-let lastMediaPlayGestureAt = 0
-
-export function markMediaPlayGesture() {
-  lastMediaPlayGestureAt = Date.now()
 }
 
 async function resizeCoverToJpeg(blob: Blob, size: number, quality: number): Promise<string> {
@@ -255,40 +230,36 @@ async function resolveLockScreenArtwork(
   return []
 }
 
+
+/**
+ * STRIP MODE (2026-08-06): play/pause de bloqueo/CarPlay son NO-OP a propósito.
+ * Queremos comprobar que el laberinto remoto ya no controla el audio.
+ * next/previous/seek siguen opcionales.
+ */
 function bindMediaHandlers(handlers: {
-  play: () => void
-  pause: () => void
-  previoustrack: () => void
-  nexttrack: () => void
+  play?: () => void
+  pause?: () => void
+  previoustrack?: () => void
+  nexttrack?: () => void
   seekto?: (time: number) => void
   getPosition?: () => number
-  /** ±15 s en pantalla de bloqueo — solo podcasts */
   seekSkip?: boolean
 }) {
-  softPauseHandlers = handlers
-  // play/pause: invocar en el mismo turno del gesto de Media Session
+  // NO-OP: no ejecutar handlers de play/pause remotos
   navigator.mediaSession.setActionHandler('play', () => {
-    markMediaPlayGesture()
-    logPlayback('ms-play-fired')
-    try {
-      handlers.play()
-      logPlayback('ms-play-dispatched')
-    } catch (err) {
-      logPlayback('ms-play-handler-error', {
-        detail: err instanceof Error ? err.message : 'unknown',
-      })
-    }
+    /* stripped: lock-screen Play does nothing */
   })
   navigator.mediaSession.setActionHandler('pause', () => {
-    logPlayback('ms-pause-fired')
-    handlers.pause()
+    /* stripped: lock-screen Pause does nothing */
   })
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
-    handlers.previoustrack()
-  })
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
-    handlers.nexttrack()
-  })
+  navigator.mediaSession.setActionHandler(
+    'previoustrack',
+    handlers.previoustrack ? () => handlers.previoustrack!() : null,
+  )
+  navigator.mediaSession.setActionHandler(
+    'nexttrack',
+    handlers.nexttrack ? () => handlers.nexttrack!() : null,
+  )
 
   try {
     if (handlers.seekto) {
@@ -348,123 +319,29 @@ function publishMetadata(opts: {
   })
 }
 
-/**
- * Reafirma ficha + handlers sin borrar artwork.
- * Importante: con playing=true NO reescribir MediaMetadata (CarPlay vuelve a Play).
- * Solo reescribe metadata en paused (evita "Sin contenido" / handoff a Podcasts).
- */
-export function reaffirmMediaSession(opts?: { playing?: boolean }) {
-  if (!('mediaSession' in navigator)) return
-  try {
-    if (opts?.playing !== true) {
-      const meta = navigator.mediaSession.metadata
-      const title = meta?.title || lastPublishedMeta?.title
-      if (title) {
-        publishMetadata({
-          title,
-          artist: meta?.artist || lastPublishedMeta?.artist || 'MyVibe',
-          album: meta?.album || lastPublishedMeta?.album || 'MyVibe',
-          artwork: meta?.artwork?.length
-            ? Array.from(meta.artwork)
-            : lastPublishedArtwork,
-        })
-      }
-    }
-    if (softPauseHandlers) bindMediaHandlers(softPauseHandlers)
-  } catch {
-    /* ignore */
-  }
-  if (opts?.playing === false) {
-    setMediaPlaybackState(false)
-    refreshMediaPlaybackState(false)
-  } else if (opts?.playing === true) {
-    stopSoftPauseSessionGuard()
-    setMediaPlaybackState(true)
-    refreshMediaPlaybackState(true, { strong: true })
-  }
-}
+/** Stubs vacíos: API antigua eliminada del laberinto. */
+export function setGhostPlayHandler(_fn: (() => void) | null) {}
+export function markMediaPlayGesture() {}
+export function reaffirmMediaSession(_opts?: { playing?: boolean }) {}
+export function keepMediaSessionAlivePaused() {}
+export function startSoftPauseSessionGuard() {}
+export function stopSoftPauseSessionGuard() {}
+export function claimNowPlaying(_playing?: boolean, _opts?: { reclaim?: boolean }) {}
+export function setPlaybackStateResolver(_fn: (() => boolean) | null) {}
+export function clearMediaPlaybackRefresh() {}
 
 /**
- * Tras soft-pause: reafirmar la misma ficha (sin artwork vacío) y estado paused.
- * Si no, iOS a veces deja "Sin contenido" y el Play de bloqueo no llega.
- */
-export function keepMediaSessionAlivePaused() {
-  reaffirmMediaSession({ playing: false })
-}
-
-/** Mientras estamos en pause de usuario: mantener ficha + detectar play fantasma de iOS. */
-export function startSoftPauseSessionGuard() {
-  stopSoftPauseSessionGuard()
-  if (typeof window === 'undefined') return
-  softPauseGuardTimer = window.setInterval(() => {
-    try {
-      const msPlaying = navigator.mediaSession.playbackState === 'playing'
-      let weThinkPlaying = false
-      try {
-        weThinkPlaying = Boolean(playbackStateResolver?.())
-      } catch {
-        /* ignore */
-      }
-
-      // iOS cambió el icono a Play sin llamar a nuestro handler
-      if (
-        msPlaying &&
-        !weThinkPlaying &&
-        ghostPlayHandler &&
-        Date.now() - lastMediaPlayGestureAt > 900
-      ) {
-        logPlayback('ghost-play-detected', {
-          detail: 'mediaSession=playing sin handler',
-        })
-        ghostPlayHandler()
-        return
-      }
-
-      if (weThinkPlaying) {
-        stopSoftPauseSessionGuard()
-        return
-      }
-
-      // Si Spotify/Podcasts robó la ficha, recuperar la nuestra en paused
-      const title = navigator.mediaSession.metadata?.title
-      const ours = lastPublishedMeta?.title
-      if (!title || (ours && String(title) !== String(ours))) {
-        keepMediaSessionAlivePaused()
-        return
-      }
-      setMediaPlaybackState(false)
-    } catch {
-      /* ignore */
-    }
-  }, 300)
-}
-
-export function stopSoftPauseSessionGuard() {
-  if (softPauseGuardTimer != null) {
-    try {
-      window.clearInterval(softPauseGuardTimer)
-    } catch {
-      /* ignore */
-    }
-    softPauseGuardTimer = null
-  }
-}
-
-/**
- * Now Playing / CarPlay / pantalla de bloqueo.
- *
- * Regla iOS: cada MediaMetadata nueva resetea el botón a Play.
- * Con playing=true hacemos UNA sola escritura (artwork antes o desde caché)
- * y luego fijamos playbackState. Sin segundo publish mientras suena.
+ * Now Playing: solo ficha (título/artista/carátula) + playbackState.
+ * Play/Pause remotos están desactivados (strip mode).
  */
 export async function updateMediaSession(
   track: Track | null,
   _coverUrl: string | null,
   handlers: {
-    play: () => void
-    pause: () => void
-    previoustrack: () => void
-    nexttrack: () => void
+    play?: () => void
+    pause?: () => void
+    previoustrack?: () => void
+    nexttrack?: () => void
     seekto?: (time: number) => void
     getPosition?: () => number
     seekSkip?: boolean
@@ -472,63 +349,18 @@ export async function updateMediaSession(
   opts?: { playing?: boolean; skipArtworkUpgrade?: boolean },
 ) {
   if (!('mediaSession' in navigator)) return
+  if (!track) return
 
-  if (!track) {
-    // NUNCA borrar metadata: en iOS eso quita el reproductor de la pantalla de bloqueo
-    return
-  }
-
-  // Crítico: registrar play/pause antes de cualquier await
   bindMediaHandlers(handlers)
 
-  const playingHint = opts?.playing
-  let samePublishedTrack = false
-  try {
-    const meta = navigator.mediaSession.metadata
-    samePublishedTrack =
-      Boolean(meta) &&
-      String(meta?.title || '') === track.title &&
-      String(meta?.artist || '') === track.artist &&
-      String(meta?.album || '') === track.album
-  } catch {
-    /* ignore */
-  }
-
-  // Misma pista + playing: solo playbackState (no tocar MediaMetadata).
-  if (playingHint === true && samePublishedTrack) {
-    stopSoftPauseSessionGuard()
-    setMediaPlaybackState(true)
-    refreshMediaPlaybackState(true, { strong: true })
-    return
-  }
-
   let artwork = peekCachedLockScreenArtwork(track.id)
-
-  // Playing: resolver carátula ANTES y publicar una sola vez.
-  if (playingHint === true) {
-    if (!opts?.skipArtworkUpgrade && artwork.length === 0) {
-      try {
-        artwork = await Promise.race([
-          resolveLockScreenArtwork(track, _coverUrl),
-          new Promise<MediaImage[]>((resolve) => {
-            window.setTimeout(() => resolve(peekCachedLockScreenArtwork(track.id)), 280)
-          }),
-        ])
-      } catch {
-        artwork = peekCachedLockScreenArtwork(track.id)
-      }
+  if (!opts?.skipArtworkUpgrade) {
+    try {
+      const full = await resolveLockScreenArtwork(track, _coverUrl)
+      if (full.length) artwork = full
+    } catch {
+      /* keep cached */
     }
-    publishMetadata({
-      title: track.title,
-      artist: track.artist,
-      album: track.album,
-      artwork,
-    })
-    bindMediaHandlers(handlers)
-    stopSoftPauseSessionGuard()
-    setMediaPlaybackState(true)
-    refreshMediaPlaybackState(true, { strong: true })
-    return
   }
 
   publishMetadata({
@@ -537,41 +369,19 @@ export async function updateMediaSession(
     album: track.album,
     artwork,
   })
-
-  if (opts?.skipArtworkUpgrade) {
-    if (playingHint === false) {
-      setMediaPlaybackState(false)
-      refreshMediaPlaybackState(false)
-    } else {
-      refreshMediaPlaybackState(playingHint)
-    }
-    return
-  }
-
-  const fullArtwork = await resolveLockScreenArtwork(track, _coverUrl)
-  publishMetadata({
-    title: track.title,
-    artist: track.artist,
-    album: track.album,
-    artwork: fullArtwork,
-  })
   bindMediaHandlers(handlers)
 
-  if (playingHint === false) {
-    setMediaPlaybackState(false)
-    refreshMediaPlaybackState(false)
-  } else {
-    refreshMediaPlaybackState(playingHint)
-  }
+  if (opts?.playing === true) setMediaPlaybackState(true)
+  else if (opts?.playing === false) setMediaPlaybackState(false)
 }
 
 export async function updateRadioMediaSession(
   station: RadioStation,
   handlers: {
-    play: () => void
-    pause: () => void
-    previoustrack: () => void
-    nexttrack: () => void
+    play?: () => void
+    pause?: () => void
+    previoustrack?: () => void
+    nexttrack?: () => void
   },
 ) {
   if (!('mediaSession' in navigator)) return
@@ -583,7 +393,6 @@ export async function updateRadioMediaSession(
     seekSkip: false,
   })
 
-  // No publicar artwork vacío primero (borra Now Playing en iOS)
   publishMetadata({
     title: station.name,
     artist: 'En directo',
@@ -612,19 +421,16 @@ export async function updateRadioMediaSession(
     album: station.tagline || 'Radio',
     artwork,
   })
-
   bindMediaHandlers({
     ...handlers,
     seekto: undefined,
     getPosition: undefined,
     seekSkip: false,
   })
-  refreshMediaPlaybackState()
 }
 
 export function setMediaPlaybackState(playing: boolean) {
   if (!('mediaSession' in navigator)) return
-  if (playing) stopSoftPauseSessionGuard()
   try {
     navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
   } catch {
@@ -632,109 +438,16 @@ export function setMediaPlaybackState(playing: boolean) {
   }
 }
 
-/** Estado vivo play/pause (el store lo registra). Evita que reintentos tardíos pisen un pause del usuario. */
-let playbackStateResolver: (() => boolean) | null = null
-let playbackRefreshTimers: number[] = []
-
-export function setPlaybackStateResolver(fn: (() => boolean) | null) {
-  playbackStateResolver = fn
+/** Simple refresh — sin timers laberínticos. */
+export function refreshMediaPlaybackState(playing?: boolean, _opts?: { strong?: boolean }) {
+  if (playing === true) setMediaPlaybackState(true)
+  else if (playing === false) setMediaPlaybackState(false)
 }
 
-function resolvePlaybackState(fallback?: boolean): boolean {
-  // Pause explícito siempre gana (los timers de refresh se cancelan al pausar).
-  if (fallback === false) return false
-  // Play explícito: no dejar que un resolver inestable vuelva el icono a Play.
-  if (fallback === true) return true
-  try {
-    if (playbackStateResolver) return Boolean(playbackStateResolver())
-  } catch {
-    /* ignore */
-  }
-  return false
-}
-
-/** Cancela reintentos de playbackState (p. ej. al pasar de pause → play). */
-export function clearMediaPlaybackRefresh() {
-  try {
-    for (const t of playbackRefreshTimers) window.clearTimeout(t)
-    playbackRefreshTimers = []
-  } catch {
-    /* ignore */
-  }
-}
-
-/**
- * Tras actualizar metadatos, iOS/CarPlay a menudo deja el botón en Play aunque suene.
- * Reaplica el estado real en varias pasadas.
- */
-export function refreshMediaPlaybackState(
-  playing?: boolean,
-  opts?: { strong?: boolean },
-) {
-  const apply = () => setMediaPlaybackState(resolvePlaybackState(playing))
-  apply()
-  try {
-    queueMicrotask(apply)
-  } catch {
-    /* ignore */
-  }
-  try {
-    clearMediaPlaybackRefresh()
-    const delays = opts?.strong
-      ? [0, 16, 50, 100, 200, 400, 700, 1100, 1800, 2800, 4000, 6000, 8000]
-      : [0, 40, 120, 280, 600, 1200, 2200]
-    for (const delay of delays) {
-      playbackRefreshTimers.push(window.setTimeout(apply, delay))
-    }
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * Reclama Now Playing / CarPlay frente a Spotify u otras apps.
- * Por defecto solo reafirma playbackState (reescribir metadata resetea el botón a Play).
- * Usa `reclaim: true` solo si se perdió la ficha (tras llamada / otra app).
- * Con playing=true nunca reescribe MediaMetadata.
- */
-export function claimNowPlaying(
-  playing?: boolean,
-  opts?: { reclaim?: boolean },
-) {
-  if (!('mediaSession' in navigator)) return
-  const reclaim = Boolean(opts?.reclaim) && playing !== true
-  if (reclaim) {
-    try {
-      const meta = navigator.mediaSession.metadata
-      if (meta?.title || lastPublishedMeta) {
-        publishMetadata({
-          title: meta?.title || lastPublishedMeta?.title || 'MyVibe',
-          artist: meta?.artist || lastPublishedMeta?.artist || 'MyVibe',
-          album: meta?.album || lastPublishedMeta?.album || 'MyVibe',
-          artwork: meta?.artwork?.length
-            ? Array.from(meta.artwork)
-            : lastPublishedArtwork,
-        })
-      }
-      // Sin metadata previa: no publicar ficha vacía (iOS → "Sin contenido")
-    } catch {
-      // ignore
-    }
-  }
-  if (playing === true) stopSoftPauseSessionGuard()
-  refreshMediaPlaybackState(playing)
-}
-
-/** Progreso en pantalla de bloqueo / Centro de control. */
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
   if (!('mediaSession' in navigator)) return
-  // Primero el botón; setPositionState en iOS a menudo lo vuelve a Play.
-  if (playing) setMediaPlaybackState(true)
-  else setMediaPlaybackState(false)
-  if (!Number.isFinite(duration) || duration <= 0) {
-    if (playing) setMediaPlaybackState(true)
-    return
-  }
+  setMediaPlaybackState(playing)
+  if (!Number.isFinite(duration) || duration <= 0) return
   const pos = Math.max(0, Math.min(position, duration))
   try {
     navigator.mediaSession.setPositionState({
@@ -745,6 +458,5 @@ export function setMediaPositionState(position: number, duration: number, playin
   } catch {
     // Safari a veces falla si position > duration momentáneamente
   }
-  // Reafirmar DESPUÉS: setPositionState en iOS/CarPlay deja el botón en Play
   if (playing) setMediaPlaybackState(true)
 }

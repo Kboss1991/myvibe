@@ -1,7 +1,7 @@
 import { useEffect, useRef, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { audioEngine } from '../lib/audioEngine'
-import { formatTime, refreshMediaPlaybackState } from '../lib/mediaSession'
+import { formatTime } from '../lib/mediaSession'
 import { formatRadioDelay, getRadioStation } from '../lib/radios'
 import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
 import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
@@ -65,8 +65,7 @@ export function PlayerBar() {
   const displayDelay = useDisplayedRadioDelay(radioDelay, radioPauseStartedAt, maxDelay)
 
   useEffect(() => {
-    // Biblioteca: Media Session la controla el store; aquí solo radio/podcast.
-    if (currentTrackId && !currentRadioId && !currentPodcastEpisodeId) return
+    // Solo ficha Now Playing; play/pause remoto están stripped (no-op).
     void bindMediaSession(tracks)
   }, [currentTrackId, currentRadioId, currentPodcastEpisodeId])
 
@@ -75,17 +74,11 @@ export function PlayerBar() {
       resumeAfterInterruption()
     }
     const onVis = () => {
-      if (document.visibilityState === 'visible') {
-        onResume()
-        return
-      }
-      // Al bloquear: reafirmar solo play/pause; evitar reescribir la misma ficha.
-      refreshMediaPlaybackState(!audioEngine.paused || isPlaying)
+      if (document.visibilityState === 'visible') onResume()
     }
     document.addEventListener('visibilitychange', onVis)
     window.addEventListener('pageshow', onResume)
     window.addEventListener('focus', onResume)
-    // iOS a veces dispara esto al colgar / recuperar audio
     document.addEventListener('resume', onResume as EventListener)
     return () => {
       document.removeEventListener('visibilitychange', onVis)

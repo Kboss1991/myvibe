@@ -20,7 +20,7 @@ const KEY = 'myvibe_playback_debug'
 const MAX = 40
 
 /** Debe coincidir con workbox cacheId — confirma que el móvil tiene el build nuevo. */
-export const PLAYBACK_DEBUG_BUILD = 'myvibe-library-lockfix-20260806t'
+export const PLAYBACK_DEBUG_BUILD = 'myvibe-ms-stripped-20260806u'
 
 export function logPlayback(
   event: string,
