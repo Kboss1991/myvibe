@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { Track } from '../types'
-import { isAppleMobile } from '../lib/folderImport'
+import { isAppleMobile, isLibraryHostCapable } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
 import { formatAddedAt } from './TrackColumnsHead'
 import { saveFilesVisibly, myVibeDownloadName, deleteVisibleCopies } from '../lib/visibleStorage'
@@ -86,6 +86,7 @@ export function TrackList({
   const downloadFromPc = useLibraryStore((s) => s.downloadFromPc)
   const downloadProgress = useLibraryStore((s) => s.downloadProgress)
   const pcOnline = useLibraryStore((s) => s.pcOnline)
+  const canDownloadFromPc = !isLibraryHostCapable()
   const replaceTrackAudio = useLibraryStore((s) => s.replaceTrackAudio)
   const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
 
@@ -151,16 +152,28 @@ export function TrackList({
     try {
       const result = await downloadFromPc(ids)
       const n = result.imported
+      const failN = result.errors?.length ?? 0
+      const failHint =
+        failN > 0
+          ? `\n\n${failN} no se completaron (en rojo · sin audio). Ábrelas (···) y pulsa «Volver a descargar».\n` +
+            result.errors.slice(0, 4).join('\n') +
+            (failN > 4 ? `\n…y ${failN - 4} más` : '')
+          : ''
+
       if (n <= 0) {
-        alert('No se descargó ninguna. ¿PC abierto con la misma cuenta?')
+        alert(
+          (result.errors?.[0]
+            ? `No se descargó ninguna.\n${result.errors[0]}`
+            : 'No se descargó ninguna. ¿PC abierto con la misma cuenta?') + failHint,
+        )
         return
       }
 
       if (opts?.quiet) {
         alert(
-          n === 1
+          (n === 1
             ? 'Audio actualizado: se sustituyó la copia antigua.'
-            : `${n} audios actualizados: se sustituyeron las copias antiguas.`,
+            : `${n} audios actualizados: se sustituyeron las copias antiguas.`) + failHint,
         )
         return
       }
@@ -169,21 +182,22 @@ export function TrackList({
       if (result.visibleFiles.length) {
         try {
           const out = await saveFilesVisibly(result.visibleFiles, { interactive: true })
-          alert(`Descargadas ${n} en MyVibe.\n${out.message}`)
+          alert(`Descargadas ${n} en MyVibe.\n${out.message}` + failHint)
         } catch (e) {
           if (e instanceof DOMException && e.name === 'AbortError') {
             alert(
               `Descargadas ${n} en MyVibe (reproductor).\n` +
                 (isAppleMobile()
                   ? 'No se guardó en Archivos (cancelado). Puedes exportar desde Perfil si lo necesitas.'
-                  : 'No se eligió carpeta. Puedes exportar desde Perfil si lo necesitas.'),
+                  : 'No se eligió carpeta. Puedes exportar desde Perfil si lo necesitas.') +
+                failHint,
             )
           } else {
-            alert(`Descargadas ${n} en MyVibe.`)
+            alert(`Descargadas ${n} en MyVibe.` + failHint)
           }
         }
       } else {
-        alert(`Descargadas ${n} en MyVibe.`)
+        alert(`Descargadas ${n} en MyVibe.` + failHint)
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'No se pudo descargar'
@@ -430,7 +444,7 @@ export function TrackList({
                       {active && isPlaying ? <IconPlay size={12} /> : null}
                       {track.title}
                       {remote && !downloading ? (
-                        <em className="track-remote-tag"> · sin audio</em>
+                        <em className="track-remote-tag"> · sin audio · reintentar</em>
                       ) : null}
                       {needsUpdate && !downloading ? (
                         <em className="track-update-tag"> · actualizar</em>
@@ -813,19 +827,36 @@ export function TrackList({
                 >
                   <IconUpload size={18} /> Subir MP3 de nuevo
                 </button>
-                <button
-                  type="button"
-                  className="sheet__item"
-                  disabled={bulkBusy || Boolean(downloadProgress)}
-                  onClick={() => {
-                    const id = menuTrack.id
-                    setMenuTrack(null)
-                    void downloadIds([id])
-                  }}
-                >
-                  <IconDownload size={18} /> Descargar desde el PC
-                </button>
+                {canDownloadFromPc && (
+                  <button
+                    type="button"
+                    className="sheet__item sheet__item--danger-dl"
+                    disabled={bulkBusy || Boolean(downloadProgress)}
+                    onClick={() => {
+                      const id = menuTrack.id
+                      setMenuTrack(null)
+                      void downloadIds([id])
+                    }}
+                  >
+                    <IconDownload size={18} /> Volver a descargar desde el PC
+                  </button>
+                )}
               </>
+            )}
+
+            {canDownloadFromPc && menuTrack.hasLocalAudio !== false && (
+              <button
+                type="button"
+                className="sheet__item"
+                disabled={bulkBusy || Boolean(downloadProgress)}
+                onClick={() => {
+                  const id = menuTrack.id
+                  setMenuTrack(null)
+                  void downloadIds([id], { quiet: true })
+                }}
+              >
+                <IconDownload size={18} /> Volver a descargar desde el PC
+              </button>
             )}
 
             {menuTrack.needsAudioUpdate && menuTrack.hasLocalAudio !== false && (

@@ -633,22 +633,25 @@
 }
 
 .track-row.is-remote {
-  opacity: 0.55;
+  opacity: 1;
+  background: rgba(220, 60, 60, 0.12);
+  box-shadow: inset 3px 0 0 #e05555;
 }
 
 .track-row.is-remote.is-downloading {
   opacity: 1;
+  background: rgba(220, 60, 60, 0.08);
 }
 
 .track-row.is-remote .track-row__title {
-  color: #b3b3b3;
+  color: #ff8a8a;
 }
 
 .track-remote-tag {
   font-style: normal;
-  font-weight: 500;
+  font-weight: 600;
   font-size: 0.75rem;
-  color: #888;
+  color: #ff6b6b;
 }
 
 /* Audio nuevo en el PC: mismo gesto que “sin audio”, en ámbar de la app */

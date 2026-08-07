@@ -287,8 +287,8 @@ export async function downloadTracksFromPc(
   userId: string,
   trackIds: string[],
   handlers: DownloadHandlers,
-): Promise<{ imported: number; visibleFiles: VisibleFile[] }> {
-  if (!trackIds.length) return { imported: 0, visibleFiles: [] }
+): Promise<{ imported: number; visibleFiles: VisibleFile[]; errors: string[] }> {
+  if (!trackIds.length) return { imported: 0, visibleFiles: [], errors: [] }
 
   handlers.onStatus('Buscando tu PC…')
   const peerInfo = await getDevicePeer(userId)
@@ -483,6 +483,10 @@ export async function downloadTracksFromPc(
             pcErrors.push(
               `Transferencia incompleta: ${meta.title} (${received}/${meta.size} bytes)`,
             )
+            await db.tracks.update(meta.id, {
+              hasLocalAudio: false,
+              needsAudioUpdate: true,
+            })
             current = null
             continue
           }
@@ -505,7 +509,10 @@ export async function downloadTracksFromPc(
           const verified = await getAudioBlob(meta.id)
           if (!verified || verified.size < libraryBlob.size * 0.98) {
             pcErrors.push(`No se pudo guardar el audio: ${meta.title}`)
-            await db.tracks.update(meta.id, { hasLocalAudio: false })
+            await db.tracks.update(meta.id, {
+              hasLocalAudio: false,
+              needsAudioUpdate: true,
+            })
             continue
           }
           const prev = await db.tracks.get(meta.id)
@@ -624,7 +631,7 @@ export async function downloadTracksFromPc(
     }
 
     handlers.onStatus(`Descargadas ${imported} canciones`)
-    return { imported, visibleFiles: savedVisible }
+    return { imported, visibleFiles: savedVisible, errors: pcErrors }
   } finally {
     cleanup()
   }

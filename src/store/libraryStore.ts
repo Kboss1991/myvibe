@@ -360,7 +360,11 @@ interface LibraryState {
   exportLibraryPacks: () => Promise<{ packs: number; tracks: number }>
   exportToDownloads: () => Promise<{ saved: number; message: string }>
   syncCloudCatalog: () => Promise<{ pushed: number; pulled: number }>
-  downloadFromPc: (ids: string[]) => Promise<{ imported: number; visibleFiles: import('../lib/visibleStorage').VisibleFile[] }>
+  downloadFromPc: (ids: string[]) => Promise<{
+    imported: number
+    visibleFiles: import('../lib/visibleStorage').VisibleFile[]
+    errors: string[]
+  }>
   importShare: (file: File) => Promise<{
     trackIds: string[]
     playlistId: string | null
