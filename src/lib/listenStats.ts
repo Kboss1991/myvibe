@@ -173,10 +173,13 @@ export function computeListenStats(tracks: Track[]): ListenStats {
 }
 
 export function formatListenMinutes(mins: number): string {
-  if (mins < 60) return `${mins} min`
-  const h = Math.floor(mins / 60)
-  const m = mins % 60
-  return m ? `${h} h ${m} min` : `${h} h`
+  const n = Math.max(0, Math.round(mins))
+  if (n < 60) return `${n} min`
+  const h = Math.floor(n / 60)
+  const m = n % 60
+  const hoursLabel = h === 1 ? '1 hora' : `${h} horas`
+  if (!m) return hoursLabel
+  return `${hoursLabel} y ${m} min`
 }
 
 export function formatStatsMonthLabel(date = new Date()): string {

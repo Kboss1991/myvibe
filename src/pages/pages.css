@@ -1486,7 +1486,7 @@
 }
 
 .stats-number-card {
-  flex: 0 0 142px;
+  flex: 0 0 156px;
   min-height: 142px;
   padding: 14px;
   border-radius: 12px;
@@ -1524,6 +1524,13 @@
   line-height: 1;
   color: var(--brand-amber-bright);
   font-variant-numeric: tabular-nums;
+}
+
+.stats-number-card__value.is-duration {
+  font-size: 1.15rem;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  word-break: break-word;
 }
 
 .stats-top-card {

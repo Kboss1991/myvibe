@@ -291,7 +291,11 @@ export function ProfilePage() {
                 <IconHeadphones size={20} />
               </span>
               <span className="stats-number-card__label">Tiempo de música</span>
-              <strong className="stats-number-card__value">
+              <strong
+                className={`stats-number-card__value ${
+                  stats.estimatedMinutes >= 60 ? 'is-duration' : ''
+                }`}
+              >
                 {formatListenMinutes(stats.estimatedMinutes)}
               </strong>
             </article>
