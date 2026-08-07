@@ -774,7 +774,19 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     return { summary: p.summary, audio: p.audio, covers: p.covers }
   },
 
-  updateTrack: (id, patch) => library.updateTrackMeta(id, patch),
+  updateTrack: async (id, patch) => {
+    await library.updateTrackMeta(id, patch)
+    // Subir edición a la nube y no dejar que un pull viejo la revierta
+    if (isCloudAuthEnabled()) {
+      const userId = useAuthStore.getState().user?.id
+      if (userId) {
+        const { pushTrackMetadataEdit } = await import('../lib/cloudLibrary')
+        void pushTrackMetadataEdit(userId, id).then((ok) => {
+          if (ok && isLibraryHostDevice()) scheduleCatalogSync(2500)
+        })
+      }
+    }
+  },
   setCover: (id, file) => library.setTrackCover(id, file),
   replaceTrackAudio: async (id, file) => {
     await library.replaceTrackAudio(id, file)

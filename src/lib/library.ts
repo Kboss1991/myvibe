@@ -733,7 +733,12 @@ export async function updateTrackMeta(
   id: string,
   patch: Partial<Pick<Track, 'title' | 'artist' | 'album' | 'genre' | 'year' | 'liked'>>,
 ): Promise<void> {
-  await db.tracks.update(id, patch)
+  const metaKeys = ['title', 'artist', 'album', 'genre', 'year'] as const
+  const touchesMeta = metaKeys.some((k) => Object.prototype.hasOwnProperty.call(patch, k))
+  await db.tracks.update(id, {
+    ...patch,
+    ...(touchesMeta ? { metaUpdatedAt: Date.now() } : {}),
+  })
 }
 
 /**

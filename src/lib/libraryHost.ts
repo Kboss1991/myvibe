@@ -512,11 +512,26 @@ export async function downloadTracksFromPc(
           const now = Date.now()
           await db.tracks.put({
             id: meta.id,
-            title: meta.title || prev?.title || 'Sin título',
-            artist: meta.artist || prev?.artist || 'Artista desconocido',
-            album: meta.album || prev?.album || 'Sin álbum',
-            genre: meta.genre || prev?.genre || '',
-            year: meta.year || prev?.year || '',
+            title:
+              (prev?.metaUpdatedAt && prev.title
+                ? prev.title
+                : meta.title || prev?.title) || 'Sin título',
+            artist:
+              (prev?.metaUpdatedAt && prev.artist
+                ? prev.artist
+                : meta.artist || prev?.artist) || 'Artista desconocido',
+            album:
+              (prev?.metaUpdatedAt && prev.album
+                ? prev.album
+                : meta.album || prev?.album) || 'Sin álbum',
+            genre:
+              prev?.metaUpdatedAt && prev.genre != null
+                ? prev.genre
+                : meta.genre || prev?.genre || '',
+            year:
+              prev?.metaUpdatedAt && prev.year != null
+                ? prev.year
+                : meta.year || prev?.year || '',
             duration: meta.duration || prev?.duration || 0,
             mimeType: meta.mimeType || 'audio/mpeg',
             fileName: meta.fileName || prev?.fileName || `${meta.title}.mp3`,
@@ -533,6 +548,7 @@ export async function downloadTracksFromPc(
             needsAudioUpdate: false,
             cloudAudioSeenAt: now,
             audioBytes: libraryBlob.size,
+            metaUpdatedAt: prev?.metaUpdatedAt,
           })
           savedVisible.push({
             fileName: myVibeDownloadName(meta.artist, meta.title, meta.fileName),

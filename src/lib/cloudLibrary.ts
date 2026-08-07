@@ -177,6 +177,7 @@ export async function pushLibraryMetadata(userId: string): Promise<number> {
     const withBytes = trackAudioBytesColumnOk !== false
     const rows = localTracks.map((t) => {
       const audioAt = t.audioUpdatedAt ?? t.createdAt
+      const metaAt = t.metaUpdatedAt || Date.now()
       const base: Record<string, unknown> = {
         user_id: userId,
         local_id: t.id,
@@ -188,7 +189,7 @@ export async function pushLibraryMetadata(userId: string): Promise<number> {
         duration: t.duration || 0,
         mime_type: t.mimeType || 'audio/mpeg',
         file_name: t.fileName || `${t.title}.mp3`,
-        updated_at: new Date().toISOString(),
+        updated_at: new Date(metaAt).toISOString(),
       }
       if (withAudioAt) {
         base.audio_updated_at = new Date(audioAt).toISOString()
@@ -238,6 +239,42 @@ export async function pushLibraryMetadata(userId: string): Promise<number> {
   await reconcileCloudWithLocalLibrary(userId, keepIds)
 
   return localTracks.length
+}
+
+/**
+ * Sube solo metadatos de una pista (cualquier dispositivo).
+ * No toca audio_updated_at / audio_bytes — evita que el móvil pise la versión de audio del PC.
+ */
+export async function pushTrackMetadataEdit(
+  userId: string,
+  trackId: string,
+): Promise<boolean> {
+  if (!isCloudAuthEnabled()) return false
+  const track = await db.tracks.get(trackId)
+  if (!track) return false
+  const supabase = getSupabase()
+  const metaAt = track.metaUpdatedAt || Date.now()
+  const row: Record<string, unknown> = {
+    user_id: userId,
+    local_id: track.id,
+    title: track.title || '',
+    artist: track.artist || '',
+    album: track.album || '',
+    genre: track.genre || '',
+    year: track.year || '',
+    duration: track.duration || 0,
+    mime_type: track.mimeType || 'audio/mpeg',
+    file_name: track.fileName || `${track.title}.mp3`,
+    updated_at: new Date(metaAt).toISOString(),
+  }
+  const { error } = await supabase.from('library_tracks').upsert(row, {
+    onConflict: 'user_id,local_id',
+  })
+  if (error) {
+    console.warn('pushTrackMetadataEdit', error.message)
+    return false
+  }
+  return true
 }
 
 /**
@@ -559,12 +596,22 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
         nextAudioBytes,
       } = resolveNeedsUpdate(existing, row, localBytes)
 
+      // LWW metadatos: no pisar título/artista/álbum editados a mano
+      const cloudTs = row.updated_at ? Date.parse(row.updated_at) || 0 : 0
+      const localMetaTs = existing.metaUpdatedAt || 0
+      const keepLocalMeta = localMetaTs > 0 && localMetaTs >= cloudTs
+
       await db.tracks.update(row.local_id, {
-        title: row.title || existing.title,
-        artist: row.artist || existing.artist,
-        album: row.album || existing.album,
-        genre: row.genre || existing.genre,
-        year: row.year || existing.year,
+        ...(keepLocalMeta
+          ? {}
+          : {
+              title: row.title || existing.title,
+              artist: row.artist || existing.artist,
+              album: row.album || existing.album,
+              genre: row.genre || existing.genre,
+              year: row.year || existing.year,
+              ...(cloudTs > 0 ? { metaUpdatedAt: cloudTs } : {}),
+            }),
         duration: row.duration || existing.duration,
         mimeType: row.mime_type || existing.mimeType,
         fileName: row.file_name || existing.fileName,
@@ -618,12 +665,19 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
     }
 
     if (existing && !hasBlob) {
+      const cloudTs = row.updated_at ? Date.parse(row.updated_at) || 0 : 0
+      const localMetaTs = existing.metaUpdatedAt || 0
+      const keepLocalMeta = localMetaTs > 0 && localMetaTs >= cloudTs
       await db.tracks.update(row.local_id, {
-        title: row.title,
-        artist: row.artist,
-        album: row.album,
-        genre: row.genre,
-        year: row.year,
+        ...(keepLocalMeta
+          ? {}
+          : {
+              title: row.title,
+              artist: row.artist,
+              album: row.album,
+              genre: row.genre,
+              year: row.year,
+            }),
         duration: row.duration,
         mimeType: row.mime_type,
         fileName: row.file_name,

@@ -46,6 +46,8 @@ export interface Track {
   cloudAudioSeenAt?: number
   /** Tamaño del MP3 local (bytes); se compara con la nube. */
   audioBytes?: number
+  /** Última edición manual de título/artista/álbum/género (ms). LWW vs nube. */
+  metaUpdatedAt?: number
 }
 
 export interface Playlist {
