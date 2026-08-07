@@ -39,11 +39,52 @@ function episodeId(showId: string, audioUrl: string, title: string, pubDate: str
   return `${showId}_${Math.abs(hash).toString(36)}`
 }
 
+function charsetFromContentType(ct: string | null): string | null {
+  if (!ct) return null
+  const m = /charset\s*=\s*["']?([^"';\s]+)/i.exec(ct)
+  return m ? m[1]!.trim().toLowerCase() : null
+}
+
+function charsetFromXmlHead(bytes: Uint8Array): string | null {
+  const head = new TextDecoder('ascii', { fatal: false }).decode(bytes.subarray(0, 256))
+  const m = /encoding\s*=\s*["']\s*([^"']+)\s*["']/i.exec(head)
+  return m ? m[1]!.trim().toLowerCase() : null
+}
+
+function normalizeCharset(raw: string | null | undefined): string {
+  if (!raw) return 'utf-8'
+  const c = raw.toLowerCase().replace(/_/g, '-')
+  if (c === 'utf8') return 'utf-8'
+  if (c === 'iso-8859-1' || c === 'latin1' || c === 'latin-1' || c === 'iso8859-1') {
+    return 'iso-8859-1'
+  }
+  if (c === 'windows-1252' || c === 'cp1252' || c === 'win-1252') {
+    return 'windows-1252'
+  }
+  return c
+}
+
+/** Decodifica el XML respetando ISO-8859-1 / Windows-1252 (feeds 3Cat, etc.). */
+async function decodeFeedResponse(res: Response): Promise<string> {
+  const buf = new Uint8Array(await res.arrayBuffer())
+  if (!buf.byteLength) return ''
+  const label = normalizeCharset(
+    charsetFromContentType(res.headers.get('content-type')) ||
+      charsetFromXmlHead(buf) ||
+      'utf-8',
+  )
+  try {
+    return new TextDecoder(label).decode(buf)
+  } catch {
+    return new TextDecoder('utf-8').decode(buf)
+  }
+}
+
 async function fetchFeedXml(feedUrl: string): Promise<string> {
   try {
     const res = await fetch(feedUrl)
     if (res.ok) {
-      const text = await res.text()
+      const text = await decodeFeedResponse(res)
       if (text.trim()) return text
     }
   } catch {
@@ -52,7 +93,8 @@ async function fetchFeedXml(feedUrl: string): Promise<string> {
   const proxied = `/api/rss-proxy?url=${encodeURIComponent(feedUrl)}`
   const res = await fetch(proxied)
   if (!res.ok) throw new Error(`No se pudo cargar el feed (${res.status})`)
-  const text = await res.text()
+  // El proxy ya reenvía UTF-8; decodeFeedResponse sigue siendo seguro
+  const text = await decodeFeedResponse(res)
   if (!text.trim()) throw new Error('Feed vacío')
   return text
 }
