@@ -1172,6 +1172,9 @@ function EditTrackModal({
       setHasCover(true)
       setCoverRev(Date.now())
       setCropSource(null)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'No se pudo guardar la portada'
+      window.alert(msg)
     } finally {
       setCoverBusy(false)
     }
@@ -1246,7 +1249,7 @@ function EditTrackModal({
               )}
             </div>
             <p className="edit-cover__help">
-              Puedes subir una foto y moverla o hacer zoom antes de guardarla
+              Elige una foto, ajústala y pulsa «Usar este recorte» para guardarla
             </p>
           </div>
 

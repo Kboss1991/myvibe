@@ -1,5 +1,6 @@
 .cover-crop-sheet {
-  z-index: 80;
+  /* Por encima del sheet de editar canción (.sheet = 220) */
+  z-index: 280;
 }
 
 .cover-crop h3 {

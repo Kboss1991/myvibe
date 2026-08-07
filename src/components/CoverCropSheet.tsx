@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent, type TouchEvent } from 'react'
+import { createPortal } from 'react-dom'
 import './CoverCropSheet.css'
 
 const OUTPUT = 1000
@@ -149,14 +150,20 @@ export function CoverCropSheet({ file, fileName = 'cover.jpg', onCancel, onConfi
 
   const exportCrop = async () => {
     const img = imgRef.current
-    if (!img || !layout) return
+    if (!img || !layout) {
+      window.alert('Espera a que cargue la imagen o prueba con otra (JPG/PNG).')
+      return
+    }
     setBusy(true)
     try {
       const canvas = document.createElement('canvas')
       canvas.width = OUTPUT
       canvas.height = OUTPUT
       const ctx = canvas.getContext('2d')
-      if (!ctx) return
+      if (!ctx) {
+        window.alert('No se pudo preparar la imagen en este navegador.')
+        return
+      }
 
       const scale = layout.scale
       const sx = -constrained.x / scale
@@ -171,15 +178,21 @@ export function CoverCropSheet({ file, fileName = 'cover.jpg', onCancel, onConfi
       const blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob((b) => resolve(b), 'image/jpeg', 0.92),
       )
-      if (!blob) return
+      if (!blob) {
+        window.alert('No se pudo exportar la imagen. Prueba con JPG o PNG.')
+        return
+      }
       const outName = fileName.replace(/\.\w+$/, '') + '-cover.jpg'
       await onConfirm(new File([blob], outName, { type: 'image/jpeg' }))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Error al guardar la portada'
+      window.alert(msg)
     } finally {
       setBusy(false)
     }
   }
 
-  return (
+  return createPortal(
     <div className="sheet cover-crop-sheet">
       <button type="button" className="sheet-backdrop" onClick={onCancel} />
       <div className="sheet__panel cover-crop">
@@ -242,6 +255,7 @@ export function CoverCropSheet({ file, fileName = 'cover.jpg', onCancel, onConfi
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
