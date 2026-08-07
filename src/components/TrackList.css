@@ -970,6 +970,10 @@
   border-bottom: none;
 }
 
+.sheet__item--danger-dl {
+  color: #ff8a8a;
+}
+
 .field {
   display: flex;
   flex-direction: column;

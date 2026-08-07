@@ -482,7 +482,7 @@ export function TrackList({
                     {active && isPlaying ? <IconPlay size={12} /> : null}
                     {track.title}
                     {remote && !downloading ? (
-                      <em className="track-remote-tag"> · sin audio</em>
+                      <em className="track-remote-tag"> · sin audio · reintentar</em>
                     ) : null}
                     {needsUpdate && !downloading ? (
                       <em className="track-update-tag"> · actualizar</em>
