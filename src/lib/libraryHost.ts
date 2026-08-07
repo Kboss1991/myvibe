@@ -4,7 +4,16 @@ import {
   getDevicePeer,
   publishDevicePeer,
 } from './cloudLibrary'
-import { getAudioBlob, getCoverBlob, saveAudioBlob, saveCoverBlob, enrichTrackOnline } from './library'
+import {
+  getAudioBlob,
+  getCoverBlob,
+  saveAudioBlob,
+  saveCoverBlob,
+  enrichTrackOnline,
+  beginHugeAudioWrite,
+  finishHugeAudioWrite,
+  HUGE_AUDIO_BYTES,
+} from './library'
 import { db } from '../db'
 import { myVibeDownloadName, type VisibleFile } from './visibleStorage'
 import { isAppleMobile } from './folderImport'
@@ -13,8 +22,6 @@ import type { Track } from '../types'
 
 const PROTOCOL = 3
 const CHUNK = 256 * 1024
-/** Archivos muy largos (p. ej. 8–10 h): no duplicar en Archivos ni fusionar buffers gigantes. */
-const HUGE_AUDIO_BYTES = 40 * 1024 * 1024
 
 function idleMsForSize(size: number): number {
   // ~64 KB/s peor caso, mínimo 3 min, máximo 20 min de inactividad entre chunks
@@ -395,6 +402,8 @@ export async function downloadTracksFromPc(
     let current: {
       meta: Extract<JsonMsg, { t: 'track-start' }>
       parts: Uint8Array[]
+      received: number
+      stream: Awaited<ReturnType<typeof beginHugeAudioWrite>>
     } | null = null
     let currentCover: {
       id: string
@@ -420,6 +429,15 @@ export async function downloadTracksFromPc(
     }
     bumpIdle()
 
+    const abortCurrentStream = async () => {
+      if (!current?.stream) return
+      try {
+        await current.stream.abort()
+      } catch {
+        /* ignore */
+      }
+    }
+
     try {
       while (true) {
         const data = await nextData()
@@ -430,10 +448,15 @@ export async function downloadTracksFromPc(
           if (currentCover) {
             currentCover.parts.push(bytes)
           } else if (current) {
-            current.parts.push(bytes)
-            const received = current.parts.reduce((n, p) => n + p.byteLength, 0)
+            if (current.stream) {
+              await current.stream.write(bytes)
+              current.received += bytes.byteLength
+            } else {
+              current.parts.push(bytes)
+              current.received += bytes.byteLength
+            }
             const size = Math.max(1, current.meta.size)
-            const percent = Math.min(99, Math.round((received / size) * 100))
+            const percent = Math.min(99, Math.round((current.received / size) * 100))
             handlers.onProgress(imported, total, current.meta.title, {
               trackId: current.meta.id,
               percent,
@@ -456,10 +479,21 @@ export async function downloadTracksFromPc(
           continue
         }
         if (data.t === 'track-start') {
-          current = { meta: data, parts: [] }
+          await abortCurrentStream()
           currentCover = null
           currentIdleMs = idleMsForSize(data.size)
           bumpIdle()
+          const stream =
+            data.size > HUGE_AUDIO_BYTES ? await beginHugeAudioWrite(data.id) : null
+          if (data.size > HUGE_AUDIO_BYTES && !stream) {
+            pcErrors.push(
+              `Este móvil no puede guardar archivos largos (OPFS): ${data.title}`,
+            )
+            current = null
+            handlers.onStatus(`No se puede guardar “${data.title}” en este dispositivo`)
+            continue
+          }
+          current = { meta: data, parts: [], received: 0, stream }
           handlers.onStatus(
             data.size > HUGE_AUDIO_BYTES
               ? `Descargando archivo largo… ${data.title}`
@@ -492,12 +526,29 @@ export async function downloadTracksFromPc(
         if (data.t === 'track-end') {
           if (!current || current.meta.id !== data.id) continue
           const meta = current.meta
+          const stream = current.stream
+          const parts = current.parts
+          const received = current.received
+          current = null
+          currentIdleMs = 180_000
           handlers.onProgress(imported, total, meta.title, {
             trackId: meta.id,
             percent: 99,
           })
-          const received = current.parts.reduce((n, p) => n + p.byteLength, 0)
+          handlers.onStatus(
+            meta.size > HUGE_AUDIO_BYTES
+              ? `Guardando en el móvil… ${meta.title}`
+              : `Guardando… ${meta.title}`,
+          )
+
           if (received < meta.size * 0.98 || received < 1024) {
+            if (stream) {
+              try {
+                await stream.abort()
+              } catch {
+                /* ignore */
+              }
+            }
             pcErrors.push(
               `Transferencia incompleta: ${meta.title} (${received}/${meta.size} bytes)`,
             )
@@ -505,20 +556,26 @@ export async function downloadTracksFromPc(
               hasLocalAudio: false,
               needsAudioUpdate: true,
             })
-            current = null
-            currentIdleMs = 180_000
             continue
           }
-          // Blob desde partes: evita un Uint8Array gigante intermedio (OOM en iPhone)
-          const parts = current.parts
-          current = null
-          currentIdleMs = 180_000
-          const libraryBlob = new Blob(parts as BlobPart[], {
-            type: meta.mimeType || 'audio/mpeg',
-          })
-          parts.length = 0
+
+          let libraryBlob: Blob
           try {
-            await saveAudioBlob(meta.id, libraryBlob)
+            if (stream) {
+              // Disco por trozos: no monta el MP3 entero en RAM → evita pantalla blanca
+              libraryBlob = await finishHugeAudioWrite(
+                meta.id,
+                stream,
+                meta.size,
+                meta.mimeType,
+              )
+            } else {
+              libraryBlob = new Blob(parts as BlobPart[], {
+                type: meta.mimeType || 'audio/mpeg',
+              })
+              parts.length = 0
+              await saveAudioBlob(meta.id, libraryBlob)
+            }
           } catch (e) {
             const quota =
               e instanceof DOMException &&
@@ -585,7 +642,7 @@ export async function downloadTracksFromPc(
             audioBytes: libraryBlob.size,
             metaUpdatedAt: prev?.metaUpdatedAt,
           })
-          // No clonar a Archivos los MP3 enormes (duplicaría cientos de MB en RAM)
+          // No clonar a Archivos los MP3 enormes
           if (libraryBlob.size <= HUGE_AUDIO_BYTES) {
             savedVisible.push({
               fileName: myVibeDownloadName(meta.artist, meta.title, meta.fileName),
@@ -597,7 +654,6 @@ export async function downloadTracksFromPc(
             trackId: meta.id,
             percent: 100,
           })
-          // Si el PC no mandó carátula, buscar online en el móvil
           if (!meta.hasCover) {
             try {
               await enrichTrackOnline(meta.id)
@@ -643,6 +699,7 @@ export async function downloadTracksFromPc(
       }
     } finally {
       if (idleTimer != null) window.clearTimeout(idleTimer)
+      await abortCurrentStream()
     }
 
     if (imported === 0) {

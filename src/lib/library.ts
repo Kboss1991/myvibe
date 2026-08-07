@@ -11,7 +11,18 @@ import {
 import { enrichFromInternet, fetchCoverBlob, isDoubtfulMetadata, isDisneyOrAnimeSearchContext, isLowQualityRelease, isWrongKnownArtist, refineGenre, coreSongTitle, titlesCompatible, artistsCompatible, knownTrackQueries } from './enrich'
 import type { OnlineTrackInfo } from './enrich'
 import { isAppleMobile } from './folderImport'
-import { deleteBinary, readBinary, writeBinary, clearOpfsFolder, listOpfsIds } from './opfs'
+import {
+  deleteBinary,
+  readBinary,
+  writeBinary,
+  openBinaryWriter,
+  clearOpfsFolder,
+  listOpfsIds,
+  type OpfsAppendWriter,
+} from './opfs'
+
+/** Umbral: no meter en IndexedDB (OOM / pantalla blanca en iPhone). */
+export const HUGE_AUDIO_BYTES = 40 * 1024 * 1024
 import { groupDuplicateTracks, pickCanonicalTrack, tracksLookSame, findBestTrackMatch } from './trackDedupe'
 import { pickDefaultThemeColor } from './playlistThemes'
 import type { Playlist, Track } from '../types'
@@ -36,21 +47,30 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
   // Copia independiente: evita que Share/File detache el buffer.
   // En archivos enormes (>40 MB) no re-slicear: Blob ya tipado basta y ahorra RAM.
   const typed = blob.type || 'audio/mpeg'
-  const safe =
-    blob.size > 40 * 1024 * 1024 && blob.type
-      ? blob
-      : blob.slice(0, blob.size, typed)
+  const huge = blob.size > HUGE_AUDIO_BYTES
+  const safe = huge && blob.type ? blob : blob.slice(0, blob.size, typed)
   revokeCachedUrls(id)
   objectUrlCache.delete(`audio:${id}`)
-  // En iPhone/iPad OPFS es poco fiable con MP3 grandes: la carátula sí,
-  // el audio a veces queda truncado y luego tapa la copia buena de IDB.
-  if (!isAppleMobile()) {
+  audioBlobCache.delete(id)
+
+  if (huge) {
+    // Solo OPFS por trozos: IndexedDB.put de 300–500 MB = pantalla blanca en iPhone
+    const wrote = await writeBinary('audio', id, safe)
+    if (wrote !== 'opfs') {
+      throw new DOMException(
+        'No se pudo guardar el archivo largo en el almacenamiento del dispositivo',
+        'QuotaExceededError',
+      )
+    }
+    await db.audio.delete(id).catch(() => undefined)
+  } else if (!isAppleMobile()) {
     await writeBinary('audio', id, safe)
+    await db.audio.put({ id, blob: safe })
   } else {
+    // Apple + tamaño normal: IDB (OPFS a veces truncaba al escribir de golpe)
     await deleteBinary('audio', id).catch(() => undefined)
+    await db.audio.put({ id, blob: safe })
   }
-  await db.audio.put({ id, blob: safe })
-  // Sincronizar tamaño en metadatos si la pista ya existe
   try {
     const row = await db.tracks.get(id)
     if (row) {
@@ -59,6 +79,40 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
   } catch {
     // ignore
   }
+}
+
+/** Descarga streaming: escribe chunks a OPFS sin acumular en RAM. */
+export async function beginHugeAudioWrite(id: string): Promise<OpfsAppendWriter | null> {
+  revokeCachedUrls(id)
+  objectUrlCache.delete(`audio:${id}`)
+  audioBlobCache.delete(id)
+  await db.audio.delete(id).catch(() => undefined)
+  return openBinaryWriter('audio', id)
+}
+
+/** Cierra el writer y comprueba tamaño; deja el audio solo en OPFS. */
+export async function finishHugeAudioWrite(
+  id: string,
+  writer: OpfsAppendWriter,
+  expectedSize: number,
+  mimeType?: string,
+): Promise<Blob> {
+  await writer.close()
+  const file = await readBinary('audio', id)
+  if (!file || file.size < expectedSize * 0.98) {
+    await deleteBinary('audio', id).catch(() => undefined)
+    throw new Error(
+      `Archivo incompleto en disco (${file?.size ?? 0}/${expectedSize} bytes)`,
+    )
+  }
+  const playable = ensureAudioMime(file, mimeType || 'audio/mpeg')
+  try {
+    const row = await db.tracks.get(id)
+    if (row) await db.tracks.update(id, { audioBytes: playable.size })
+  } catch {
+    /* ignore */
+  }
+  return playable
 }
 
 /** Marca el audio local como fresco (tras importar / reemplazar / descargar). */
@@ -94,12 +148,8 @@ export async function saveCoverBlob(id: string, blob: Blob): Promise<void> {
 export async function getAudioBlob(id: string): Promise<Blob | null> {
   const record = await db.audio.get(id)
   const fromIdb = record?.blob ?? null
-  if (isAppleMobile()) {
-    // En Apple priorizar IndexedDB; OPFS solo si IDB no tiene nada usable
-    if (fromIdb && fromIdb.size > 0) return fromIdb
-    return pickBestBlob(await readBinary('audio', id))
-  }
   const fromOpfs = await readBinary('audio', id)
+  // Siempre la copia más grande (pistas largas viven solo en OPFS)
   return pickBestBlob(fromIdb, fromOpfs)
 }
 
@@ -205,7 +255,22 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
       mimeHint = 'audio/mpeg'
     }
   }
-  cachePlayableBlob(id, blob, mimeHint)
+  const playable = ensureAudioMime(blob, mimeHint)
+  // Archivos enormes: URL directa sin cachear Blob en Map (File OPFS no está en RAM)
+  if (playable.size > HUGE_AUDIO_BYTES) {
+    const old = objectUrlCache.get(`audio:${id}`)
+    if (old?.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(old)
+      } catch {
+        /* ignore */
+      }
+    }
+    const url = URL.createObjectURL(playable)
+    objectUrlCache.set(`audio:${id}`, url)
+    return url
+  }
+  cachePlayableBlob(id, playable, mimeHint)
   return reassignAudioObjectUrl(id)
 }
 
