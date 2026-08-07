@@ -18,6 +18,7 @@ import { formatLastSeen, isLibraryHostDevice } from '../lib/devices'
 import { isLibraryHostCapable } from '../lib/folderImport'
 import {
   computeListenStats,
+  formatListenMinutes,
   formatPlayCountLabel,
   formatStatsMonthLabel,
 } from '../lib/listenStats'
@@ -289,8 +290,10 @@ export function ProfilePage() {
               <span className="stats-number-card__icon">
                 <IconHeadphones size={20} />
               </span>
-              <span className="stats-number-card__label">Minutos de música</span>
-              <strong className="stats-number-card__value">{stats.estimatedMinutes}</strong>
+              <span className="stats-number-card__label">Tiempo de música</span>
+              <strong className="stats-number-card__value">
+                {formatListenMinutes(stats.estimatedMinutes)}
+              </strong>
             </article>
             <article className="stats-number-card" role="listitem">
               <span className="stats-number-card__icon">
@@ -339,7 +342,8 @@ export function ProfilePage() {
                         const text = [
                           'Mis artistas más escuchados en MyVibe',
                           ...stats.topArtists.map(
-                            (a, i) => `${i + 1}. ${a.name} · ${a.minutes} min`,
+                            (a, i) =>
+                              `${i + 1}. ${a.name} · ${formatListenMinutes(a.minutes)}`,
                           ),
                         ].join('\n')
                         if (navigator.share) {
@@ -373,7 +377,9 @@ export function ProfilePage() {
                         </div>
                         <div className="stats-rank-list__meta">
                           <span className="stats-rank-list__title">{a.name}</span>
-                          <span className="stats-rank-list__sub">{a.minutes} min</span>
+                          <span className="stats-rank-list__sub">
+                            {formatListenMinutes(a.minutes)}
+                          </span>
                         </div>
                       </li>
                     ))}
