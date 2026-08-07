@@ -529,9 +529,15 @@ export function ProfilePage() {
               </div>
             ) : (
               <p className="profile-card__hint">
-                Me gusta y playlists se guardan solos en tu cuenta al tocarlos (PC y móvil).
+                Me gusta, playlists y podcasts (seguidos + progreso de episodios) se
+                guardan en tu cuenta (PC y móvil). El audio de los podcasts se
+                reproduce por streaming; no se sube a la nube.
               </p>
             )}
+            <p className="profile-card__hint" style={{ marginTop: 8 }}>
+              Si el progreso de podcasts no cruza de PC a móvil, ejecuta también{' '}
+              <code>supabase/podcast-sync.sql</code> en el SQL Editor de Supabase.
+            </p>
             <p className="profile-card__meta">
               Última sync:{' '}
               {lastSyncAt ? formatLastSeen(lastSyncAt) : 'aún no'}

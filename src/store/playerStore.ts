@@ -309,7 +309,8 @@ function persistPodcastProgressNow(
   if (forceComplete) {
     markPodcastCompleted(id)
   } else {
-    savePodcastProgress(id, position, duration)
+    const showId = getPodcastEpisode(id)?.showId
+    savePodcastProgress(id, position, duration, showId || undefined)
   }
   lastPodcastProgressSave = performance.now()
   bumpPodcastProgressTick(set, get)

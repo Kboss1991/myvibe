@@ -21,7 +21,7 @@ import { ReceivePage } from './pages/ReceivePage'
 import { SearchPage } from './pages/SearchPage'
 import { UploadPage } from './pages/UploadPage'
 import { useAuthStore } from './store/authStore'
-import { startLibraryCatalogAutoSync, startLibraryTasteAutoSync, useLibraryStore } from './store/libraryStore'
+import { startLibraryCatalogAutoSync, startLibraryTasteAutoSync, startPodcastTasteAutoSync, useLibraryStore } from './store/libraryStore'
 import { usePlayerStore } from './store/playerStore'
 import { useLibraryPlayerStore } from './store/libraryPlayerStore'
 import './App.css'
@@ -112,6 +112,7 @@ export default function App() {
     let deviceTimer: number | undefined
     let stopTasteAuto: (() => void) | null = null
     let stopCatalogAuto: (() => void) | null = null
+    let stopPodcastAuto: (() => void) | null = null
 
     const runDevice = async () => {
       try {
@@ -129,9 +130,10 @@ export default function App() {
       if (stopped) return
       await runDevice()
       if (stopped) return
-      // Me gusta / playlists + catálogo: sync automático (realtime + poll)
+      // Me gusta / playlists + catálogo + podcasts: sync automático (realtime + poll)
       stopTasteAuto = startLibraryTasteAutoSync(user.id)
       stopCatalogAuto = startLibraryCatalogAutoSync(user.id)
+      stopPodcastAuto = startPodcastTasteAutoSync(user.id)
       if (stopped) return
 
       if (isLibraryHostDevice()) {
@@ -156,6 +158,7 @@ export default function App() {
       if (deviceTimer) window.clearInterval(deviceTimer)
       stopTasteAuto?.()
       stopCatalogAuto?.()
+      stopPodcastAuto?.()
       hostStop?.()
     }
   }, [user])

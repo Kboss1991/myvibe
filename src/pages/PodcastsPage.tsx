@@ -11,6 +11,8 @@ import {
   getPodcastProgressRatio,
   isMyPodcast,
   removeMyPodcast,
+  subscribeMyPodcasts,
+  subscribePodcastProgress,
   type PodcastEpisode,
   type PodcastShow,
 } from '../lib/podcasts'
@@ -46,6 +48,17 @@ export function PodcastsPage() {
   useEffect(() => {
     if (myShows.length === 0) setFindOpen(true)
   }, [myShows.length])
+
+  useEffect(() => {
+    return subscribeMyPodcasts(() => setMyShows(getMyPodcasts()))
+  }, [])
+
+  useEffect(() => {
+    return subscribePodcastProgress(() => {
+      // Fuerza re-render de barras / “Escuchado” al bajar progreso de la nube
+      setMyShows((prev) => [...prev])
+    })
+  }, [])
 
   useEffect(() => {
     if (!openShow) {

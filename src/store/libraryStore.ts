@@ -24,11 +24,23 @@ import {
 } from '../lib/cloudLibrary'
 import { isLibraryHostDevice } from '../lib/devices'
 import { downloadTracksFromPc } from '../lib/libraryHost'
+import {
+  pullPodcastTaste,
+  pushPodcastProgress,
+  pushPodcastSubscriptions,
+  subscribePodcastTaste,
+  syncPodcastTaste,
+} from '../lib/cloudPodcasts'
 import { useAuthStore } from './authStore'
 
 let tasteSyncTimer: number | null = null
 let tastePullTimer: number | null = null
 let tasteRealtimeStop: (() => void) | null = null
+
+let podcastSyncTimer: number | null = null
+let podcastProgressSyncTimer: number | null = null
+let podcastRealtimeStop: (() => void) | null = null
+let podcastPendingEpisodeId: string | undefined
 
 let catalogSyncTimer: number | null = null
 let catalogRealtimeStop: (() => void) | null = null
@@ -238,6 +250,82 @@ export function startLibraryTasteAutoSync(userId: string): () => void {
     if (tastePullTimer != null) {
       window.clearTimeout(tastePullTimer)
       tastePullTimer = null
+    }
+  }
+}
+
+export function schedulePodcastSubsSync(delayMs = 500) {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  if (podcastSyncTimer != null) window.clearTimeout(podcastSyncTimer)
+  podcastSyncTimer = window.setTimeout(() => {
+    podcastSyncTimer = null
+    void withRetry(() => pushPodcastSubscriptions(userId)).catch((e) =>
+      console.warn('Push podcast subs', e),
+    )
+  }, delayMs)
+}
+
+export function schedulePodcastProgressSync(episodeId?: string, delayMs = 900) {
+  if (!isCloudAuthEnabled()) return
+  const userId = useAuthStore.getState().user?.id
+  if (!userId) return
+  if (episodeId) podcastPendingEpisodeId = episodeId
+  if (podcastProgressSyncTimer != null) window.clearTimeout(podcastProgressSyncTimer)
+  podcastProgressSyncTimer = window.setTimeout(() => {
+    podcastProgressSyncTimer = null
+    const id = podcastPendingEpisodeId
+    podcastPendingEpisodeId = undefined
+    void withRetry(() => pushPodcastProgress(userId, id)).catch((e) =>
+      console.warn('Push podcast progress', e),
+    )
+  }, delayMs)
+}
+
+/** Sync podcasts seguidos + progreso (realtime + poll). */
+export function startPodcastTasteAutoSync(userId: string): () => void {
+  if (!isCloudAuthEnabled()) return () => undefined
+  podcastRealtimeStop?.()
+  podcastRealtimeStop = subscribePodcastTaste(userId, () => {
+    void withRetry(() => pullPodcastTaste(userId)).catch((e) =>
+      console.warn('Pull podcast taste', e),
+    )
+  })
+
+  const pullNow = () => {
+    void withRetry(() => pullPodcastTaste(userId)).catch((e) =>
+      console.warn('Pull podcast taste', e),
+    )
+  }
+  const pushNow = () => {
+    void withRetry(() => syncPodcastTaste(userId)).catch((e) =>
+      console.warn('Sync podcast taste', e),
+    )
+  }
+
+  const poll = window.setInterval(pullNow, 8_000)
+  window.setTimeout(pushNow, 1800)
+
+  const onVis = () => {
+    if (document.visibilityState === 'visible') pullNow()
+  }
+  document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('focus', pullNow)
+
+  return () => {
+    podcastRealtimeStop?.()
+    podcastRealtimeStop = null
+    window.clearInterval(poll)
+    document.removeEventListener('visibilitychange', onVis)
+    window.removeEventListener('focus', pullNow)
+    if (podcastSyncTimer != null) {
+      window.clearTimeout(podcastSyncTimer)
+      podcastSyncTimer = null
+    }
+    if (podcastProgressSyncTimer != null) {
+      window.clearTimeout(podcastProgressSyncTimer)
+      podcastProgressSyncTimer = null
     }
   }
 }
@@ -620,6 +708,12 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
               ? TASTE_SQL_HINT
               : msg
         }
+      }
+      try {
+        const { syncPodcastTaste } = await import('../lib/cloudPodcasts')
+        await syncPodcastTaste(userId)
+      } catch (e) {
+        console.warn('Sync podcasts', e)
       }
       const cloudCount = await getCloudCatalogCount(userId)
       const peer = await getDevicePeer(userId)

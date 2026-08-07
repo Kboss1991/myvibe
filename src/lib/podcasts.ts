@@ -19,9 +19,56 @@ export type PodcastEpisode = {
 }
 
 const MY_PODCASTS_KEY = 'myvibe_my_podcasts'
+const PROGRESS_KEY = 'myvibe_podcast_progress'
+/** Completado si quedan ≤15 s o ≥95 % del episodio. */
+const COMPLETE_REMAIN_SEC = 15
+const COMPLETE_RATIO = 0.95
 
 const showCache = new Map<string, PodcastShow>()
 const episodeCache = new Map<string, PodcastEpisode>()
+
+type ProgressListener = () => void
+const progressListeners = new Set<ProgressListener>()
+const showsListeners = new Set<ProgressListener>()
+
+export function subscribePodcastProgress(listener: ProgressListener): () => void {
+  progressListeners.add(listener)
+  return () => progressListeners.delete(listener)
+}
+
+export function subscribeMyPodcasts(listener: ProgressListener): () => void {
+  showsListeners.add(listener)
+  return () => showsListeners.delete(listener)
+}
+
+function notifyProgress() {
+  for (const l of progressListeners) {
+    try {
+      l()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function notifyShows() {
+  for (const l of showsListeners) {
+    try {
+      l()
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function schedulePodcastCloudSync(kind: 'subs' | 'progress' | 'both', episodeId?: string) {
+  void import('../store/libraryStore')
+    .then((m) => {
+      if (kind === 'subs' || kind === 'both') m.schedulePodcastSubsSync()
+      if (kind === 'progress' || kind === 'both') m.schedulePodcastProgressSync(episodeId)
+    })
+    .catch(() => undefined)
+}
 
 function readMyPodcasts(): PodcastShow[] {
   try {
@@ -43,6 +90,7 @@ function readMyPodcasts(): PodcastShow[] {
 
 function writeMyPodcasts(list: PodcastShow[]) {
   localStorage.setItem(MY_PODCASTS_KEY, JSON.stringify(list))
+  notifyShows()
 }
 
 export function getMyPodcasts(): PodcastShow[] {
@@ -59,13 +107,24 @@ export function addMyPodcast(show: PodcastShow): PodcastShow[] {
   const next = [show, ...list]
   writeMyPodcasts(next)
   showCache.set(show.id, show)
+  schedulePodcastCloudSync('subs')
   return next
 }
 
 export function removeMyPodcast(id: string): PodcastShow[] {
   const next = readMyPodcasts().filter((s) => s.id !== id)
   writeMyPodcasts(next)
+  schedulePodcastCloudSync('subs')
   return next
+}
+
+/** Sustituye la lista local tras un pull de la nube (sin volver a subir). */
+export function replaceMyPodcastsFromCloud(shows: PodcastShow[]): void {
+  const cleaned = shows.filter(
+    (s) => s && typeof s.id === 'string' && typeof s.feedUrl === 'string',
+  )
+  writeMyPodcasts(cleaned)
+  for (const s of cleaned) showCache.set(s.id, s)
 }
 
 export function rememberPodcastShow(show: PodcastShow) {
@@ -108,20 +167,26 @@ export function formatEpisodeDuration(sec: number): string {
   return `${r} s`
 }
 
-/** Progreso de escucha por episodio (localStorage). */
+/** Progreso de escucha por episodio (local + nube). */
 export type PodcastProgress = {
   position: number
   duration: number
   completed: boolean
   updatedAt: number
+  showId?: string
 }
 
-const PROGRESS_KEY = 'myvibe_podcast_progress'
-/** Completado si quedan ≤15 s o ≥95 % del episodio. */
-const COMPLETE_REMAIN_SEC = 15
-const COMPLETE_RATIO = 0.95
-
 type ProgressMap = Record<string, PodcastProgress>
+
+function normalizeProgress(entry: PodcastProgress): PodcastProgress {
+  return {
+    position: Number(entry.position) || 0,
+    duration: Number(entry.duration) || 0,
+    completed: Boolean(entry.completed),
+    updatedAt: Number(entry.updatedAt) || 0,
+    showId: typeof entry.showId === 'string' ? entry.showId : undefined,
+  }
+}
 
 function readProgressMap(): ProgressMap {
   try {
@@ -137,17 +202,46 @@ function readProgressMap(): ProgressMap {
 
 function writeProgressMap(map: ProgressMap) {
   localStorage.setItem(PROGRESS_KEY, JSON.stringify(map))
+  notifyProgress()
 }
 
 export function getPodcastProgress(episodeId: string): PodcastProgress | null {
   const entry = readProgressMap()[episodeId]
   if (!entry || typeof entry !== 'object') return null
-  return {
-    position: Number(entry.position) || 0,
-    duration: Number(entry.duration) || 0,
-    completed: Boolean(entry.completed),
-    updatedAt: Number(entry.updatedAt) || 0,
-  }
+  return normalizeProgress(entry)
+}
+
+export function getAllPodcastProgress(): Array<{
+  episodeId: string
+  showId: string
+  progress: PodcastProgress
+}> {
+  const map = readProgressMap()
+  return Object.entries(map).map(([episodeId, raw]) => {
+    const progress = normalizeProgress(raw)
+    const showId =
+      progress.showId ||
+      getPodcastEpisode(episodeId)?.showId ||
+      ''
+    return { episodeId, showId, progress }
+  })
+}
+
+/**
+ * Aplica progreso remoto si es más reciente (LWW).
+ * @returns true si cambió el almacenamiento local
+ */
+export function applyPodcastProgressFromCloud(
+  episodeId: string,
+  remote: PodcastProgress,
+): boolean {
+  const map = readProgressMap()
+  const local = map[episodeId] ? normalizeProgress(map[episodeId]!) : null
+  const rem = normalizeProgress(remote)
+  if (local && local.updatedAt >= rem.updatedAt) return false
+  map[episodeId] = rem
+  writeProgressMap(map)
+  return true
 }
 
 export function isPodcastCompleted(episodeId: string): boolean {
@@ -182,7 +276,6 @@ export function getPodcastResumeAt(episodeId: string): number {
   const p = getPodcastProgress(episodeId)
   if (!p || p.completed) return 0
   if (!Number.isFinite(p.position) || p.position < 5) return 0
-  // Si estaba casi al final, no reanudar ahí
   if (p.duration > 0 && p.position >= p.duration - COMPLETE_REMAIN_SEC) return 0
   return p.position
 }
@@ -201,20 +294,28 @@ export function savePodcastProgress(
   episodeId: string,
   position: number,
   duration: number,
+  showId?: string,
 ): PodcastProgress {
   const map = readProgressMap()
   const prev = map[episodeId]
   const dur = Number.isFinite(duration) && duration > 0 ? duration : prev?.duration || 0
   const pos = Math.max(0, Number.isFinite(position) ? position : 0)
   const completed = Boolean(prev?.completed) || isCompletePosition(pos, dur)
+  const resolvedShow =
+    showId ||
+    prev?.showId ||
+    getPodcastEpisode(episodeId)?.showId ||
+    undefined
   const next: PodcastProgress = {
     position: completed ? 0 : pos,
     duration: dur,
     completed,
     updatedAt: Date.now(),
+    showId: resolvedShow,
   }
   map[episodeId] = next
   writeProgressMap(map)
+  schedulePodcastCloudSync('progress', episodeId)
   return next
 }
 
@@ -226,9 +327,11 @@ export function markPodcastCompleted(episodeId: string): PodcastProgress {
     duration: prev?.duration || 0,
     completed: true,
     updatedAt: Date.now(),
+    showId: prev?.showId || getPodcastEpisode(episodeId)?.showId,
   }
   map[episodeId] = next
   writeProgressMap(map)
+  schedulePodcastCloudSync('progress', episodeId)
   return next
 }
 
