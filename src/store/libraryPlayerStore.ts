@@ -159,8 +159,8 @@ function pushPositionState(force = false) {
   if (!('mediaSession' in navigator)) return
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   const now = Date.now()
-  // Throttle: cada tick + duration hace que iOS muestre ±10 en vez de next/prev
-  if (!force && now - lastPositionPushAt < 5000) return
+  // ~1s: el contador de bloqueo baja; más a menudo no hace falta
+  if (!force && now - lastPositionPushAt < 1000) return
   lastPositionPushAt = now
   const el = audio()
   const duration = el.duration
