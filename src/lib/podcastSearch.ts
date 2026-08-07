@@ -43,11 +43,15 @@ export async function searchPodcasts(term: string, limit = 24): Promise<PodcastS
   if (!res.ok) throw new Error(`iTunes HTTP ${res.status}`)
   const data = (await res.json()) as { results?: ITunesPodcastResult[] }
   const out: PodcastShow[] = []
-  const seen = new Set<string>()
+  const seenIds = new Set<string>()
+  const seenFeeds = new Set<string>()
   for (const item of data.results ?? []) {
     const show = showFromITunes(item)
-    if (!show || seen.has(show.id)) continue
-    seen.add(show.id)
+    if (!show) continue
+    const feedKey = show.feedUrl.replace(/\/+$/, '').toLowerCase()
+    if (seenIds.has(show.id) || seenFeeds.has(feedKey)) continue
+    seenIds.add(show.id)
+    seenFeeds.add(feedKey)
     out.push(show)
   }
   return out
