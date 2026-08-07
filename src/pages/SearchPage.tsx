@@ -2,8 +2,9 @@ import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { CoverArt } from '../components/CoverArt'
 import { TrackList } from '../components/TrackList'
-import { IconSearch } from '../components/Icons'
+import { IconHeart, IconSearch } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
+import { usePlaylistDropTargets } from '../hooks/usePlaylistDropTargets'
 import { useLibraryStore } from '../store/libraryStore'
 import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import './pages.css'
@@ -15,7 +16,16 @@ export function SearchPage() {
   const albums = useLibraryStore((s) => s.albums)
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
+  const getLiked = useLibraryStore((s) => s.getLiked)
+  const liked = getLiked()
   const playTracks = useLibraryPlayerStore((s) => s.playTracks)
+  const {
+    allowDrop,
+    dropOver,
+    dropHint,
+    likedDropProps,
+    playlistDropProps,
+  } = usePlaylistDropTargets()
 
   const query = q.trim().toLowerCase()
   const hasQuery = query.length > 0
@@ -44,11 +54,17 @@ export function SearchPage() {
       .slice(0, 24)
   }, [playlists, query, hasQuery])
 
+  const showLikedResult =
+    hasQuery &&
+    (/gustan|liked|favorit|me gusta/.test(query) ||
+      'canciones que te gustan'.includes(query))
+
   const total =
     trackResults.length +
     artistResults.length +
     albumResults.length +
-    playlistResults.length
+    playlistResults.length +
+    (showLikedResult ? 1 : 0)
 
   return (
     <div className="page search-page">
@@ -84,6 +100,11 @@ export function SearchPage() {
 
       {hasQuery && (
         <div className="search-results">
+          {dropHint ? (
+            <p className="drop-toast" role="status">
+              {dropHint}
+            </p>
+          ) : null}
           {total === 0 ? (
             <div className="empty-state fade-up">
               <p className="empty-state__title">Sin resultados</p>
@@ -163,26 +184,45 @@ export function SearchPage() {
                 </section>
               )}
 
-              {playlistResults.length > 0 && (
+              {(playlistResults.length > 0 || showLikedResult) && (
                 <section className="section">
                   <h2 className="section__title">Playlists</h2>
                   <div className="h-scroll home-cover-row">
+                    {showLikedResult ? (
+                      <Link
+                        to="/liked"
+                        className={`home-cover-card ${dropOver === 'liked' ? 'is-drop-over' : ''}`}
+                        {...(allowDrop ? likedDropProps : {})}
+                      >
+                        <span className="home-cover-card__art home-cover-card__art--liked">
+                          <IconHeart size={40} filled />
+                        </span>
+                        <strong>Canciones que te gustan</strong>
+                        <span>Playlist · {liked.length}</span>
+                      </Link>
+                    ) : null}
                     {playlistResults.map((p) => {
                       const cover = playlistCoverArtProps(p)
+                      const drop = allowDrop ? playlistDropProps(p.id, p.name) : null
                       return (
-                      <Link key={p.id} to={`/playlist/${p.id}`} className="home-cover-card">
-                        <span className="home-cover-card__art">
-                          <CoverArt
-                            trackId={cover.trackId}
-                            hasCover={cover.hasCover}
-                            refreshKey={cover.refreshKey}
-                            size={160}
-                            rounded="md"
-                          />
-                        </span>
-                        <strong>{p.name}</strong>
-                        <span>Playlist · {p.trackIds.length}</span>
-                      </Link>
+                        <Link
+                          key={p.id}
+                          to={`/playlist/${p.id}`}
+                          className={`home-cover-card ${dropOver === p.id ? 'is-drop-over' : ''}`}
+                          {...(drop ?? {})}
+                        >
+                          <span className="home-cover-card__art">
+                            <CoverArt
+                              trackId={cover.trackId}
+                              hasCover={cover.hasCover}
+                              refreshKey={cover.refreshKey}
+                              size={160}
+                              rounded="md"
+                            />
+                          </span>
+                          <strong>{p.name}</strong>
+                          <span>Playlist · {p.trackIds.length}</span>
+                        </Link>
                       )
                     })}
                   </div>
@@ -199,7 +239,8 @@ export function SearchPage() {
                     tracks={trackResults}
                     emptyTitle="Sin canciones"
                     emptyHint=""
-                    selectable={false}
+                    selectable
+                    showSelectToggle
                   />
                 </section>
               )}

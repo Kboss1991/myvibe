@@ -433,6 +433,26 @@
   display: flex;
   align-items: center;
   gap: 12px;
+  border-radius: 8px;
+  transition: background 0.12s ease, outline-color 0.12s ease;
+}
+
+.playlist-list__link.is-drop-over,
+.home-quick.is-drop-over,
+.home-cover-card.is-drop-over {
+  background: var(--accent-dim);
+  outline: 1px solid var(--accent);
+  color: #fff;
+}
+
+.drop-toast {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 
 .playlist-list__liked-thumb {
@@ -916,6 +936,30 @@
   text-align: left;
   cursor: pointer;
   text-decoration: none;
+  border-radius: 8px;
+  transition: background 0.12s ease, outline-color 0.12s ease;
+}
+
+.home-cover-card.is-draggable {
+  cursor: grab;
+}
+
+.home-cover-card.is-draggable:active {
+  cursor: grabbing;
+  opacity: 0.88;
+}
+
+.home-cover-card__art--liked {
+  display: grid;
+  place-items: center;
+  background: linear-gradient(145deg, #f5a623, #c9a84c);
+  color: #121212;
+}
+
+.home-quick.is-drop-over,
+.home-quick--liked.is-drop-over {
+  outline: 2px solid #fff;
+  filter: brightness(1.08);
 }
 
 @media (min-width: 900px) {

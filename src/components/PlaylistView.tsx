@@ -28,6 +28,10 @@ import {
   IconClose,
   IconGrip,
 } from './Icons'
+import {
+  canDragTracksToPlaylists,
+  setTrackDragData,
+} from '../lib/trackDrag'
 import './PlaylistView.css'
 import './TrackList.css'
 
@@ -112,6 +116,9 @@ export function PlaylistView({
     () => normalizeThemeColor(themeColor) || DEFAULT_PLAYLIST_THEME,
   )
   const [cropSource, setCropSource] = useState<{ blob: Blob; name: string } | null>(null)
+  const desktopDrag = canDragTracksToPlaylists()
+  const reorderDrag = editMode && Boolean(onReorderTracks)
+  const externalDrag = desktopDrag && !reorderDrag
   const coverInputRef = useRef<HTMLInputElement>(null)
 
   const activeTheme =
@@ -510,19 +517,29 @@ export function PlaylistView({
               return (
                 <li
                   key={track.id}
-                  className={`sp-row ${active ? 'is-active' : ''} ${dragId === track.id ? 'is-dragging' : ''}`}
-                  draggable={editMode && Boolean(onReorderTracks)}
-                  onDragStart={() => {
-                    if (!onReorderTracks) return
-                    setDragId(track.id)
+                  className={`sp-row ${active ? 'is-active' : ''} ${dragId === track.id ? 'is-dragging' : ''} ${externalDrag ? 'is-draggable' : ''}`}
+                  draggable={reorderDrag || externalDrag}
+                  title={
+                    externalDrag
+                      ? 'Arrastra a Me gusta o una playlist'
+                      : undefined
+                  }
+                  onDragStart={(e) => {
+                    if (reorderDrag) {
+                      setDragId(track.id)
+                      return
+                    }
+                    if (externalDrag) {
+                      setTrackDragData(e.dataTransfer, [track.id])
+                    }
                   }}
                   onDragEnd={() => setDragId(null)}
                   onDragOver={(e) => {
-                    if (!editMode || !onReorderTracks) return
+                    if (!reorderDrag) return
                     e.preventDefault()
                   }}
                   onDrop={(e) => {
-                    if (!editMode || !dragId || !onReorderTracks) return
+                    if (!reorderDrag || !dragId || !onReorderTracks) return
                     e.preventDefault()
                     moveTrack(dragId, track.id)
                     setDragId(null)

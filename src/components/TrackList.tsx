@@ -26,7 +26,7 @@ import {
   IconUpload,
 } from './Icons'
 import { getCoverBlob } from '../lib/library'
-import { canDragTracksToPlaylists, setTrackDragData } from '../lib/trackDrag'
+import { canDragTracksToPlaylists, resolveDragTrackIds, setTrackDragData } from '../lib/trackDrag'
 import './TrackList.css'
 
 /** Evita que el dock (reproductor) tape el menú en móvil. */
@@ -375,22 +375,22 @@ export function TrackList({
           return (
             <li
               key={track.id}
-              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''} ${desktopDrag && selectMode && isSelected ? 'is-draggable' : ''}`}
+              className={`track-row fade-up ${active ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''} ${showColumns ? 'track-row--cols' : ''} ${remote ? 'is-remote' : ''} ${needsUpdate ? 'is-update' : ''} ${downloading ? 'is-downloading' : ''} ${desktopDrag ? 'is-draggable' : ''}`}
               style={{ animationDelay: `${Math.min(i, 12) * 0.03}s` }}
-              draggable={desktopDrag && selectMode && isSelected}
+              draggable={desktopDrag}
               title={
-                desktopDrag && selectMode && isSelected
-                  ? 'Arrastra a una playlist de la barra lateral'
+                desktopDrag
+                  ? selectMode && isSelected && selected.size > 1
+                    ? `Arrastra ${selected.size} canciones a Me gusta o una playlist`
+                    : 'Arrastra a Me gusta o una playlist (barra lateral o listas)'
                   : undefined
               }
               onDragStart={(e) => {
-                if (!(desktopDrag && selectMode && isSelected)) {
+                if (!desktopDrag) {
                   e.preventDefault()
                   return
                 }
-                const ids = selected.has(track.id)
-                  ? [...selected]
-                  : [track.id]
+                const ids = resolveDragTrackIds(track.id, selected)
                 setTrackDragData(e.dataTransfer, ids)
               }}
             >

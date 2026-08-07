@@ -519,6 +519,14 @@
   border-radius: 4px;
 }
 
+.sp-row.is-draggable {
+  cursor: grab;
+}
+
+.sp-row.is-draggable:active {
+  cursor: grabbing;
+}
+
 .sp-row:hover,
 .sp-row.is-active {
   background: rgba(255, 255, 255, 0.06);

@@ -3,9 +3,20 @@ import { isLibraryHostCapable } from './folderImport'
 /** MIME interno para arrastrar ids de canciones (PC). */
 export const TRACK_DRAG_MIME = 'application/x-myvibe-track-ids'
 
-/** Solo escritorio: arrastrar selección a playlists. */
+/** Arrastrar canciones a playlists / Me gusta (escritorio). */
 export function canDragTracksToPlaylists(): boolean {
   return isLibraryHostCapable()
+}
+
+/** Ids a arrastrar: selección múltiple si la pista está seleccionada; si no, solo esa. */
+export function resolveDragTrackIds(
+  trackId: string,
+  selected: Iterable<string> | Set<string>,
+): string[] {
+  const set =
+    selected instanceof Set ? selected : new Set([...selected].filter(Boolean))
+  if (set.has(trackId) && set.size > 0) return [...set]
+  return [trackId]
 }
 
 export function setTrackDragData(

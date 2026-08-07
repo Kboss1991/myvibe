@@ -23,6 +23,7 @@ import {
 import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
+import { usePlaylistDropTargets } from '../hooks/usePlaylistDropTargets'
 import { useLibraryStore } from '../store/libraryStore'
 import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import './pages.css'
@@ -52,6 +53,13 @@ export function LibraryPage() {
   const albums = useLibraryStore((s) => s.albums)
   const genres = useLibraryStore((s) => s.genres)
   const playTracks = useLibraryPlayerStore((s) => s.playTracks)
+  const {
+    allowDrop,
+    dropOver,
+    dropHint,
+    likedDropProps,
+    playlistDropProps,
+  } = usePlaylistDropTargets()
   const missingCover = tracks.filter((t) => isDoubtfulMetadata(t))
   const missingAudio = tracks.filter((t) => t.hasLocalAudio === false)
   const needsAudioUpdate = tracks.filter(
@@ -332,58 +340,74 @@ export function LibraryPage() {
       )}
 
       {tab === 'playlists' && (
-        <ul className="playlist-list">
-          {liked.length > 0 && (
-            <li>
-              <Link to="/liked" className="playlist-list__link">
-                <span className="playlist-list__liked-thumb" aria-hidden>
-                  <IconHeart size={22} filled />
-                </span>
-                <div>
-                  <strong>Canciones que te gustan</strong>
-                  <span>
-                    {liked.length} canción{liked.length === 1 ? '' : 'es'}
+        <>
+          {dropHint ? (
+            <p className="drop-toast" role="status">
+              {dropHint}
+            </p>
+          ) : null}
+          <ul className="playlist-list">
+            {(liked.length > 0 || allowDrop) && (
+              <li>
+                <Link
+                  to="/liked"
+                  className={`playlist-list__link ${dropOver === 'liked' ? 'is-drop-over' : ''}`}
+                  {...(allowDrop ? likedDropProps : {})}
+                >
+                  <span className="playlist-list__liked-thumb" aria-hidden>
+                    <IconHeart size={22} filled />
                   </span>
-                </div>
-              </Link>
-            </li>
-          )}
-          {playlists.map((p) => {
-            const cover = playlistCoverArtProps(p)
-            return (
-            <li key={p.id}>
-              <Link to={`/playlist/${p.id}`} className="playlist-list__link">
-                <CoverArt
-                  trackId={cover.trackId}
-                  hasCover={cover.hasCover}
-                  refreshKey={cover.refreshKey}
-                  size={56}
-                />
-                <div>
-                  <strong>{p.name}</strong>
-                  <span>{p.trackIds.length} canciones</span>
-                </div>
-              </Link>
-              <button
-                type="button"
-                className="icon-btn"
-                aria-label="Eliminar playlist"
-                onClick={() => {
-                  if (confirm(`¿Eliminar “${p.name}”?`)) void deletePlaylist(p.id)
-                }}
-              >
-                <IconTrash size={18} />
-              </button>
-            </li>
-            )
-          })}
-          {playlists.length === 0 && liked.length === 0 && (
-            <div className="empty-state">
-              <p className="empty-state__title">Sin playlists</p>
-              <p className="empty-state__hint">Pulsa + para crear una</p>
-            </div>
-          )}
-        </ul>
+                  <div>
+                    <strong>Canciones que te gustan</strong>
+                    <span>
+                      {liked.length} canción{liked.length === 1 ? '' : 'es'}
+                    </span>
+                  </div>
+                </Link>
+              </li>
+            )}
+            {playlists.map((p) => {
+              const cover = playlistCoverArtProps(p)
+              const drop = allowDrop ? playlistDropProps(p.id, p.name) : null
+              return (
+                <li key={p.id}>
+                  <Link
+                    to={`/playlist/${p.id}`}
+                    className={`playlist-list__link ${dropOver === p.id ? 'is-drop-over' : ''}`}
+                    {...(drop ?? {})}
+                  >
+                    <CoverArt
+                      trackId={cover.trackId}
+                      hasCover={cover.hasCover}
+                      refreshKey={cover.refreshKey}
+                      size={56}
+                    />
+                    <div>
+                      <strong>{p.name}</strong>
+                      <span>{p.trackIds.length} canciones</span>
+                    </div>
+                  </Link>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    aria-label="Eliminar playlist"
+                    onClick={() => {
+                      if (confirm(`¿Eliminar “${p.name}”?`)) void deletePlaylist(p.id)
+                    }}
+                  >
+                    <IconTrash size={18} />
+                  </button>
+                </li>
+              )
+            })}
+            {playlists.length === 0 && liked.length === 0 && !allowDrop && (
+              <div className="empty-state">
+                <p className="empty-state__title">Sin playlists</p>
+                <p className="empty-state__hint">Pulsa + para crear una</p>
+              </div>
+            )}
+          </ul>
+        </>
       )}
 
       {tab === 'artists' && (

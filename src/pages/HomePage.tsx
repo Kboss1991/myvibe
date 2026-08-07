@@ -9,6 +9,11 @@ import {
 } from '../lib/podcastRss'
 import { formatEpisodeDate, getMyPodcasts } from '../lib/podcasts'
 import { playlistCoverArtProps } from '../lib/library'
+import {
+  canDragTracksToPlaylists,
+  setTrackDragData,
+} from '../lib/trackDrag'
+import { usePlaylistDropTargets } from '../hooks/usePlaylistDropTargets'
 import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
@@ -37,6 +42,14 @@ export function HomePage() {
   const myPodcasts = getMyPodcasts()
   const [podcastNews, setPodcastNews] = useState<LatestPodcastItem[]>([])
   const [podcastNewsLoading, setPodcastNewsLoading] = useState(false)
+  const desktopDrag = canDragTracksToPlaylists()
+  const {
+    allowDrop,
+    dropOver,
+    dropHint,
+    likedDropProps,
+    playlistDropProps,
+  } = usePlaylistDropTargets()
 
   useEffect(() => {
     const tick = () => setGreet(greetingForHour(new Date().getHours()))
@@ -85,11 +98,12 @@ export function HomePage() {
             </div>
           </div>
 
-          {liked.length > 0 && (
+          {(liked.length > 0 || allowDrop) && (
             <Link
               to="/liked"
-              className="home-quick home-quick--liked"
+              className={`home-quick home-quick--liked ${dropOver === 'liked' ? 'is-drop-over' : ''}`}
               aria-label="Canciones que te gustan"
+              {...(allowDrop ? likedDropProps : {})}
             >
               <span className="home-quick__liked">
                 <IconHeart size={22} filled />
@@ -97,6 +111,11 @@ export function HomePage() {
               <span>Canciones que te gustan</span>
             </Link>
           )}
+          {dropHint ? (
+            <p className="drop-toast" role="status">
+              {dropHint}
+            </p>
+          ) : null}
         </div>
 
         {!tracks.length && (
@@ -176,7 +195,16 @@ export function HomePage() {
               <button
                 key={t.id}
                 type="button"
-                className="home-cover-card"
+                className={`home-cover-card ${desktopDrag ? 'is-draggable' : ''}`}
+                draggable={desktopDrag}
+                title={desktopDrag ? 'Arrastra a Me gusta o una playlist' : undefined}
+                onDragStart={(e) => {
+                  if (!desktopDrag) {
+                    e.preventDefault()
+                    return
+                  }
+                  setTrackDragData(e.dataTransfer, [t.id])
+                }}
                 onClick={() =>
                   void playTracks(
                     tracks.filter((x) => x.hasLocalAudio !== false).map((x) => x.id),
@@ -210,20 +238,26 @@ export function HomePage() {
           <div className="h-scroll home-cover-row">
             {playlists.slice(0, 10).map((p) => {
               const cover = playlistCoverArtProps(p)
+              const drop = allowDrop ? playlistDropProps(p.id, p.name) : null
               return (
-              <Link key={p.id} to={`/playlist/${p.id}`} className="home-cover-card">
-                <span className="home-cover-card__art">
-                  <CoverArt
-                    trackId={cover.trackId}
-                    hasCover={cover.hasCover}
-                    refreshKey={cover.refreshKey}
-                    size={200}
-                    rounded="md"
-                  />
-                </span>
-                <strong>{p.name}</strong>
-                <span>{p.trackIds.length} canciones</span>
-              </Link>
+                <Link
+                  key={p.id}
+                  to={`/playlist/${p.id}`}
+                  className={`home-cover-card ${dropOver === p.id ? 'is-drop-over' : ''}`}
+                  {...(drop ?? {})}
+                >
+                  <span className="home-cover-card__art">
+                    <CoverArt
+                      trackId={cover.trackId}
+                      hasCover={cover.hasCover}
+                      refreshKey={cover.refreshKey}
+                      size={200}
+                      rounded="md"
+                    />
+                  </span>
+                  <strong>{p.name}</strong>
+                  <span>{p.trackIds.length} canciones</span>
+                </Link>
               )
             })}
           </div>
@@ -240,7 +274,16 @@ export function HomePage() {
               <button
                 key={t.id}
                 type="button"
-                className="home-cover-card"
+                className={`home-cover-card ${desktopDrag ? 'is-draggable' : ''}`}
+                draggable={desktopDrag}
+                title={desktopDrag ? 'Arrastra a Me gusta o una playlist' : undefined}
+                onDragStart={(e) => {
+                  if (!desktopDrag) {
+                    e.preventDefault()
+                    return
+                  }
+                  setTrackDragData(e.dataTransfer, [t.id])
+                }}
                 onClick={() =>
                   void playTracks(
                     tracks.filter((x) => x.hasLocalAudio !== false).map((x) => x.id),
