@@ -381,13 +381,6 @@ function bindLibraryMediaHandlersOnce() {
   })
 }
 
-/** Re-registro tras radio/podcast. */
-function reclaimLibraryMediaSession() {
-  setLibraryOwnsMediaSession(true)
-  mediaHandlersBound = false
-  bindLibraryMediaHandlersOnce()
-}
-
 /** Primer play del usuario (o play posterior): registra MS si aún no. */
 function bindMediaSessionOnUserPlay() {
   setLibraryOwnsMediaSession(true)
