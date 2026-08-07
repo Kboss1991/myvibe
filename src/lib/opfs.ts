@@ -89,7 +89,10 @@ export async function openBinaryWriter(
           await writable.write(new Uint8Array(chunk))
           written += chunk.byteLength
         } else {
-          await writable.write(chunk)
+          // Copia con ArrayBuffer propio (TS/DOM no aceptan SharedArrayBuffer)
+          const copy = new Uint8Array(chunk.byteLength)
+          copy.set(chunk)
+          await writable.write(copy)
           written += chunk.byteLength
         }
       },
