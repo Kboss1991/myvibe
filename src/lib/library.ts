@@ -33,8 +33,13 @@ export function ensureAudioMime(blob: Blob, mimeHint?: string): Blob {
 }
 
 export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
-  // Copia independiente: evita que Share/File detache el buffer
-  const safe = blob.slice(0, blob.size, blob.type || 'audio/mpeg')
+  // Copia independiente: evita que Share/File detache el buffer.
+  // En archivos enormes (>40 MB) no re-slicear: Blob ya tipado basta y ahorra RAM.
+  const typed = blob.type || 'audio/mpeg'
+  const safe =
+    blob.size > 40 * 1024 * 1024 && blob.type
+      ? blob
+      : blob.slice(0, blob.size, typed)
   revokeCachedUrls(id)
   objectUrlCache.delete(`audio:${id}`)
   // En iPhone/iPad OPFS es poco fiable con MP3 grandes: la carátula sí,

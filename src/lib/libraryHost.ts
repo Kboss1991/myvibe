@@ -13,6 +13,14 @@ import type { Track } from '../types'
 
 const PROTOCOL = 3
 const CHUNK = 256 * 1024
+/** Archivos muy largos (p. ej. 8–10 h): no duplicar en Archivos ni fusionar buffers gigantes. */
+const HUGE_AUDIO_BYTES = 40 * 1024 * 1024
+
+function idleMsForSize(size: number): number {
+  // ~64 KB/s peor caso, mínimo 3 min, máximo 20 min de inactividad entre chunks
+  const estimated = Math.ceil(Math.max(1, size) / (64 * 1024)) * 1000
+  return Math.min(1_200_000, Math.max(180_000, estimated))
+}
 const PEER_PREFIX = 'mvh'
 
 type TrackHint = {
@@ -198,9 +206,9 @@ async function sendTracks(
         } satisfies JsonMsg)
         continue
       }
-      const buf = new Uint8Array(await audio.arrayBuffer())
       // El móvil guarda con el id que conoce (stub), aunque en PC sea otro
       const outId = requestedId
+      const totalSize = audio.size
       const cover = track.hasCover ? await getCoverBlob(track.id) : null
       const coverBuf = cover ? new Uint8Array(await cover.arrayBuffer()) : null
       conn.send({
@@ -213,24 +221,27 @@ async function sendTracks(
         year: track.year,
         mimeType: track.mimeType || audio.type || 'audio/mpeg',
         fileName: track.fileName || `${track.title}.mp3`,
-        size: buf.byteLength,
+        size: totalSize,
         duration: track.duration || 0,
         enriched: Boolean(track.enriched),
         hasCover: Boolean(coverBuf?.byteLength),
       } satisfies JsonMsg)
 
-      for (let offset = 0; offset < buf.byteLength; offset += CHUNK) {
+      // Stream por trozos: no cargar 500MB+ enteros en RAM (pistas de muchas horas)
+      const sendDelay = totalSize > HUGE_AUDIO_BYTES ? 2 : 8
+      for (let offset = 0; offset < totalSize; offset += CHUNK) {
         if (isStopped()) return
-        const end = Math.min(offset + CHUNK, buf.byteLength)
-        const slice = buf.subarray(offset, end)
+        const end = Math.min(offset + CHUNK, totalSize)
+        const part = audio.slice(offset, end)
+        const ab = await part.arrayBuffer()
         conn.send({
           t: 'chunk-info',
           id: outId,
           offset,
-          total: buf.byteLength,
+          total: totalSize,
         } satisfies JsonMsg)
-        conn.send(slice.slice().buffer)
-        await new Promise((r) => setTimeout(r, 8))
+        conn.send(ab)
+        await new Promise((r) => setTimeout(r, sendDelay))
       }
       conn.send({ t: 'track-end', id: outId } satisfies JsonMsg)
 
@@ -396,16 +407,16 @@ export async function downloadTracksFromPc(
     const total = trackIds.length
     const pcErrors: string[] = []
     let gotDone = false
-    // Por canción: 3 min de inactividad. Antes el timeout global de 2 min
-    // cortaba lotes grandes y dejaba carátulas sin audio.
+    // Timeout de inactividad según tamaño (pistas de 8–10 h necesitan más que 3 min)
     let idleTimer: number | null = null
+    let currentIdleMs = 180_000
     const bumpIdle = () => {
       if (idleTimer != null) window.clearTimeout(idleTimer)
       idleTimer = window.setTimeout(() => {
         queue.push({ t: 'done' } satisfies JsonMsg)
         waiting?.()
         waiting = null
-      }, 180_000)
+      }, currentIdleMs)
     }
     bumpIdle()
 
@@ -447,6 +458,13 @@ export async function downloadTracksFromPc(
         if (data.t === 'track-start') {
           current = { meta: data, parts: [] }
           currentCover = null
+          currentIdleMs = idleMsForSize(data.size)
+          bumpIdle()
+          handlers.onStatus(
+            data.size > HUGE_AUDIO_BYTES
+              ? `Descargando archivo largo… ${data.title}`
+              : `Descargando… ${data.title}`,
+          )
           handlers.onProgress(imported, total, data.title, {
             trackId: data.id,
             percent: 0,
@@ -488,27 +506,37 @@ export async function downloadTracksFromPc(
               needsAudioUpdate: true,
             })
             current = null
+            currentIdleMs = 180_000
             continue
           }
-          const merged = new Uint8Array(received)
-          let offset = 0
-          for (const part of current.parts) {
-            merged.set(part, offset)
-            offset += part.byteLength
-          }
+          // Blob desde partes: evita un Uint8Array gigante intermedio (OOM en iPhone)
+          const parts = current.parts
           current = null
-          // Copiar bytes a un buffer propio (Safari a veces falla con vistas)
-          const exact = merged.slice()
-          const blob = new Blob([exact], {
+          currentIdleMs = 180_000
+          const libraryBlob = new Blob(parts as BlobPart[], {
             type: meta.mimeType || 'audio/mpeg',
           })
-          // Copia para biblioteca + otra para Archivos (no compartir el mismo buffer)
-          const libraryBlob = blob.slice(0, blob.size, blob.type || 'audio/mpeg')
-          const visibleBlob = blob.slice(0, blob.size, blob.type || 'audio/mpeg')
-          await saveAudioBlob(meta.id, libraryBlob)
+          parts.length = 0
+          try {
+            await saveAudioBlob(meta.id, libraryBlob)
+          } catch (e) {
+            const quota =
+              e instanceof DOMException &&
+              (e.name === 'QuotaExceededError' || /quota/i.test(e.message))
+            pcErrors.push(
+              quota
+                ? `Sin espacio en el móvil para “${meta.title}” (${Math.round(meta.size / 1e6)} MB). Libera almacenamiento.`
+                : `No se pudo guardar el audio: ${meta.title}`,
+            )
+            await db.tracks.update(meta.id, {
+              hasLocalAudio: false,
+              needsAudioUpdate: true,
+            })
+            continue
+          }
           const verified = await getAudioBlob(meta.id)
           if (!verified || verified.size < libraryBlob.size * 0.98) {
-            pcErrors.push(`No se pudo guardar el audio: ${meta.title}`)
+            pcErrors.push(`No se pudo verificar el audio: ${meta.title}`)
             await db.tracks.update(meta.id, {
               hasLocalAudio: false,
               needsAudioUpdate: true,
@@ -557,10 +585,13 @@ export async function downloadTracksFromPc(
             audioBytes: libraryBlob.size,
             metaUpdatedAt: prev?.metaUpdatedAt,
           })
-          savedVisible.push({
-            fileName: myVibeDownloadName(meta.artist, meta.title, meta.fileName),
-            blob: visibleBlob,
-          })
+          // No clonar a Archivos los MP3 enormes (duplicaría cientos de MB en RAM)
+          if (libraryBlob.size <= HUGE_AUDIO_BYTES) {
+            savedVisible.push({
+              fileName: myVibeDownloadName(meta.artist, meta.title, meta.fileName),
+              blob: libraryBlob.slice(0, libraryBlob.size, libraryBlob.type),
+            })
+          }
           imported += 1
           handlers.onProgress(imported, total, meta.title, {
             trackId: meta.id,
@@ -594,16 +625,9 @@ export async function downloadTracksFromPc(
           const received = coverMeta.parts.reduce((n, p) => n + p.byteLength, 0)
           currentCover = null
           if (received < coverMeta.size * 0.9) continue
-          const merged = new Uint8Array(received)
-          let offset = 0
-          for (const part of coverMeta.parts) {
-            merged.set(part, offset)
-            offset += part.byteLength
-          }
-          const coverBlob = new Blob(
-            [merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)],
-            { type: coverMeta.mimeType },
-          )
+          const coverBlob = new Blob(coverMeta.parts as BlobPart[], {
+            type: coverMeta.mimeType,
+          })
           try {
             await saveCoverBlob(coverMeta.id, coverBlob)
             await db.tracks.update(coverMeta.id, { hasCover: true, enriched: true })
