@@ -760,9 +760,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           pause: () => handleRemotePause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
-          seekto: (time) => usePlayerStore.getState().seek(time),
-          getPosition: () => usePlayerStore.getState().position,
-          seekSkip: true,
+          // Sin seekto: en iOS sustituye next/prev por ±10s
         },
         { playing: !audioEngine.paused },
       )
@@ -1099,9 +1097,7 @@ export async function bindMediaSession(_tracks: Track[]) {
           pause: () => handleRemotePause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
-          seekto: (time) => usePlayerStore.getState().seek(time),
-          getPosition: () => usePlayerStore.getState().position,
-          seekSkip: true,
+          // Sin seekto: en iOS sustituye next/prev por ±10s
         },
         { playing: mediaIsEffectivelyPlaying() },
       )

@@ -91,7 +91,8 @@ function audio(): HTMLAudioElement {
 }
 
 let loadEpoch = 0
-let mediaHandlersBound = false
+/** iOS: setPositionState frecuente hace que vuelvan ±10s en bloqueo. */
+let lastPositionPushAt = 0
 let persistTimer: number | null = null
 let pendingPersist: Partial<{
   queue: string[]
@@ -154,14 +155,18 @@ function setPlaybackStateFromElement(playing: boolean) {
   }
 }
 
-function pushPositionState() {
+function pushPositionState(force = false) {
   if (!('mediaSession' in navigator)) return
   if (!useLibraryPlayerStore.getState().currentTrackId) return
+  const now = Date.now()
+  // Throttle: cada tick + duration hace que iOS muestre ±10 en vez de next/prev
+  if (!force && now - lastPositionPushAt < 5000) return
+  lastPositionPushAt = now
   const el = audio()
   const duration = el.duration
   const position = el.currentTime
   const rate = el.playbackRate
-  if (!Number.isFinite(duration) || duration < 0) return
+  if (!Number.isFinite(duration) || duration <= 0) return
   if (!Number.isFinite(position) || position < 0) return
   if (!Number.isFinite(rate) || rate <= 0) return
   try {
@@ -173,6 +178,8 @@ function pushPositionState() {
   } catch {
     /* ignore */
   }
+  // Tras position state, WebKit a veces reactiva seek± — reafirmar next/prev
+  reinforceLibraryMediaHandlers()
 }
 
 function prefetchId(trackId: string | null) {
@@ -310,12 +317,12 @@ function commitTrackChange(trackId: string, index: number, url: string) {
 }
 
 /**
- * Media Session: solo tras el primer play() del usuario (gesto).
- * seekforward/seekbackward siempre null. next/prev registrados aquí, no en cold start.
+ * Media Session: next/prev de pista. Nunca seek± (iOS los pinta como +10/−10).
+ * Se puede llamar muchas veces: iOS a veces pierde los handlers tras setPositionState.
  */
-function bindLibraryMediaHandlersOnce() {
-  if (mediaHandlersBound || !('mediaSession' in navigator)) return
-  mediaHandlersBound = true
+function reinforceLibraryMediaHandlers() {
+  if (!('mediaSession' in navigator)) return
+  if (!useLibraryPlayerStore.getState().currentTrackId) return
 
   try {
     navigator.mediaSession.setActionHandler('seekforward', null)
@@ -328,7 +335,6 @@ function bindLibraryMediaHandlersOnce() {
   navigator.mediaSession.setActionHandler('play', () => {
     const { currentTrackId } = useLibraryPlayerStore.getState()
     if (!currentTrackId) return
-    // Reasignar desde Blob en RAM antes de play (blob: puede haber muerto al suspender)
     const url = reassignAudioObjectUrl(currentTrackId)
     const el = audio()
     if (url && el.src !== url && el.currentSrc !== url) {
@@ -381,10 +387,9 @@ function bindLibraryMediaHandlersOnce() {
   })
 }
 
-/** Primer play del usuario (o play posterior): registra MS si aún no. */
 function bindMediaSessionOnUserPlay() {
   setLibraryOwnsMediaSession(true)
-  bindLibraryMediaHandlersOnce()
+  reinforceLibraryMediaHandlers()
 }
 
 async function publishMetadata(track: Track) {
@@ -416,6 +421,7 @@ async function publishMetadata(track: Track) {
   } catch {
     /* ignore */
   }
+  reinforceLibraryMediaHandlers()
 }
 
 async function stopRivalPlayers() {
@@ -425,7 +431,6 @@ async function stopRivalPlayers() {
     const rivalActive = Boolean(ps.currentRadioId || ps.currentPodcastEpisodeId)
     ps.yieldToLibraryPlayer()
     if (rivalActive) {
-      mediaHandlersBound = false
       audioEngine.markIntentionalPause(1500)
       audioEngine.pause()
     }
@@ -500,13 +505,14 @@ function onLibraryLoadedMetadata() {
   if (Number.isFinite(el.duration) && el.duration >= 0) {
     useLibraryPlayerStore.setState({ duration: el.duration })
   }
-  pushPositionState()
+  pushPositionState(true)
 }
 
 function onLibraryPlaying() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   useLibraryPlayerStore.setState({ isPlaying: true })
   setPlaybackStateFromElement(true)
+  reinforceLibraryMediaHandlers()
 }
 
 function onLibraryPause() {
@@ -515,6 +521,7 @@ function onLibraryPause() {
   useLibraryPlayerStore.setState({ isPlaying: false })
   setPlaybackStateFromElement(false)
   persistSoon({ position: Math.max(0, audio().currentTime || 0) })
+  reinforceLibraryMediaHandlers()
 }
 
 function onLibraryEnded() {
@@ -533,6 +540,7 @@ if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return
     if (!useLibraryPlayerStore.getState().currentTrackId) return
+    reinforceLibraryMediaHandlers()
     void warmReadyAudioUrls()
   })
 }
