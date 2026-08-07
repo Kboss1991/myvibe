@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { Track } from '../types'
 import { isAppleMobile } from '../lib/folderImport'
 import { formatTime } from '../lib/mediaSession'
+import { formatAddedAt } from './TrackColumnsHead'
 import { saveFilesVisibly, myVibeDownloadName, deleteVisibleCopies } from '../lib/visibleStorage'
 import { useLibraryStore } from '../store/libraryStore'
 import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
@@ -351,7 +352,7 @@ export function TrackList({
             {selectMode && <span className="track-col track-col--check" />}
             <span className="track-col track-col--title">Título</span>
             <span className="track-col track-col--album">Álbum</span>
-            <span className="track-col track-col--date">Fecha</span>
+            <span className="track-col track-col--date">Añadida</span>
             <span className="track-col track-col--time">Tiempo</span>
             {!selectMode && <span className="track-col track-col--actions" />}
           </li>
@@ -484,7 +485,7 @@ export function TrackList({
                 <>
                   <span className="track-col track-col--album">{track.album || '—'}</span>
                   <span className="track-col track-col--date">
-                    {track.year || '—'}
+                    {formatAddedAt(track.createdAt)}
                   </span>
                   <span className="track-col track-col--time">
                     {formatTime(track.duration)}

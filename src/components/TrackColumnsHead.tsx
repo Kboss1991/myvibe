@@ -12,7 +12,7 @@ export type TrackSort = {
 const COLS: { key: TrackSortKey; label: string; className: string }[] = [
   { key: 'title', label: 'Título', className: 'track-list-head__title' },
   { key: 'album', label: 'Álbum', className: 'track-list-head__album' },
-  { key: 'date', label: 'Fecha', className: 'track-list-head__date' },
+  { key: 'date', label: 'Añadida', className: 'track-list-head__date' },
   { key: 'duration', label: 'Tiempo', className: 'track-list-head__time' },
 ]
 
@@ -20,12 +20,21 @@ function norm(s: string) {
   return s.trim().toLocaleLowerCase('es')
 }
 
-function yearNum(year: string): number {
-  const n = Number.parseInt(String(year).replace(/\D/g, '').slice(0, 4), 10)
-  return Number.isFinite(n) ? n : 0
+/** Fecha de subida a la app (createdAt). */
+export function formatAddedAt(createdAt: number | undefined | null): string {
+  if (!createdAt || !Number.isFinite(createdAt)) return '—'
+  try {
+    return new Date(createdAt).toLocaleDateString('es', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    })
+  } catch {
+    return '—'
+  }
 }
 
-/** Ordena canciones por columna (título, álbum, fecha o duración). */
+/** Ordena canciones. Por defecto (date): orden de subida a la app. */
 export function sortTracks(tracks: Track[], sort: TrackSort): Track[] {
   const mul = sort.dir === 'asc' ? 1 : -1
   const list = tracks.slice()
@@ -54,21 +63,16 @@ export function sortTracks(tracks: Track[], sort: TrackSort): Track[] {
           })
         }
         break
-      case 'date': {
-        // Columna muestra año; prioriza año y luego fecha de alta
-        const ya = yearNum(a.year)
-        const yb = yearNum(b.year)
-        if (ya && yb && ya !== yb) cmp = ya - yb
-        else if (ya && !yb) cmp = 1
-        else if (!ya && yb) cmp = -1
-        else cmp = (a.createdAt || 0) - (b.createdAt || 0)
+      case 'date':
+        // Orden de subida / importación a MyVibe (no el año del disco)
+        cmp = (a.createdAt || 0) - (b.createdAt || 0)
         break
-      }
       case 'duration':
         cmp = (a.duration || 0) - (b.duration || 0)
         break
     }
     if (cmp) return cmp * mul
+    // Empate: más reciente subida primero
     return (b.createdAt || 0) - (a.createdAt || 0)
   })
   return list
