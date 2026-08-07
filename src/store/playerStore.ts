@@ -490,9 +490,16 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
 
         if (get().currentPodcastEpisodeId) {
           if (Date.now() < trackAdvanceLockUntil) return
-          persistPodcastProgressNow(set, get, true)
-          trackAdvanceLockUntil = Date.now() + 800
-          void get().next({ fromEnded: true })
+          void import('./sleepTimerStore').then(({ useSleepTimerStore }) => {
+            if (useSleepTimerStore.getState().onMediaEnded()) {
+              persistPodcastProgressNow(set, get, true)
+              set({ isPlaying: false })
+              return
+            }
+            persistPodcastProgressNow(set, get, true)
+            trackAdvanceLockUntil = Date.now() + 800
+            void get().next({ fromEnded: true })
+          })
           return
         }
 

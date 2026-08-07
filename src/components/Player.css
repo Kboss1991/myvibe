@@ -677,7 +677,7 @@
 
 .now-playing__header {
   display: grid;
-  grid-template-columns: 44px 1fr 44px;
+  grid-template-columns: 44px 1fr minmax(44px, auto);
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
@@ -889,6 +889,82 @@
   justify-content: flex-end;
   margin-top: 4px;
   padding-bottom: 0;
+}
+
+.sleep-timer-btn {
+  position: relative;
+  justify-self: end;
+  min-width: 44px;
+  flex-direction: column;
+  gap: 0;
+}
+
+.sleep-timer-btn.is-on {
+  color: var(--accent);
+}
+
+.sleep-timer-btn__badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--accent);
+  margin-top: -2px;
+}
+
+.sleep-timer-sheet {
+  z-index: 280;
+}
+
+.sleep-timer-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.sleep-timer-panel__head h3 {
+  margin: 0;
+}
+
+.sleep-timer-panel__hint,
+.sleep-timer-panel__remaining {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0 0 14px;
+}
+
+.sleep-timer-panel__remaining strong {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.sleep-timer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sleep-timer-option {
+  width: 100%;
+  text-align: left;
+  padding: 14px 12px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.sleep-timer-option:hover,
+.sleep-timer-option:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.sleep-timer-option.is-active {
+  color: var(--accent);
+  background: var(--accent-dim);
 }
 
 .queue-sheet__head {

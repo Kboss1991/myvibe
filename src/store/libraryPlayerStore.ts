@@ -749,6 +749,12 @@ export const useLibraryPlayerStore = create<
     const { repeat, currentTrackId, queue } = get()
     if (!currentTrackId || !queue.length) return
 
+    const { useSleepTimerStore } = await import('./sleepTimerStore')
+    if (useSleepTimerStore.getState().onMediaEnded()) {
+      set({ isPlaying: false })
+      return
+    }
+
     if (repeat === 'one') {
       const el = audio()
       try {

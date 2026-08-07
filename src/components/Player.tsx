@@ -1,4 +1,4 @@
-import { useEffect, useRef, type CSSProperties } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { audioEngine } from '../lib/audioEngine'
 import { formatTime } from '../lib/mediaSession'
@@ -8,6 +8,11 @@ import { useDisplayedRadioDelay } from '../hooks/useDisplayedRadioDelay'
 import { useLibraryStore } from '../store/libraryStore'
 import { useLibraryPlayerStore } from '../store/libraryPlayerStore'
 import { bindMediaSession, resumeAfterInterruption, usePlayerStore } from '../store/playerStore'
+import {
+  formatSleepRemaining,
+  SLEEP_TIMER_PRESETS_MIN,
+  useSleepTimerStore,
+} from '../store/sleepTimerStore'
 import { CoverArt } from './CoverArt'
 import {
   IconHeart,
@@ -25,6 +30,7 @@ import {
   IconPodcast,
   IconSkipBack15,
   IconSkipForward15,
+  IconClock,
 } from './Icons'
 import './Player.css'
 import './TrackList.css'
@@ -44,6 +50,127 @@ function repeatAriaLabel(repeat: 'off' | 'all' | 'one'): string {
   if (repeat === 'all') return 'Repetir lista'
   if (repeat === 'one') return 'Repetir canción'
   return 'Repetición desactivada'
+}
+
+function useSleepRemainingLabel(active: boolean): string {
+  const endsAt = useSleepTimerStore((s) => s.endsAt)
+  const [label, setLabel] = useState(() => formatSleepRemaining(endsAt))
+  useEffect(() => {
+    if (!active || !endsAt) {
+      setLabel('')
+      return
+    }
+    const tick = () => setLabel(formatSleepRemaining(endsAt))
+    tick()
+    const id = window.setInterval(tick, 1000)
+    return () => window.clearInterval(id)
+  }, [active, endsAt])
+  return label
+}
+
+function SleepTimerButton({
+  allowEndOfTrack,
+  remainingSeconds,
+}: {
+  allowEndOfTrack: boolean
+  remainingSeconds: number
+}) {
+  const [open, setOpen] = useState(false)
+  const mode = useSleepTimerStore((s) => s.mode)
+  const endsAt = useSleepTimerStore((s) => s.endsAt)
+  const presetMinutes = useSleepTimerStore((s) => s.presetMinutes)
+  const setMinutes = useSleepTimerStore((s) => s.setMinutes)
+  const setEndOfTrack = useSleepTimerStore((s) => s.setEndOfTrack)
+  const clear = useSleepTimerStore((s) => s.clear)
+  const remaining = useSleepRemainingLabel(mode !== 'off')
+  const active = mode !== 'off' && Boolean(endsAt)
+
+  return (
+    <>
+      <button
+        type="button"
+        className={`icon-btn sleep-timer-btn ${active ? 'is-on' : ''}`}
+        aria-label={
+          active
+            ? `Temporizador activo, quedan ${remaining}`
+            : 'Temporizador de apagado'
+        }
+        aria-pressed={active}
+        title={active ? `Apagado en ${remaining}` : 'Temporizador'}
+        onClick={() => setOpen(true)}
+      >
+        <IconClock size={22} />
+        {active && remaining ? (
+          <span className="sleep-timer-btn__badge">{remaining}</span>
+        ) : null}
+      </button>
+
+      {open ? (
+        <div className="sheet sleep-timer-sheet">
+          <button type="button" className="sheet-backdrop" onClick={() => setOpen(false)} />
+          <div className="sheet__panel sleep-timer-panel">
+            <div className="sleep-timer-panel__head">
+              <h3>Temporizador</h3>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="Cerrar"
+                onClick={() => setOpen(false)}
+              >
+                <IconClose size={22} />
+              </button>
+            </div>
+            {active && remaining ? (
+              <p className="sleep-timer-panel__remaining">
+                Se pausará en <strong>{remaining}</strong>
+              </p>
+            ) : (
+              <p className="sleep-timer-panel__hint">Pausa la reproducción automáticamente</p>
+            )}
+            <div className="sleep-timer-options" role="list">
+              <button
+                type="button"
+                className={`sleep-timer-option ${mode === 'off' ? 'is-active' : ''}`}
+                onClick={() => {
+                  clear()
+                  setOpen(false)
+                }}
+              >
+                Desactivado
+              </button>
+              {SLEEP_TIMER_PRESETS_MIN.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  className={`sleep-timer-option ${
+                    mode === 'timed' && presetMinutes === m ? 'is-active' : ''
+                  }`}
+                  onClick={() => {
+                    setMinutes(m)
+                    setOpen(false)
+                  }}
+                >
+                  {m === 60 ? '1 hora' : `${m} min`}
+                </button>
+              ))}
+              {allowEndOfTrack ? (
+                <button
+                  type="button"
+                  className={`sleep-timer-option ${mode === 'end_of_track' ? 'is-active' : ''}`}
+                  onClick={() => {
+                    setEndOfTrack(remainingSeconds)
+                    setOpen(false)
+                  }}
+                >
+                  Al final de esta pista
+                </button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
+  )
 }
 
 export function PlayerBar() {
@@ -462,7 +589,7 @@ export function NowPlaying() {
             <p className="now-playing__eyebrow">En directo</p>
             <p className="now-playing__album">{radio.tagline || 'Radio'}</p>
           </div>
-          <span aria-hidden className="now-playing__header-spacer" />
+          <SleepTimerButton allowEndOfTrack={false} remainingSeconds={0} />
         </header>
 
         <div className="now-playing__art-wrap">
@@ -562,7 +689,10 @@ export function NowPlaying() {
             <p className="now-playing__eyebrow">Podcast</p>
             <p className="now-playing__album">{podcastShow?.name || 'Episodio'}</p>
           </div>
-          <span aria-hidden className="now-playing__header-spacer" />
+          <SleepTimerButton
+            allowEndOfTrack
+            remainingSeconds={Math.max(0, (duration || 0) - position)}
+          />
         </header>
 
         <div className="now-playing__art-wrap">
@@ -663,7 +793,10 @@ export function NowPlaying() {
             <p className="now-playing__album">{track!.album}</p>
           </div>
         )}
-        <span aria-hidden className="now-playing__header-spacer" />
+        <SleepTimerButton
+          allowEndOfTrack
+          remainingSeconds={Math.max(0, (duration || 0) - position)}
+        />
       </header>
 
       <div className="now-playing__art-wrap">
