@@ -20,6 +20,19 @@ import {
   listOpfsIds,
   type OpfsAppendWriter,
 } from './opfs'
+import {
+  isNativeApp,
+  writeNativeAudio,
+  readNativeAudioBlob,
+  getNativeAudioSrc,
+  deleteNativeAudio,
+  writeNativeCover,
+  readNativeCoverBlob,
+  getNativeCoverSrc,
+  deleteNativeCover,
+  beginNativeAudioWrite,
+  nativeAudioExists,
+} from './nativeAudioFs'
 
 /** Umbral: no meter en IndexedDB (OOM / pantalla blanca en iPhone). */
 export const HUGE_AUDIO_BYTES = 40 * 1024 * 1024
@@ -53,7 +66,12 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
   objectUrlCache.delete(`audio:${id}`)
   audioBlobCache.delete(id)
 
-  if (huge) {
+  if (isNativeApp()) {
+    // Capacitor: Documents privados (sobrevive mejor que IDB/OPFS en iOS nativo)
+    await writeNativeAudio(id, safe)
+    await db.audio.delete(id).catch(() => undefined)
+    await deleteBinary('audio', id).catch(() => undefined)
+  } else if (huge) {
     // Solo OPFS por trozos: IndexedDB.put de 300–500 MB = pantalla blanca en iPhone
     const wrote = await writeBinary('audio', id, safe)
     if (wrote !== 'opfs') {
@@ -67,7 +85,7 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
     await writeBinary('audio', id, safe)
     await db.audio.put({ id, blob: safe })
   } else {
-    // Apple + tamaño normal: IDB (OPFS a veces truncaba al escribir de golpe)
+    // Apple PWA + tamaño normal: IDB (OPFS a veces truncaba al escribir de golpe)
     await deleteBinary('audio', id).catch(() => undefined)
     await db.audio.put({ id, blob: safe })
   }
@@ -81,16 +99,19 @@ export async function saveAudioBlob(id: string, blob: Blob): Promise<void> {
   }
 }
 
-/** Descarga streaming: escribe chunks a OPFS sin acumular en RAM. */
+/** Descarga streaming: escribe chunks a disco nativo u OPFS sin acumular en RAM. */
 export async function beginHugeAudioWrite(id: string): Promise<OpfsAppendWriter | null> {
   revokeCachedUrls(id)
   objectUrlCache.delete(`audio:${id}`)
   audioBlobCache.delete(id)
   await db.audio.delete(id).catch(() => undefined)
+  if (isNativeApp()) {
+    return beginNativeAudioWrite(id)
+  }
   return openBinaryWriter('audio', id)
 }
 
-/** Cierra el writer y comprueba tamaño; deja el audio solo en OPFS. */
+/** Cierra el writer y comprueba tamaño. */
 export async function finishHugeAudioWrite(
   id: string,
   writer: OpfsAppendWriter,
@@ -98,9 +119,15 @@ export async function finishHugeAudioWrite(
   mimeType?: string,
 ): Promise<Blob> {
   await writer.close()
-  const file = await readBinary('audio', id)
+  let file: Blob | null = null
+  if (isNativeApp()) {
+    file = await readNativeAudioBlob(id)
+  } else {
+    file = await readBinary('audio', id)
+  }
   if (!file || file.size < expectedSize * 0.98) {
-    await deleteBinary('audio', id).catch(() => undefined)
+    if (isNativeApp()) await deleteNativeAudio(id).catch(() => undefined)
+    else await deleteBinary('audio', id).catch(() => undefined)
     throw new Error(
       `Archivo incompleto en disco (${file?.size ?? 0}/${expectedSize} bytes)`,
     )
@@ -135,8 +162,14 @@ export async function saveCoverBlob(id: string, blob: Blob): Promise<void> {
   const safe = blob.slice(0, blob.size, blob.type || 'image/jpeg')
   revokeCachedUrls(id)
   objectUrlCache.delete(`cover:${id}`)
-  await writeBinary('covers', id, safe)
-  await db.covers.put({ id, blob: safe })
+  if (isNativeApp()) {
+    await writeNativeCover(id, safe)
+    await db.covers.delete(id).catch(() => undefined)
+    await deleteBinary('covers', id).catch(() => undefined)
+  } else {
+    await writeBinary('covers', id, safe)
+    await db.covers.put({ id, blob: safe })
+  }
   try {
     const { clearMediaArtworkCache } = await import('./mediaSession')
     clearMediaArtworkCache(id)
@@ -146,6 +179,10 @@ export async function saveCoverBlob(id: string, blob: Blob): Promise<void> {
 }
 
 export async function getAudioBlob(id: string): Promise<Blob | null> {
+  if (isNativeApp()) {
+    const native = await readNativeAudioBlob(id)
+    if (native && native.size > 0) return native
+  }
   const record = await db.audio.get(id)
   const fromIdb = record?.blob ?? null
   const fromOpfs = await readBinary('audio', id)
@@ -154,6 +191,10 @@ export async function getAudioBlob(id: string): Promise<Blob | null> {
 }
 
 export async function getCoverBlob(id: string): Promise<Blob | null> {
+  if (isNativeApp()) {
+    const native = await readNativeCoverBlob(id)
+    if (native && native.size > 0) return native
+  }
   const record = await db.covers.get(id)
   const fromIdb = record?.blob ?? null
   const fromOpfs = await readBinary('covers', id)
@@ -237,6 +278,23 @@ export function peekAudioBlob(id: string): Blob | null {
 }
 
 export async function getAudioObjectUrl(id: string): Promise<string | null> {
+  // Nativo: URL de fichero (Documents) — no carga el MP3 entero en RAM
+  if (isNativeApp()) {
+    const nativeSrc = await getNativeAudioSrc(id)
+    if (nativeSrc) {
+      const old = objectUrlCache.get(`audio:${id}`)
+      if (old?.startsWith('blob:')) {
+        try {
+          URL.revokeObjectURL(old)
+        } catch {
+          /* ignore */
+        }
+      }
+      objectUrlCache.set(`audio:${id}`, nativeSrc)
+      return nativeSrc
+    }
+  }
+
   const existingBlob = audioBlobCache.get(id)
   if (existingBlob) {
     return reassignAudioObjectUrl(id)
@@ -282,6 +340,13 @@ export function peekAudioObjectUrl(id: string): string | null {
 export async function getCoverObjectUrl(id: string): Promise<string | null> {
   const cached = objectUrlCache.get(`cover:${id}`)
   if (cached) return cached
+  if (isNativeApp()) {
+    const nativeSrc = await getNativeCoverSrc(id)
+    if (nativeSrc) {
+      objectUrlCache.set(`cover:${id}`, nativeSrc)
+      return nativeSrc
+    }
+  }
   const blob = await getCoverBlob(id)
   if (!blob) return null
   const url = URL.createObjectURL(blob)
@@ -699,6 +764,10 @@ export async function enrichTracksMissingCover(
 
 export async function deleteTrack(id: string): Promise<void> {
   revokeCachedUrls(id)
+  if (isNativeApp()) {
+    await deleteNativeAudio(id)
+    await deleteNativeCover(id)
+  }
   await deleteBinary('audio', id)
   await deleteBinary('covers', id)
   await db.audio.delete(id)
@@ -961,6 +1030,14 @@ export async function repairMissingLocalAudio(): Promise<number> {
   for (const t of tracks) {
     if (t.hasLocalAudio !== false) continue
     try {
+      if (isNativeApp() && (await nativeAudioExists(t.id))) {
+        await db.tracks.update(t.id, {
+          hasLocalAudio: true,
+          needsAudioUpdate: false,
+        })
+        fixed += 1
+        continue
+      }
       const blob = await getAudioBlob(t.id)
       if (blob && blob.size >= 1024) {
         await db.tracks.update(t.id, {
@@ -1010,15 +1087,20 @@ export async function requestPersistentLibraryStorage(): Promise<boolean> {
   }
 }
 
-/** Devuelve las dos copias posibles (IDB / OPFS) para reintentar reproducción. */
+/** Devuelve copias posibles (nativo / IDB / OPFS) para reintentar reproducción. */
 export async function getAudioBlobSources(
   id: string,
-): Promise<{ idb: Blob | null; opfs: Blob | null }> {
+): Promise<{ idb: Blob | null; opfs: Blob | null; native: Blob | null }> {
+  const native = isNativeApp() ? await readNativeAudioBlob(id) : null
   const record = await db.audio.get(id)
   const idb = record?.blob && record.blob.size > 0 ? record.blob : null
   const opfsRaw = await readBinary('audio', id)
   const opfs = opfsRaw && opfsRaw.size > 0 ? opfsRaw : null
-  return { idb, opfs }
+  return {
+    native: native && native.size > 0 ? native : null,
+    idb,
+    opfs,
+  }
 }
 
 /**
@@ -1029,6 +1111,10 @@ export async function clearLocalMusicLibrary(): Promise<{ tracks: number; playli
   const tracks = await db.tracks.toArray()
   for (const t of tracks) {
     revokeCachedUrls(t.id)
+    if (isNativeApp()) {
+      await deleteNativeAudio(t.id)
+      await deleteNativeCover(t.id)
+    }
     await deleteBinary('audio', t.id)
     await deleteBinary('covers', t.id)
     await db.audio.delete(t.id)

@@ -317,8 +317,9 @@ function commitTrackChange(trackId: string, index: number, url: string) {
 }
 
 /**
- * Media Session: next/prev de pista. Nunca seek± (iOS los pinta como +10/−10).
- * Se puede llamar muchas veces: iOS a veces pierde los handlers tras setPositionState.
+ * Media Session: next/prev de pista + metadatos en bloqueo.
+ * Nunca seek± (iOS los pinta como +10/−10).
+ * En Capacitor nativo, UIBackgroundModes=audio + estos handlers = control en bloqueo.
  */
 function reinforceLibraryMediaHandlers() {
   if (!('mediaSession' in navigator)) return
