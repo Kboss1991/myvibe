@@ -950,32 +950,64 @@ export async function deleteTracks(ids: string[]): Promise<void> {
 }
 
 /**
- * Sincroniza hasLocalAudio con la realidad del almacenamiento.
- * - Si hay blob usable → marca local (recupera canciones mal marcadas en el PC)
- * - Si no hay blob → marca remota
+ * Solo recupera falsos “remotos”: si hay blob usable y el flag dice que no.
+ * NUNCA marca hasLocalAudio=false aquí: en iOS tras bloqueo/suspensión
+ * IndexedDB/OPFS a veces no responde un instante y un barrido agresivo
+ * pintaba toda la biblioteca en rojo de golpe.
  */
 export async function repairMissingLocalAudio(): Promise<number> {
   const tracks = await db.tracks.toArray()
   let fixed = 0
   for (const t of tracks) {
-    const blob = await getAudioBlob(t.id)
-    const has = Boolean(blob && blob.size >= 1024)
-    if (has && t.hasLocalAudio === false) {
-      await db.tracks.update(t.id, { hasLocalAudio: true })
-      fixed += 1
-      continue
-    }
-    if (!has && t.hasLocalAudio !== false) {
-      await db.tracks.update(t.id, { hasLocalAudio: false })
-      if (blob && blob.size > 0) {
-        await db.audio.delete(t.id).catch(() => undefined)
-        await deleteBinary('audio', t.id).catch(() => undefined)
-        revokeCachedUrls(t.id)
+    if (t.hasLocalAudio !== false) continue
+    try {
+      const blob = await getAudioBlob(t.id)
+      if (blob && blob.size >= 1024) {
+        await db.tracks.update(t.id, {
+          hasLocalAudio: true,
+          needsAudioUpdate: false,
+          audioBytes: blob.size,
+        })
+        fixed += 1
       }
-      fixed += 1
+    } catch {
+      // Lectura temporal fallida: no tocar el flag
     }
   }
   return fixed
+}
+
+/**
+ * Auditoría opcional (perfil / diagnóstico): marca remotas solo si
+ * confirmamos que no hay audio. No borrar blobs residuales.
+ */
+export async function auditMissingLocalAudio(): Promise<number> {
+  const tracks = await db.tracks.toArray()
+  let marked = 0
+  for (const t of tracks) {
+    if (t.hasLocalAudio === false) continue
+    try {
+      const blob = await getAudioBlob(t.id)
+      if (!blob || blob.size < 1024) {
+        await db.tracks.update(t.id, { hasLocalAudio: false })
+        marked += 1
+      }
+    } catch {
+      // No degradar si el almacenamiento no responde
+    }
+  }
+  return marked
+}
+
+/** Pide a iOS/Android no evacuar IndexedDB/OPFS bajo presión de espacio. */
+export async function requestPersistentLibraryStorage(): Promise<boolean> {
+  try {
+    if (!navigator.storage?.persist) return false
+    if (await navigator.storage.persisted?.()) return true
+    return Boolean(await navigator.storage.persist())
+  } catch {
+    return false
+  }
 }
 
 /** Devuelve las dos copias posibles (IDB / OPFS) para reintentar reproducción. */

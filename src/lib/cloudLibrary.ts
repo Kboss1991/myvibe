@@ -668,6 +668,8 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
       const cloudTs = row.updated_at ? Date.parse(row.updated_at) || 0 : 0
       const localMetaTs = existing.metaUpdatedAt || 0
       const keepLocalMeta = localMetaTs > 0 && localMetaTs >= cloudTs
+      // No degradar local→remoto por un getAudioBlob fallido (iOS tras bloqueo).
+      // Solo crear/actualizar metadatos; el flag rojo lo decide el móvil al fallar play/descarga.
       await db.tracks.update(row.local_id, {
         ...(keepLocalMeta
           ? {}
@@ -681,9 +683,10 @@ export async function pullLibraryCatalog(userId: string): Promise<number> {
         duration: row.duration,
         mimeType: row.mime_type,
         fileName: row.file_name,
-        hasLocalAudio: false,
-        origin: 'cloud',
-        needsAudioUpdate: false,
+        origin: existing.origin ?? 'cloud',
+        ...(existing.hasLocalAudio === false
+          ? { hasLocalAudio: false, needsAudioUpdate: false }
+          : {}),
       })
       for (const k of keys) seenKeys.add(k)
       continue

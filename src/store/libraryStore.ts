@@ -421,6 +421,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
 
   init: () => {
     void ensurePlaybackSnapshot()
+    void library.requestPersistentLibraryStorage().catch(() => {})
+    // Solo recupera flags mal puestos; no degrada a “rojo” al despertar
     void library.repairMissingLocalAudio().catch(() => {})
     const subTracks = liveQuery(() => db.tracks.orderBy('createdAt').reverse().toArray()).subscribe({
       next: (tracks) => set({ tracks, ready: true }),
