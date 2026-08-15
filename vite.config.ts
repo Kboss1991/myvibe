@@ -3,6 +3,8 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // Rutas relativas: obligatorio en Capacitor (capacitor:// / https://localhost)
+  base: './',
   server: {
     port: 5174,
     strictPort: true,

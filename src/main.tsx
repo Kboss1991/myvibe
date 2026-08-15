@@ -1,10 +1,14 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
+import { Capacitor } from '@capacitor/core'
 import { registerSW } from 'virtual:pwa-register'
 import App from './App'
 import { audioEngine } from './lib/audioEngine'
+import { initNativeShell } from './lib/nativeShell'
 import './styles/tokens.css'
+
+const isNative = Capacitor.isNativePlatform()
 
 // iOS WebKit: anular ±10s desde el arranque. next/prev se registran en el primer play() del usuario.
 if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
@@ -45,6 +49,8 @@ document.addEventListener(
   { once: true, passive: true },
 )
 
+void initNativeShell()
+
 function shouldDeferReload() {
   try {
     if (audioEngine.shouldKeepAlive) return true
@@ -66,45 +72,47 @@ function forceReloadOnce(reason: string) {
   window.location.reload()
 }
 
-// Fuerza coger la versión nueva tras cada deploy (evita UI vieja en caché iOS)
-registerSW({
-  immediate: true,
-  onNeedRefresh() {
-    forceReloadOnce('need-refresh')
-  },
-  onRegisteredSW(_url, registration) {
-    if (!registration) return
+// Service worker solo en web/PWA — en Capacitor el shell nativo sirve `dist` sin SW
+if (!isNative) {
+  registerSW({
+    immediate: true,
+    onNeedRefresh() {
+      forceReloadOnce('need-refresh')
+    },
+    onRegisteredSW(_url, registration) {
+      if (!registration) return
 
-    const poke = () => {
-      void registration.update()
-      if (registration.waiting) {
-        registration.waiting.postMessage({ type: 'SKIP_WAITING' })
-        forceReloadOnce('waiting-sw')
-      }
-    }
-
-    poke()
-    window.setInterval(poke, 60 * 1000)
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') poke()
-    })
-    window.addEventListener('focus', poke)
-
-    registration.addEventListener('updatefound', () => {
-      const neu = registration.installing
-      if (!neu) return
-      neu.addEventListener('statechange', () => {
-        if (neu.state === 'installed' && navigator.serviceWorker.controller) {
-          forceReloadOnce('updatefound')
+      const poke = () => {
+        void registration.update()
+        if (registration.waiting) {
+          registration.waiting.postMessage({ type: 'SKIP_WAITING' })
+          forceReloadOnce('waiting-sw')
         }
-      })
-    })
-  },
-})
+      }
 
-navigator.serviceWorker?.addEventListener('controllerchange', () => {
-  forceReloadOnce('controllerchange')
-})
+      poke()
+      window.setInterval(poke, 60 * 1000)
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') poke()
+      })
+      window.addEventListener('focus', poke)
+
+      registration.addEventListener('updatefound', () => {
+        const neu = registration.installing
+        if (!neu) return
+        neu.addEventListener('statechange', () => {
+          if (neu.state === 'installed' && navigator.serviceWorker.controller) {
+            forceReloadOnce('updatefound')
+          }
+        })
+      })
+    },
+  })
+
+  navigator.serviceWorker?.addEventListener('controllerchange', () => {
+    forceReloadOnce('controllerchange')
+  })
+}
 
 // Tras un deploy, Safari/iOS a veces falla al cargar chunks viejos del SW.
 window.addEventListener('vite:preloadError', (event) => {
