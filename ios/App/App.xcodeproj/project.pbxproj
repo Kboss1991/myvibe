@@ -18,6 +18,7 @@
 		9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9582B6822FE993A50072D4E8 /* SceneDelegate.swift */; };
 		A7E1NOWP1FED79650016851F /* NowPlayingPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1NOWP0FED79650016851F /* NowPlayingPlugin.swift */; };
 		A7E1BRDG1FED79650016851F /* BridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1BRDG0FED79650016851F /* BridgeViewController.swift */; };
+		A7E1NAUD1FED79650016851F /* NativeAudioPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1NAUD0FED79650016851F /* NativeAudioPlugin.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -34,6 +35,7 @@
 		958DCC722DB07C7200EA8C5F /* debug.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = debug.xcconfig; path = ../debug.xcconfig; sourceTree = SOURCE_ROOT; };
 		A7E1NOWP0FED79650016851F /* NowPlayingPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingPlugin.swift; sourceTree = "<group>"; };
 		A7E1BRDG0FED79650016851F /* BridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeViewController.swift; sourceTree = "<group>"; };
+		A7E1NAUD0FED79650016851F /* NativeAudioPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudioPlugin.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -70,6 +72,7 @@
 			children = (
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
 				A7E1BRDG0FED79650016851F /* BridgeViewController.swift */,
+				A7E1NAUD0FED79650016851F /* NativeAudioPlugin.swift */,
 				A7E1NOWP0FED79650016851F /* NowPlayingPlugin.swift */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
@@ -167,6 +170,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				9582B6832FE993A70072D4E8 /* SceneDelegate.swift in Sources */,
 				A7E1BRDG1FED79650016851F /* BridgeViewController.swift in Sources */,
+				A7E1NAUD1FED79650016851F /* NativeAudioPlugin.swift in Sources */,
 				A7E1NOWP1FED79650016851F /* NowPlayingPlugin.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
