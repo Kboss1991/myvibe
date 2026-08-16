@@ -7,6 +7,7 @@ import {
   getAudioBlob,
   getCoverBlob,
   markLocalAudioFresh,
+  playlistCoverId,
   saveCoverBlob,
 } from './library'
 import { nativeAudioExists } from './nativeAudioFs'
@@ -59,6 +60,7 @@ type PlaylistWire = {
   themeColor?: string
   createdAt: number
   updatedAt: number
+  hasCover?: boolean
 }
 
 type JsonMsg =
@@ -412,6 +414,7 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
 
         if (!sentPlaylists) {
           await sendPayload(conn, { t: 'playlists', items: playlistsWire }, () => stopped)
+          await sendPlaylistCovers(conn, playlistsWire, () => stopped, handlers.onStatus)
           sentPlaylists = true
         }
 
@@ -555,15 +558,66 @@ async function splitByWeight(tracks: Track[]): Promise<{ light: Track[]; heavy: 
 
 async function buildPlaylistWire(tracks: Track[]): Promise<PlaylistWire[]> {
   const playlists = await db.playlists.toArray()
-  return playlists.map((p) => ({
-    id: p.id,
-    name: p.name,
-    description: p.description || '',
-    trackIds: p.trackIds.filter((id) => tracks.some((t) => t.id === id)),
-    themeColor: p.themeColor,
-    createdAt: p.createdAt,
-    updatedAt: p.updatedAt,
-  }))
+  const wire: PlaylistWire[] = []
+  for (const p of playlists) {
+    let hasCover = false
+    if (p.hasCover) {
+      const blob = await getCoverBlob(playlistCoverId(p.id))
+      hasCover = Boolean(blob && blob.size > 0)
+    }
+    wire.push({
+      id: p.id,
+      name: p.name,
+      description: p.description || '',
+      trackIds: p.trackIds.filter((id) => tracks.some((t) => t.id === id)),
+      themeColor: p.themeColor,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+      hasCover,
+    })
+  }
+  return wire
+}
+
+/** Envía portadas custom de playlist (id `playlist:…` en la tabla covers). */
+async function sendPlaylistCovers(
+  conn: DataConnection,
+  wire: PlaylistWire[],
+  isStopped: () => boolean,
+  onStatus?: (msg: string) => void,
+) {
+  const withCover = wire.filter((p) => p.hasCover)
+  if (!withCover.length) return
+  onStatus?.(`Enviando ${withCover.length} portadas de playlist…`)
+  for (const p of withCover) {
+    if (isStopped()) return
+    const coverId = playlistCoverId(p.id)
+    const cover = await getCoverBlob(coverId)
+    if (!cover || cover.size <= 0) continue
+    const buf = new Uint8Array(await cover.arrayBuffer())
+    await sendPayload(
+      conn,
+      {
+        t: 'cover-start',
+        id: coverId,
+        size: buf.byteLength,
+        mimeType: cover.type || 'image/jpeg',
+      },
+      isStopped,
+    )
+    for (let offset = 0; offset < buf.byteLength; offset += CHUNK) {
+      if (isStopped()) return
+      const end = Math.min(offset + CHUNK, buf.byteLength)
+      const slice = buf.subarray(offset, end)
+      await sendPayload(
+        conn,
+        { t: 'chunk-info', i: 0, offset, total: buf.byteLength },
+        isStopped,
+      )
+      await sendPayload(conn, slice.slice().buffer, isStopped)
+    }
+    await sendPayload(conn, { t: 'cover-end', id: coverId }, isStopped)
+  }
 }
 
 async function sendTrackBatch(opts: {
@@ -1076,12 +1130,16 @@ async function receiveLibraryRound(
             name: item.name || 'Playlist',
             description: item.description || '',
             trackIds: item.trackIds || [],
+            // La imagen llega justo después (cover-start con id playlist:…)
             hasCover: false,
             themeColor: item.themeColor,
             createdAt: item.createdAt || now,
             updatedAt: item.updatedAt || now,
           } satisfies Playlist)
           playlistsIn += 1
+        }
+        if (playlistsIn) {
+          handlers.onStatus(`Playlists: ${playlistsIn}. Portadas y audio…`)
         }
         continue
       }
@@ -1237,22 +1295,32 @@ async function receiveLibraryRound(
         const coverMeta = currentCover
         const got = coverMeta.received || coverMeta.parts.reduce((n, p) => n + p.byteLength, 0)
         currentCover = null
-        if (!skipCovers && got >= coverMeta.size * 0.9 && coverMeta.parts.length) {
+        const isPlaylistCover = coverMeta.id.startsWith('playlist:')
+        if (got >= coverMeta.size * 0.9 && coverMeta.parts.length) {
           try {
             await saveCoverBlob(
               coverMeta.id,
               new Blob(coverMeta.parts as BlobPart[], { type: coverMeta.mimeType }),
             )
-            await db.tracks.update(coverMeta.id, {
-              hasCover: true,
-              enriched: true,
-              coverUpdatedAt: Date.now(),
-            })
+            if (isPlaylistCover) {
+              const playlistId = coverMeta.id.slice('playlist:'.length)
+              await db.playlists.update(playlistId, {
+                hasCover: true,
+                updatedAt: Date.now(),
+              })
+            } else {
+              await db.tracks.update(coverMeta.id, {
+                hasCover: true,
+                enriched: true,
+                coverUpdatedAt: Date.now(),
+              })
+            }
           } catch (e) {
             console.warn('Fallo portada', e)
           }
         }
         coverMeta.parts = []
+        if (isPlaylistCover) continue
         if (pendingAck && pendingAck.id === coverMeta.id) {
           imported += 1
           emitProgress(
