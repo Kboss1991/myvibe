@@ -1,6 +1,12 @@
 import { getCoverBlob } from './library'
 import type { RadioStation } from './radios'
 import type { Track } from '../types'
+import {
+  bindNativeRemoteControls,
+  nativeSetMetadata,
+  nativeSetPlaybackState,
+  nativeSetPositionState,
+} from './nativeNowPlaying'
 
 export function formatTime(seconds: number): string {
   if (!Number.isFinite(seconds) || seconds < 0) return '0:00'
@@ -116,16 +122,14 @@ async function mediaImagesFromBlob(blob: Blob, cacheKey: string): Promise<MediaI
   if (!blob || blob.size < 32) return []
   try {
     // iOS elige el tamaño más grande disponible para la carátula a pantalla completa
-    const [xl, lg, md] = await Promise.all([
-      resizeCoverToJpeg(blob, 1200, 0.88),
-      resizeCoverToJpeg(blob, 600, 0.86),
-      resizeCoverToJpeg(blob, 300, 0.84),
+    // 600 máx: data-URL más grande satura el bridge Capacitor → Dynamic Island
+    const [lg, md] = await Promise.all([
+      resizeCoverToJpeg(blob, 600, 0.82),
+      resizeCoverToJpeg(blob, 300, 0.8),
     ])
     const images: MediaImage[] = [
-      { src: xl, sizes: '1200x1200', type: 'image/jpeg' },
       { src: lg, sizes: '600x600', type: 'image/jpeg' },
       { src: md, sizes: '300x300', type: 'image/jpeg' },
-      { src: lg, sizes: '512x512', type: 'image/jpeg' },
       { src: md, sizes: '256x256', type: 'image/jpeg' },
     ]
     artworkCache.set(cacheKey, images)
@@ -261,6 +265,7 @@ function bindMediaHandlers(handlers: {
 }) {
   // Biblioteca tiene el control: no pisar next/prev
   if (libraryOwnsMediaSession) return
+  if (!('mediaSession' in navigator)) return
 
   navigator.mediaSession.setActionHandler('play', () => {
     try {
@@ -327,7 +332,15 @@ function publishMetadata(opts: {
   artwork: MediaImage[]
 }) {
   const artwork = artworkOrLast(opts.artwork)
-  navigator.mediaSession.metadata = new MediaMetadata({
+  if ('mediaSession' in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: opts.title,
+      artist: opts.artist,
+      album: opts.album,
+      artwork,
+    })
+  }
+  void nativeSetMetadata({
     title: opts.title,
     artist: opts.artist,
     album: opts.album,
@@ -373,12 +386,18 @@ export async function updateMediaSession(
   },
   opts?: { playing?: boolean; skipArtworkUpgrade?: boolean },
 ) {
-  if (!('mediaSession' in navigator)) return
   if (!track) return
   if (libraryOwnsMediaSession) return
 
   // Handlers YA (antes de await artwork)
   bindMediaHandlers(handlers)
+  void bindNativeRemoteControls({
+    play: handlers.play,
+    pause: handlers.pause,
+    nexttrack: handlers.nexttrack,
+    previoustrack: handlers.previoustrack,
+    seekto: handlers.seekto,
+  })
 
   let artwork = peekCachedLockScreenArtwork(track.id)
   if (!opts?.skipArtworkUpgrade) {
@@ -416,7 +435,6 @@ export async function updateRadioMediaSession(
     nexttrack?: () => void
   },
 ) {
-  if (!('mediaSession' in navigator)) return
   if (libraryOwnsMediaSession) return
 
   bindMediaHandlers({
@@ -424,6 +442,12 @@ export async function updateRadioMediaSession(
     seekto: undefined,
     getPosition: undefined,
     seekSkip: false,
+  })
+  void bindNativeRemoteControls({
+    play: handlers.play,
+    pause: handlers.pause,
+    nexttrack: handlers.nexttrack,
+    previoustrack: handlers.previoustrack,
   })
 
   publishMetadata({
@@ -442,7 +466,7 @@ export async function updateRadioMediaSession(
   }
 
   try {
-    const currentTitle = navigator.mediaSession.metadata?.title
+    const currentTitle = navigator.mediaSession?.metadata?.title
     if (currentTitle && currentTitle !== station.name) return
   } catch {
     /* ignore */
@@ -463,13 +487,15 @@ export async function updateRadioMediaSession(
 }
 
 export function setMediaPlaybackState(playing: boolean) {
-  if (!('mediaSession' in navigator)) return
   if (libraryOwnsMediaSession) return
-  try {
-    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
-  } catch {
-    // ignore
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+    } catch {
+      // ignore
+    }
   }
+  void nativeSetPlaybackState(playing)
 }
 
 /** Pocas pasadas — sin laberinto de 8s. */
@@ -493,19 +519,21 @@ export function refreshMediaPlaybackState(
 }
 
 export function setMediaPositionState(position: number, duration: number, playing: boolean) {
-  if (!('mediaSession' in navigator)) return
   if (libraryOwnsMediaSession) return
   setMediaPlaybackState(playing)
   if (!Number.isFinite(duration) || duration <= 0) return
   const pos = Math.max(0, Math.min(position, duration))
-  try {
-    navigator.mediaSession.setPositionState({
-      duration,
-      playbackRate: 1,
-      position: pos,
-    })
-  } catch {
-    // Safari a veces falla si position > duration momentáneamente
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: 1,
+        position: pos,
+      })
+    } catch {
+      // Safari a veces falla si position > duration momentáneamente
+    }
   }
+  void nativeSetPositionState(pos, duration, 1)
   if (playing) setMediaPlaybackState(true)
 }

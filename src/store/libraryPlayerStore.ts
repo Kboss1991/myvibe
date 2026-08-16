@@ -18,7 +18,14 @@ import {
   recordPlay,
   scheduleRevokeAudioUrl,
 } from '../lib/library'
-import { setLibraryOwnsMediaSession } from '../lib/mediaSession'
+import { setLibraryOwnsMediaSession, buildLockScreenArtwork } from '../lib/mediaSession'
+import {
+  bindNativeRemoteControls,
+  nativeClearNowPlaying,
+  nativeSetMetadata,
+  nativeSetPlaybackState,
+  nativeSetPositionState,
+} from '../lib/nativeNowPlaying'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 
@@ -146,17 +153,18 @@ async function flushPersist() {
 }
 
 function setPlaybackStateFromElement(playing: boolean) {
-  if (!('mediaSession' in navigator)) return
   if (!useLibraryPlayerStore.getState().currentTrackId) return
-  try {
-    navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
-  } catch {
-    /* ignore */
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.playbackState = playing ? 'playing' : 'paused'
+    } catch {
+      /* ignore */
+    }
   }
+  void nativeSetPlaybackState(playing)
 }
 
 function pushPositionState(force = false) {
-  if (!('mediaSession' in navigator)) return
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   const now = Date.now()
   // ~1s: el contador de bloqueo baja; más a menudo no hace falta
@@ -169,15 +177,18 @@ function pushPositionState(force = false) {
   if (!Number.isFinite(duration) || duration <= 0) return
   if (!Number.isFinite(position) || position < 0) return
   if (!Number.isFinite(rate) || rate <= 0) return
-  try {
-    navigator.mediaSession.setPositionState({
-      duration,
-      playbackRate: rate,
-      position: Math.min(position, duration),
-    })
-  } catch {
-    /* ignore */
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: rate,
+        position: Math.min(position, duration),
+      })
+    } catch {
+      /* ignore */
+    }
   }
+  void nativeSetPositionState(Math.min(position, duration), duration, rate)
   // Tras position state, WebKit a veces reactiva seek± — reafirmar next/prev
   reinforceLibraryMediaHandlers()
 }
@@ -322,69 +333,134 @@ function commitTrackChange(trackId: string, index: number, url: string) {
  * En Capacitor nativo, UIBackgroundModes=audio + estos handlers = control en bloqueo.
  */
 function reinforceLibraryMediaHandlers() {
-  if (!('mediaSession' in navigator)) return
   if (!useLibraryPlayerStore.getState().currentTrackId) return
 
-  try {
-    navigator.mediaSession.setActionHandler('seekforward', null)
-    navigator.mediaSession.setActionHandler('seekbackward', null)
-    navigator.mediaSession.setActionHandler('seekto', null)
-  } catch {
-    /* ignore */
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.setActionHandler('seekforward', null)
+      navigator.mediaSession.setActionHandler('seekbackward', null)
+      navigator.mediaSession.setActionHandler('seekto', null)
+    } catch {
+      /* ignore */
+    }
+
+    navigator.mediaSession.setActionHandler('play', () => {
+      const { currentTrackId } = useLibraryPlayerStore.getState()
+      if (!currentTrackId) return
+      const url = reassignAudioObjectUrl(currentTrackId)
+      const el = audio()
+      if (url && el.src !== url && el.currentSrc !== url) {
+        const pos = el.currentTime
+        el.src = url
+        try {
+          if (pos > 0.25) el.currentTime = pos
+        } catch {
+          /* ignore */
+        }
+      }
+      el.play().catch(() => {})
+    })
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
+      audio().pause()
+    })
+
+    navigator.mediaSession.setActionHandler('previoustrack', () => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
+      const target = resolveSkipTarget(-1)
+      if (!target) return
+      if (
+        target.trackId === useLibraryPlayerStore.getState().currentTrackId &&
+        target.index === useLibraryPlayerStore.getState().index
+      ) {
+        const el = audio()
+        try {
+          el.currentTime = 0
+        } catch {
+          /* ignore */
+        }
+        useLibraryPlayerStore.setState({ position: 0 })
+        el.play().catch(() => {})
+        return
+      }
+      const url = readyUrlForTrack(target.trackId)
+      if (!url) return
+      commitTrackChange(target.trackId, target.index, url)
+    })
+
+    navigator.mediaSession.setActionHandler('nexttrack', () => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
+      const target = resolveSkipTarget(1)
+      if (!target) return
+      const url = readyUrlForTrack(target.trackId)
+      if (!url) return
+      commitTrackChange(target.trackId, target.index, url)
+    })
   }
 
-  navigator.mediaSession.setActionHandler('play', () => {
-    const { currentTrackId } = useLibraryPlayerStore.getState()
-    if (!currentTrackId) return
-    const url = reassignAudioObjectUrl(currentTrackId)
-    const el = audio()
-    if (url && el.src !== url && el.currentSrc !== url) {
-      const pos = el.currentTime
-      el.src = url
-      try {
-        if (pos > 0.25) el.currentTime = pos
-      } catch {
-        /* ignore */
+  void bindNativeRemoteControls({
+    play: () => {
+      const { currentTrackId } = useLibraryPlayerStore.getState()
+      if (!currentTrackId) return
+      const url = reassignAudioObjectUrl(currentTrackId)
+      const el = audio()
+      if (url && el.src !== url && el.currentSrc !== url) {
+        const pos = el.currentTime
+        el.src = url
+        try {
+          if (pos > 0.25) el.currentTime = pos
+        } catch {
+          /* ignore */
+        }
       }
-    }
-    el.play().catch(() => {})
-  })
-
-  navigator.mediaSession.setActionHandler('pause', () => {
-    if (!useLibraryPlayerStore.getState().currentTrackId) return
-    audio().pause()
-  })
-
-  navigator.mediaSession.setActionHandler('previoustrack', () => {
-    if (!useLibraryPlayerStore.getState().currentTrackId) return
-    const target = resolveSkipTarget(-1)
-    if (!target) return
-    if (
-      target.trackId === useLibraryPlayerStore.getState().currentTrackId &&
-      target.index === useLibraryPlayerStore.getState().index
-    ) {
+      el.play().catch(() => {})
+    },
+    pause: () => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
+      audio().pause()
+    },
+    previoustrack: () => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
+      const target = resolveSkipTarget(-1)
+      if (!target) return
+      if (
+        target.trackId === useLibraryPlayerStore.getState().currentTrackId &&
+        target.index === useLibraryPlayerStore.getState().index
+      ) {
+        const el = audio()
+        try {
+          el.currentTime = 0
+        } catch {
+          /* ignore */
+        }
+        useLibraryPlayerStore.setState({ position: 0 })
+        el.play().catch(() => {})
+        return
+      }
+      const url = readyUrlForTrack(target.trackId)
+      if (!url) return
+      commitTrackChange(target.trackId, target.index, url)
+    },
+    nexttrack: () => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
+      const target = resolveSkipTarget(1)
+      if (!target) return
+      const url = readyUrlForTrack(target.trackId)
+      if (!url) return
+      commitTrackChange(target.trackId, target.index, url)
+    },
+    seekto: (time) => {
+      if (!useLibraryPlayerStore.getState().currentTrackId) return
       const el = audio()
       try {
-        el.currentTime = 0
+        el.currentTime = time
       } catch {
         /* ignore */
       }
-      useLibraryPlayerStore.setState({ position: 0 })
-      el.play().catch(() => {})
-      return
-    }
-    const url = readyUrlForTrack(target.trackId)
-    if (!url) return
-    commitTrackChange(target.trackId, target.index, url)
-  })
-
-  navigator.mediaSession.setActionHandler('nexttrack', () => {
-    if (!useLibraryPlayerStore.getState().currentTrackId) return
-    const target = resolveSkipTarget(1)
-    if (!target) return
-    const url = readyUrlForTrack(target.trackId)
-    if (!url) return
-    commitTrackChange(target.trackId, target.index, url)
+      useLibraryPlayerStore.setState({ position: time })
+      pushPositionState(true)
+    },
   })
 }
 
@@ -394,34 +470,37 @@ function bindMediaSessionOnUserPlay() {
 }
 
 async function publishMetadata(track: Track) {
-  if (!('mediaSession' in navigator)) return
   setLibraryOwnsMediaSession(true)
 
+  // JPEG data-URL para Dynamic Island nativa (blob: no sirve fuera del WebView)
   let artwork: MediaImage[] = []
   try {
-    const cover = await getCoverObjectUrl(track.id)
-    if (cover) {
-      artwork = [
-        { src: cover, sizes: '512x512', type: 'image/jpeg' },
-        { src: cover, sizes: '256x256', type: 'image/jpeg' },
-      ]
-    }
+    artwork = await buildLockScreenArtwork(track.id)
   } catch {
     /* ignore */
   }
 
   if (useLibraryPlayerStore.getState().currentTrackId !== track.id) return
 
-  try {
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: track.title,
-      artist: track.artist || 'MyVibe',
-      album: track.album || 'MyVibe',
-      artwork,
-    })
-  } catch {
-    /* ignore */
+  if ('mediaSession' in navigator) {
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title,
+        artist: track.artist || 'MyVibe',
+        album: track.album || 'MyVibe',
+        artwork,
+      })
+    } catch {
+      /* ignore */
+    }
   }
+
+  void nativeSetMetadata({
+    title: track.title,
+    artist: track.artist || 'MyVibe',
+    album: track.album || 'MyVibe',
+    artwork,
+  })
   reinforceLibraryMediaHandlers()
 }
 
@@ -961,6 +1040,7 @@ export const useLibraryPlayerStore = create<
         /* ignore */
       }
     }
+    void nativeClearNowPlaying()
   },
 
   setNowPlayingOpen: (open) => set({ nowPlayingOpen: open }),
