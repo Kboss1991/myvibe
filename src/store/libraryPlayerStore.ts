@@ -26,16 +26,6 @@ import {
   nativeSetPlaybackState,
   nativeSetPositionState,
 } from '../lib/nativeNowPlaying'
-import {
-  bindNativeAudioListeners,
-  isNativeAvPlayerAvailable,
-  nativeAvGetStatus,
-  nativeAvPause,
-  nativeAvPlay,
-  nativeAvResume,
-  nativeAvSeek,
-  nativeAvStop,
-} from '../lib/nativeAudioPlayer'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 
@@ -110,8 +100,6 @@ function audio(): HTMLAudioElement {
 let loadEpoch = 0
 /** iOS: setPositionState frecuente hace que vuelvan ±10s en bloqueo. */
 let lastPositionPushAt = 0
-/** iOS Capacitor: AVPlayer nativo (HTML5 no alimenta Dynamic Island). */
-let nativeAvActive = false
 let persistTimer: number | null = null
 let pendingPersist: Partial<{
   queue: string[]
@@ -294,20 +282,8 @@ function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | nu
   return { trackId, index: nextIndex }
 }
 
-/** Silencia el <audio> HTML5 para que WKWebView no robe Now Playing. */
-function silenceHtml5Audio() {
-  const el = audio()
-  try {
-    el.pause()
-    el.removeAttribute('src')
-    el.load()
-  } catch {
-    /* ignore */
-  }
-}
-
-/** Reasigna src desde Blob en RAM + play() en la misma pila (web / fallback). */
-function applySrcAndPlayHtml5(trackId: string, urlHint?: string | null): void {
+/** Reasigna src desde Blob/fichero + play() (mismo motor que la PWA). */
+function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
   const url = reassignAudioObjectUrl(trackId) ?? urlHint ?? peekAudioObjectUrl(trackId)
   if (!url) return
   const el = audio()
@@ -318,77 +294,6 @@ function applySrcAndPlayHtml5(trackId: string, urlHint?: string | null): void {
   el.play().catch(() => {
     /* NotAllowedError / AbortError */
   })
-}
-
-async function playWithPreferredEngine(
-  trackId: string,
-  urlHint?: string | null,
-  position = 0,
-): Promise<boolean> {
-  if (isNativeAvPlayerAvailable()) {
-    const track = await db.tracks.get(trackId)
-    // Sin bytes reales: la barra de tiempo engaña (usa duration de metadatos)
-    const bytes = track?.audioBytes ?? 0
-    if (track && bytes > 1024) {
-      silenceHtml5Audio()
-      const ok = await nativeAvPlay({
-        trackId,
-        title: track.title,
-        artist: track.artist || 'MyVibe',
-        album: track.album || 'MyVibe',
-        position,
-      })
-      if (ok) {
-        // Comprobar que de verdad arrancó (fichero truncado → ready pero mudo / rate 0)
-        await new Promise((r) => window.setTimeout(r, 250))
-        const st = await nativeAvGetStatus()
-        if (st?.playing || (st && st.duration > 0)) {
-          nativeAvActive = true
-          try {
-            if ('mediaSession' in navigator) {
-              navigator.mediaSession.metadata = null
-              navigator.mediaSession.playbackState = 'none'
-            }
-          } catch {
-            /* ignore */
-          }
-          useLibraryPlayerStore.setState({
-            isPlaying: Boolean(st?.playing),
-            position: st?.position ?? position,
-            duration:
-              st && st.duration > 0
-                ? st.duration
-                : track.duration || useLibraryPlayerStore.getState().duration,
-          })
-          if (st?.playing) return true
-          // Cargó duración pero no suena → forzar HTML5
-          void nativeAvStop()
-          nativeAvActive = false
-        } else {
-          void nativeAvStop()
-          nativeAvActive = false
-        }
-      }
-    }
-  }
-  nativeAvActive = false
-  const url =
-    urlHint ??
-    peekAudioObjectUrl(trackId) ??
-    (await getAudioObjectUrl(trackId))
-  if (!url) return false
-  applySrcAndPlayHtml5(trackId, url)
-  const el = audio()
-  try {
-    await el.play()
-  } catch {
-    return false
-  }
-  useLibraryPlayerStore.setState({
-    isPlaying: !el.paused,
-    currentAudioUrl: url,
-  })
-  return !el.paused
 }
 
 function commitTrackChange(trackId: string, index: number, url: string) {
@@ -403,7 +308,7 @@ function commitTrackChange(trackId: string, index: number, url: string) {
   })
   persistSoon({ currentTrackId: trackId, index, position: 0 })
   setLibraryOwnsMediaSession(true)
-  void playWithPreferredEngine(trackId, url, 0)
+  applySrcAndPlay(trackId, url)
   if (prevId && prevId !== trackId) {
     scheduleRevokeAudioUrl(prevId)
   }
@@ -577,17 +482,6 @@ async function publishMetadata(track: Track) {
 
   if (useLibraryPlayerStore.getState().currentTrackId !== track.id) return
 
-  // AVPlayer ya publica Now Playing: no pisar con Media Session / NowPlayingPlugin
-  if (nativeAvActive) {
-    try {
-      navigator.mediaSession.metadata = null
-      navigator.mediaSession.playbackState = 'none'
-    } catch {
-      /* ignore */
-    }
-    return
-  }
-
   if ('mediaSession' in navigator) {
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -648,44 +542,31 @@ async function loadTrack(trackId: string, autoplay: boolean): Promise<boolean> {
   })
 
   if (!autoplay) {
-    if (isNativeAvPlayerAvailable()) {
-      silenceHtml5Audio()
-      nativeAvActive = false
-      useLibraryPlayerStore.setState({
-        isPlaying: false,
-        position: 0,
-        duration: track.duration || 0,
-      })
-    } else {
-      el.src = url
-      useLibraryPlayerStore.setState({
-        isPlaying: false,
-        position: 0,
-        duration: Number.isFinite(el.duration) && el.duration > 0 ? el.duration : track.duration || 0,
-      })
-    }
+    el.src = url
+    useLibraryPlayerStore.setState({
+      isPlaying: false,
+      position: 0,
+      duration: Number.isFinite(el.duration) && el.duration > 0 ? el.duration : track.duration || 0,
+    })
     await publishMetadata(track)
     await warmReadyAudioUrls()
     return true
   }
 
-  const started = await playWithPreferredEngine(trackId, url, 0)
+  applySrcAndPlay(trackId, url)
 
   if (epoch !== loadEpoch) return false
 
   useLibraryPlayerStore.setState({
-    position: nativeAvActive
-      ? 0
-      : Math.max(0, el.currentTime || 0),
+    position: Math.max(0, el.currentTime || 0),
     duration:
-      track.duration ||
-      (Number.isFinite(el.duration) && el.duration > 0 ? el.duration : 0),
+      Number.isFinite(el.duration) && el.duration > 0 ? el.duration : track.duration || 0,
   })
   await publishMetadata(track)
   void recordPlay(trackId)
   void persistRecent(trackId)
   await warmReadyAudioUrls()
-  return started && (nativeAvActive || !el.paused)
+  return !el.paused
 }
 
 function onLibraryTimeUpdate() {
@@ -747,37 +628,6 @@ if (typeof document !== 'undefined') {
     void warmReadyAudioUrls()
   })
 }
-
-void bindNativeAudioListeners({
-  onTime: (position, duration, playing) => {
-    if (!nativeAvActive) return
-    if (!useLibraryPlayerStore.getState().currentTrackId) return
-    useLibraryPlayerStore.setState({
-      position,
-      duration: duration > 0 ? duration : useLibraryPlayerStore.getState().duration,
-      isPlaying: playing,
-    })
-    persistSoon({ position })
-    if (duration > 0 && duration - position < 30) prefetchNeighbors()
-  },
-  onEnded: () => {
-    if (!nativeAvActive) return
-    void useLibraryPlayerStore.getState().onEnded()
-  },
-  onState: (playing) => {
-    if (!nativeAvActive) return
-    useLibraryPlayerStore.setState({ isPlaying: playing })
-  },
-  onRemote: (action, seekTime) => {
-    if (!nativeAvActive) return
-    const store = useLibraryPlayerStore.getState()
-    if (action === 'play') void store.play()
-    else if (action === 'pause') store.pause()
-    else if (action === 'nexttrack') void store.next()
-    else if (action === 'previoustrack') void store.previous()
-    else if (action === 'seekto' && typeof seekTime === 'number') store.seek(seekTime)
-  },
-})
 
 export const useLibraryPlayerStore = create<
   LibraryPlayerState & {
@@ -935,7 +785,7 @@ export const useLibraryPlayerStore = create<
 
   toggle: async () => {
     if (!get().currentTrackId) return
-    if (nativeAvActive ? get().isPlaying : !audio().paused || get().isPlaying) {
+    if (!audio().paused || get().isPlaying) {
       get().pause()
       return
     }
@@ -943,36 +793,10 @@ export const useLibraryPlayerStore = create<
   },
 
   play: async () => {
-    const { currentTrackId, position } = get()
+    const { currentTrackId } = get()
     if (!currentTrackId) return
     await stopRivalPlayers()
     bindMediaSessionOnUserPlay()
-
-    // Siempre rearmar motor: resume a medias deja “puedo seek pero no play”
-    if (isNativeAvPlayerAvailable()) {
-      if (nativeAvActive) {
-        await nativeAvResume()
-        await new Promise((r) => window.setTimeout(r, 200))
-        const st = await nativeAvGetStatus()
-        if (st?.playing) {
-          set({ isPlaying: true, position: st.position || position })
-          const track = await db.tracks.get(currentTrackId)
-          if (track) await publishMetadata(track)
-          return
-        }
-        void nativeAvStop()
-        nativeAvActive = false
-      }
-      const ok = await playWithPreferredEngine(currentTrackId, null, position)
-      if (ok) {
-        const track = await db.tracks.get(currentTrackId)
-        if (track) await publishMetadata(track)
-        return
-      }
-      // Fichero ausente/corrupto: no fingir reproducción
-      set({ isPlaying: false })
-      return
-    }
 
     const el = audio()
     const url = reassignAudioObjectUrl(currentTrackId) ?? (await getAudioObjectUrl(currentTrackId))
@@ -1006,17 +830,9 @@ export const useLibraryPlayerStore = create<
   },
 
   pause: () => {
-    if (nativeAvActive) {
-      void nativeAvPause()
-      const pos = Math.max(0, get().position || 0)
-      set({ isPlaying: false, position: pos })
-      persistSoon({ position: pos })
-      prefetchNeighbors()
-      return
-    }
     audio().pause()
     const pos = Math.max(0, audio().currentTime || 0)
-    set({ position: pos })
+    set({ isPlaying: false, position: pos })
     persistSoon({ position: pos })
     prefetchNeighbors()
   },
@@ -1032,11 +848,6 @@ export const useLibraryPlayerStore = create<
     }
 
     if (repeat === 'one') {
-      if (nativeAvActive) {
-        await playWithPreferredEngine(currentTrackId, null, 0)
-        set({ position: 0 })
-        return
-      }
       const el = audio()
       try {
         el.currentTime = 0
@@ -1058,7 +869,6 @@ export const useLibraryPlayerStore = create<
       commitTrackChange(target.trackId, target.index, url)
       return
     }
-    // ended en foreground: generar URL si faltaba
     set({ index: target.index, currentTrackId: target.trackId, position: 0 })
     await loadTrack(target.trackId, true)
   },
@@ -1094,12 +904,6 @@ export const useLibraryPlayerStore = create<
   seek: (time) => {
     if (!get().currentTrackId) return
     const t = Math.max(0, time)
-    if (nativeAvActive) {
-      void nativeAvSeek(t)
-      set({ position: t })
-      persistSoon({ position: t })
-      return
-    }
     try {
       audio().currentTime = t
     } catch {
@@ -1205,10 +1009,6 @@ export const useLibraryPlayerStore = create<
   stop: () => {
     loadEpoch += 1
     const prevId = get().currentTrackId
-    if (nativeAvActive) {
-      void nativeAvStop()
-      nativeAvActive = false
-    }
     audio().pause()
     setLibraryOwnsMediaSession(false)
     protectAudioUrls([])
