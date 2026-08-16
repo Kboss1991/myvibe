@@ -25,7 +25,7 @@ const BUFFER_HIGH = 192 * 1024
 const ACK_TIMEOUT_MS = 180_000
 /** Por encima de esto = pesada → solo de 1 en 1. */
 const HEAVY_BYTES = 12 * 1024 * 1024
-const RECONNECT_PAUSE_MS = 2000
+const RECONNECT_PAUSE_MS = 1500
 const TRACK_PAUSE_NATIVE_MS = 200
 const TRACK_PAUSE_WEB_MS = 30
 
@@ -65,7 +65,7 @@ type JsonMsg =
   | { t: 'hello'; v: number; trackCount: number; from?: string }
   | { t: 'plan'; trackCount: number; skipped?: number; batch?: number; phase?: 'normal' | 'heavy' }
   | { t: 'playlists'; items: PlaylistWire[] }
-  | { t: 'have'; ids: string[] }
+  | { t: 'have'; ids: string[]; covers?: boolean }
   | { t: 'caps'; covers: boolean }
   | {
       t: 'track-start'
@@ -158,6 +158,7 @@ function createInbox(conn: DataConnection): Inbox {
       }
       return
     }
+    if (isJsonMsg(data) && data.t === 'pong') return
     queue.push(data)
     wake?.()
     wake = null
@@ -184,13 +185,23 @@ function createInbox(conn: DataConnection): Inbox {
     next,
     waitJson: async (type, timeoutMs) => {
       const start = Date.now()
-      while (Date.now() - start < timeoutMs) {
-        const left = timeoutMs - (Date.now() - start)
-        const data = await next(Math.max(left, 1))
-        if (isJsonMsg(data) && data.t === type) return data
-        // otros JSON (pong, etc.) se ignoran; binarios no deberían llegar al host
+      const deferred: unknown[] = []
+      try {
+        while (Date.now() - start < timeoutMs) {
+          const left = timeoutMs - (Date.now() - start)
+          const data = await next(Math.max(left, 1))
+          if (isJsonMsg(data) && data.t === type) {
+            if (deferred.length) queue.unshift(...deferred)
+            return data
+          }
+          deferred.push(data)
+        }
+        if (deferred.length) queue.unshift(...deferred)
+        throw new Error('Tiempo de espera agotado')
+      } catch (e) {
+        if (deferred.length) queue.unshift(...deferred)
+        throw e
       }
-      throw new Error('Tiempo de espera agotado')
     },
     dispose: () => {
       conn.off('data', onData)
@@ -240,12 +251,23 @@ export type HostSession = {
 
 export async function startWifiHost(handlers: HostHandlers): Promise<HostSession> {
   const code = makeTransferCode()
+  handlers.onStatus('Preparando biblioteca del PC…')
+  // Escanear ANTES de abrir Peer: si no, el móvil manda “ready” y se pierde
+  const allWithAudio = await listTracksWithAudio()
+  if (!allWithAudio.length) {
+    throw new Error('No hay canciones con audio en el PC')
+  }
+  const playlistsWire = await buildPlaylistWire(allWithAudio)
+
   const peer = new Peer(peerIdFromCode(code), peerOptions())
 
   let stopped = false
   let activeConn: DataConnection | null = null
-  let sessionBusy = false
+  /** true solo mientras se envía un lote (no durante espera de reconexión). */
+  let sending = false
+  let hostStarted = false
   let resolveNextConn: ((c: DataConnection) => void) | null = null
+  const pendingConns: DataConnection[] = []
 
   const stop = () => {
     stopped = true
@@ -260,37 +282,56 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
       /* ignore */
     }
     resolveNextConn = null
+    for (const c of pendingConns) {
+      try {
+        c.close()
+      } catch {
+        /* ignore */
+      }
+    }
+    pendingConns.length = 0
   }
 
-  const waitConnection = () =>
+  const takeConnection = () =>
     new Promise<DataConnection>((resolve, reject) => {
       if (stopped) {
         reject(new Error('Detenido'))
+        return
+      }
+      if (pendingConns.length) {
+        resolve(pendingConns.shift()!)
         return
       }
       resolveNextConn = resolve
       window.setTimeout(() => {
         if (resolveNextConn === resolve) {
           resolveNextConn = null
-          reject(new Error('El móvil no reconectó a tiempo'))
+          reject(new Error('El móvil no reconectó a tiempo. Vuelve a pulsar Conectar en el iPhone.'))
         }
-      }, 120_000)
+      }, 180_000)
     })
 
   peer.on('error', (err) => {
-    handlers.onError(err.message || 'Error de conexión Wi‑Fi')
+    const msg = err.message || 'Error de conexión Wi‑Fi'
+    // ID taken / unavailable: mensaje claro
+    if (/taken|unavailable|Error: /i.test(msg)) {
+      handlers.onError(
+        'Código ocupado o PeerJS falló. Genera otro código (Detener → Generar).',
+      )
+      return
+    }
+    handlers.onError(msg)
   })
 
   peer.on('open', () => {
     handlers.onCode(code)
     handlers.onStatus(
-      'Esperando al móvil… En el iPhone: Perfil → introducir este código (misma Wi‑Fi).',
+      `Listo · ${allWithAudio.length} canciones. En el iPhone: Perfil → este código (misma Wi‑Fi).`,
     )
   })
 
   peer.on('connection', (c) => {
-    if (sessionBusy) {
-      // Durante un lote no aceptamos otra conexión
+    if (sending) {
       try {
         c.close()
       } catch {
@@ -304,183 +345,160 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
       r(c)
       return
     }
-    // Primera conexión
-    void runHost(c)
+    if (!hostStarted) {
+      hostStarted = true
+      void runHost(c)
+      return
+    }
+    // Llegó antes de que armáramos la espera: guardar
+    pendingConns.push(c)
   })
 
   async function runHost(firstConn: DataConnection) {
-    sessionBusy = true
+    sending = true
     activeConn = firstConn
+    let inbox: Inbox | null = null
     try {
       await firstConnOpen(firstConn)
-      const allWithAudio = await listTracksWithAudio()
-      if (!allWithAudio.length) {
-        const inbox = createInbox(firstConn)
-        try {
-          await inbox.waitJson('ready', 60000).catch(() => null)
-          await sendPayload(
-            firstConn,
-            { t: 'error', message: 'No hay canciones con audio en el PC' },
-            () => stopped,
-          )
-        } finally {
-          inbox.dispose()
-        }
-        handlers.onError('No hay canciones para enviar')
-        return
-      }
-
-      const playlistsWire = await buildPlaylistWire(allWithAudio)
+      // Inbox YA: no perder ready del móvil
+      inbox = createInbox(firstConn)
       let conn = firstConn
-      let inbox = createInbox(conn)
       let sentPlaylists = false
-      let globalDone = 0
 
-      try {
-        await inbox.waitJson('ready', 60000)
+      await inbox.waitJson('ready', 90000)
+      handlers.onStatus('Móvil conectado…')
 
-        while (!stopped) {
-          handlers.onStatus('Móvil conectado. Comprobando pendientes…')
-          await sendPayload(
-            conn,
-            { t: 'hello', v: PROTOCOL, trackCount: allWithAudio.length },
-            () => stopped,
-          )
+      while (!stopped) {
+        await sendPayload(
+          conn,
+          { t: 'hello', v: PROTOCOL, trackCount: allWithAudio.length },
+          () => stopped,
+        )
 
-          let have = new Set<string>()
-          try {
-            const haveMsg = await inbox.waitJson('have', 45000)
-            if (haveMsg.t === 'have') have = new Set(haveMsg.ids)
-          } catch {
-            /* enviar todo lo que quede */
-          }
-          // caps opcional (clientes antiguos); siempre preferimos portadas
-          try {
-            await inbox.waitJson('caps', 3000)
-          } catch {
-            /* ignore */
-          }
-
-          const pending = allWithAudio.filter((t) => !have.has(t.id))
-          const already = allWithAudio.length - pending.length
-          globalDone = already
-
-          if (!pending.length) {
-            await sendPayload(conn, { t: 'done' }, () => stopped)
-            handlers.onStatus(`Nada pendiente: ${allWithAudio.length} canciones ya en el móvil.`)
-            emitProgress(handlers.onProgress, allWithAudio.length, allWithAudio.length, '', 100)
-            handlers.onFinished()
-            return
-          }
-
-          const { light, heavy } = await splitByWeight(pending)
-          const phase: 'normal' | 'heavy' = light.length ? 'normal' : 'heavy'
-          const batch = light.length ? light : heavy.slice(0, 1)
-
-          await sendPayload(
-            conn,
-            {
-              t: 'plan',
-              trackCount: pending.length,
-              skipped: already,
-              batch: batch.length,
-              phase,
-            },
-            () => stopped,
-          )
-
-          if (!sentPlaylists) {
-            await sendPayload(conn, { t: 'playlists', items: playlistsWire }, () => stopped)
-            sentPlaylists = true
-          }
-
-          if (phase === 'normal') {
-            handlers.onStatus(
-              `Enviando ${batch.length} canciones normales` +
-                (heavy.length ? ` · luego ${heavy.length} pesadas 1 a 1` : '') +
-                (already ? ` · ${already} ya OK` : ''),
-            )
-          } else {
-            const leftHeavy = heavy.length
-            handlers.onStatus(
-              `Canción pesada (${Math.round(((await getAudioBlob(batch[0]!.id))?.size ?? 0) / 1e6)} MB) · quedan ${leftHeavy}`,
-            )
-          }
-
-          await sendTrackBatch({
-            conn,
-            inbox,
-            batch,
-            pendingTotal: pending.length,
-            alreadyDone: already,
-            sendCovers: true,
-            handlers,
-            isStopped: () => stopped,
-          })
-
-          globalDone = already + batch.length
-          const remaining = pending.length - batch.length
-
-          if (remaining <= 0) {
-            await sendPayload(conn, { t: 'done' }, () => stopped)
-            emitProgress(
-              handlers.onProgress,
-              allWithAudio.length,
-              allWithAudio.length,
-              '',
-              100,
-            )
-            handlers.onStatus(`Envío terminado · ${allWithAudio.length} canciones`)
-            handlers.onFinished()
-            return
-          }
-
-          await sendPayload(
-            conn,
-            {
-              t: 'session-end',
-              remaining,
-              done: globalDone,
-              total: allWithAudio.length,
-            },
-            () => stopped,
-          )
-          try {
-            await inbox.waitJson('session-ack', 30000)
-          } catch {
-            /* el móvil puede reconectar igual */
-          }
-
-          handlers.onStatus(
-            phase === 'normal'
-              ? `Normales listas (${globalDone}/${allWithAudio.length}). Siguen las pesadas, una a una…`
-              : `Pesada OK (${globalDone}/${allWithAudio.length}). Siguiente…`,
-          )
-          inbox.dispose()
-          try {
-            conn.close()
-          } catch {
-            /* ignore */
-          }
-          activeConn = null
-          sessionBusy = false
-
-          conn = await waitConnection()
-          sessionBusy = true
-          activeConn = conn
-          await firstConnOpen(conn)
-          inbox = createInbox(conn)
-          await inbox.waitJson('ready', 60000)
+        let have = new Set<string>()
+        try {
+          const haveMsg = await inbox.waitJson('have', 60000)
+          if (haveMsg.t === 'have') have = new Set(haveMsg.ids)
+        } catch {
+          handlers.onStatus('Sin lista del móvil; se enviará todo lo pendiente…')
         }
-      } finally {
+
+        const pending = allWithAudio.filter((t) => !have.has(t.id))
+        const already = allWithAudio.length - pending.length
+
+        if (!pending.length) {
+          await sendPayload(conn, { t: 'done' }, () => stopped)
+          handlers.onStatus(`Nada pendiente: ${allWithAudio.length} canciones ya en el móvil.`)
+          emitProgress(handlers.onProgress, allWithAudio.length, allWithAudio.length, '', 100)
+          handlers.onFinished()
+          return
+        }
+
+        const { light, heavy } = await splitByWeight(pending)
+        const phase: 'normal' | 'heavy' = light.length ? 'normal' : 'heavy'
+        const batch = light.length ? light : heavy.slice(0, 1)
+
+        await sendPayload(
+          conn,
+          {
+            t: 'plan',
+            trackCount: pending.length,
+            skipped: already,
+            batch: batch.length,
+            phase,
+          },
+          () => stopped,
+        )
+
+        if (!sentPlaylists) {
+          await sendPayload(conn, { t: 'playlists', items: playlistsWire }, () => stopped)
+          sentPlaylists = true
+        }
+
+        if (phase === 'normal') {
+          handlers.onStatus(
+            `Enviando ${batch.length} normales` +
+              (heavy.length ? ` · luego ${heavy.length} pesadas 1 a 1` : '') +
+              (already ? ` · ${already} ya OK` : ''),
+          )
+        } else {
+          const sz = (await getAudioBlob(batch[0]!.id))?.size ?? 0
+          handlers.onStatus(
+            `Pesada ~${Math.max(1, Math.round(sz / 1e6))} MB · quedan ${heavy.length}`,
+          )
+        }
+
+        await sendTrackBatch({
+          conn,
+          inbox,
+          batch,
+          pendingTotal: pending.length,
+          alreadyDone: already,
+          sendCovers: true,
+          handlers,
+          isStopped: () => stopped,
+        })
+
+        const globalDone = already + batch.length
+        const remaining = pending.length - batch.length
+
+        if (remaining <= 0) {
+          await sendPayload(conn, { t: 'done' }, () => stopped)
+          emitProgress(handlers.onProgress, allWithAudio.length, allWithAudio.length, '', 100)
+          handlers.onStatus(`Envío terminado · ${allWithAudio.length} canciones`)
+          handlers.onFinished()
+          return
+        }
+
+        await sendPayload(
+          conn,
+          {
+            t: 'session-end',
+            remaining,
+            done: globalDone,
+            total: allWithAudio.length,
+          },
+          () => stopped,
+        )
+        try {
+          await inbox.waitJson('session-ack', 20000)
+        } catch {
+          /* reconectar igual */
+        }
+
+        handlers.onStatus(
+          phase === 'normal'
+            ? `Normales OK (${globalDone}/${allWithAudio.length}). Esperando reconexión…`
+            : `Pesada OK (${globalDone}/${allWithAudio.length}). Esperando reconexión…`,
+        )
+
         inbox.dispose()
+        inbox = null
+        // Armar ANTES de cerrar, para no rechazar al móvil
+        sending = false
+        const nextPromise = takeConnection()
+        try {
+          conn.close()
+        } catch {
+          /* ignore */
+        }
+        activeConn = null
+
+        conn = await nextPromise
+        sending = true
+        activeConn = conn
+        await firstConnOpen(conn)
+        inbox = createInbox(conn)
+        await inbox.waitJson('ready', 90000)
+        handlers.onStatus('Reconectado. Siguiendo…')
       }
     } catch (e) {
       if (!stopped) {
         handlers.onError(e instanceof Error ? e.message : 'Error de transferencia')
       }
     } finally {
-      sessionBusy = false
+      inbox?.dispose()
+      sending = false
       activeConn = null
     }
   }
@@ -508,6 +526,11 @@ async function listTracksWithAudio(): Promise<Track[]> {
   const out: Track[] = []
   for (const t of all) {
     if (t.hasLocalAudio === false) continue
+    // Preferir metadatos locales (rápido); no abrir 300 MP3 al generar el código
+    if ((t.audioBytes ?? 0) > 1024) {
+      out.push(t)
+      continue
+    }
     if (await getAudioBlob(t.id)) out.push(t)
   }
   return out
@@ -518,9 +541,13 @@ async function splitByWeight(tracks: Track[]): Promise<{ light: Track[]; heavy: 
   const light: Track[] = []
   const heavy: Track[] = []
   for (const t of tracks) {
-    const blob = await getAudioBlob(t.id)
-    if (!blob) continue
-    if (blob.size > HEAVY_BYTES) heavy.push(t)
+    let size = t.audioBytes ?? 0
+    if (size <= 0) {
+      const blob = await getAudioBlob(t.id)
+      size = blob?.size ?? 0
+    }
+    if (size <= 0) continue
+    if (size > HEAVY_BYTES) heavy.push(t)
     else light.push(t)
   }
   return { light, heavy }
@@ -994,16 +1021,16 @@ async function receiveLibraryRound(
 
       if (data.t === 'hello') {
         window.clearInterval(readyPulse)
-        if (data.v < 1 || data.v > PROTOCOL) {
+        // Aceptar v4–PROTOCOLO actual (PC/móvil pueden ir un commit desfasados)
+        if (data.v < 4 || data.v > PROTOCOL + 1) {
           throw new Error(
-            'Versión incompatible. En el PC: Ctrl+Shift+R y vuelve a generar el código.',
+            'Versión incompatible. En el PC: Ctrl+Shift+R. En el iPhone: reinstala desde Xcode.',
           )
         }
         expected = data.trackCount
         handlers.onStatus(`Biblioteca PC: ${expected}. Comprobando qué falta…`)
         const haveIds = await listLocalAudioIds()
-        conn.send({ t: 'have', ids: haveIds } satisfies JsonMsg)
-        conn.send({ t: 'caps', covers: true } satisfies JsonMsg)
+        conn.send({ t: 'have', ids: haveIds, covers: true } satisfies JsonMsg)
         continue
       }
 

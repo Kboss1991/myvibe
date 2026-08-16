@@ -454,7 +454,8 @@ export function ProfilePage() {
                   setLocalError(null)
                   setOkMsg(null)
                   setWifiProgress(null)
-                  setWifiHostStatus('Preparando…')
+                  setWifiHostStatus('Preparando biblioteca del PC…')
+                  setWifiCode('······')
                   wifiStopRef.current?.()
                   void startWifiHost({
                     onCode: (c) => setWifiCode(c),
@@ -464,6 +465,7 @@ export function ProfilePage() {
                       setLocalError(msg)
                       setWifiHostStatus(null)
                       setWifiProgress(null)
+                      setWifiCode(null)
                     },
                     onFinished: () => {
                       setOkMsg('Biblioteca enviada al móvil')
@@ -488,6 +490,7 @@ export function ProfilePage() {
                       setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar Wi‑Fi')
                       setWifiHostStatus(null)
                       setWifiProgress(null)
+                      setWifiCode(null)
                     })
                 }}
               >
@@ -495,7 +498,11 @@ export function ProfilePage() {
               </button>
             ) : (
               <div>
-                <p className="profile-card__hint">Escribe este código en el iPhone → Perfil:</p>
+                <p className="profile-card__hint">
+                  {wifiCode === '······'
+                    ? 'Preparando… en unos segundos sale el código.'
+                    : 'Escribe este código en el iPhone → Perfil:'}
+                </p>
                 <p
                   style={{
                     fontSize: '2.4rem',
@@ -504,6 +511,7 @@ export function ProfilePage() {
                     margin: '12px 0',
                     fontVariantNumeric: 'tabular-nums',
                     textAlign: 'center',
+                    opacity: wifiCode === '······' ? 0.35 : 1,
                   }}
                 >
                   {wifiCode}
