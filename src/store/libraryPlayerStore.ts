@@ -22,13 +22,15 @@ import { setLibraryOwnsMediaSession, buildLockScreenArtwork } from '../lib/media
 import {
   bindNativeRemoteControls,
   nativeClearNowPlaying,
+  nativeSetLikeState,
   nativeSetMetadata,
   nativeSetPlaybackState,
   nativeSetPositionState,
 } from '../lib/nativeNowPlaying'
+import { ensureCarPlayPlaylist } from '../lib/carPlayPrefs'
 import { isNativeApp } from '../lib/nativeAudioFs'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
-import { persistRecent } from './libraryStore'
+import { persistRecent, useLibraryStore } from './libraryStore'
 
 type LibraryPlayerState = {
   queue: string[]
@@ -434,6 +436,24 @@ function reinforceLibraryMediaHandlers() {
       if (!url) return
       commitTrackChange(target.trackId, target.index, url)
     })
+
+    // Me gusta (si WKWebView lo expone; CarPlay usa el plugin nativo)
+    const likeHandler = () => {
+      void handleRemoteLike()
+    }
+    try {
+      navigator.mediaSession.setActionHandler(
+        'togglefavorite' as MediaSessionAction,
+        likeHandler,
+      )
+    } catch {
+      /* unsupported */
+    }
+    try {
+      navigator.mediaSession.setActionHandler('like' as MediaSessionAction, likeHandler)
+    } catch {
+      /* unsupported */
+    }
   }
 
   void bindNativeRemoteControls({
@@ -498,7 +518,34 @@ function reinforceLibraryMediaHandlers() {
       useLibraryPlayerStore.setState({ position: time })
       pushPositionState(true)
     },
+    like: () => {
+      void handleRemoteLike()
+    },
+    bookmark: () => {
+      void handleRemoteBookmark()
+    },
   })
+}
+
+async function handleRemoteLike() {
+  const trackId = useLibraryPlayerStore.getState().currentTrackId
+  if (!trackId) return
+  await useLibraryStore.getState().toggleLike(trackId)
+  const track = await db.tracks.get(trackId)
+  if (track && useLibraryPlayerStore.getState().currentTrackId === trackId) {
+    void nativeSetLikeState(Boolean(track.liked))
+  }
+}
+
+async function handleRemoteBookmark() {
+  const trackId = useLibraryPlayerStore.getState().currentTrackId
+  if (!trackId) return
+  try {
+    const playlistId = await ensureCarPlayPlaylist()
+    await useLibraryStore.getState().addToPlaylist(playlistId, [trackId])
+  } catch (e) {
+    console.warn('[CarPlay] add to playlist failed', e)
+  }
 }
 
 function bindMediaSessionOnUserPlay() {
@@ -540,6 +587,7 @@ async function publishMetadata(track: Track) {
   }).then(() => {
     const playing = !audio().paused || useLibraryPlayerStore.getState().isPlaying
     void nativeSetPlaybackState(playing)
+    void nativeSetLikeState(Boolean(track.liked))
     if (playing) pushPositionState(true)
   })
   reinforceLibraryMediaHandlers()

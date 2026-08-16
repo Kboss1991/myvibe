@@ -25,6 +25,13 @@ import {
   type WifiTransferProgress,
 } from '../lib/wifiTransfer'
 import {
+  CAR_PLAY_DEFAULT_PLAYLIST_NAME,
+  ensureCarPlayPlaylist,
+  getCarPlayPlaylistId,
+  setCarPlayPlaylistId,
+} from '../lib/carPlayPrefs'
+import { isNativeApp } from '../lib/nativeShell'
+import {
   computeListenStats,
   formatListenMinutes,
   formatPlayCountLabel,
@@ -82,6 +89,7 @@ export function ProfilePage() {
   const [wifiShareLabel, setWifiShareLabel] = useState<string | null>(null)
   const [wifiPrefill, setWifiPrefill] = useState<WifiSharePrefill | null>(null)
   const [manualCode, setManualCode] = useState('')
+  const [carPlayPlaylistId, setCarPlayPlaylistIdState] = useState<string>(() => getCarPlayPlaylistId() || '')
   const wifiStopRef = useRef<(() => void) | null>(null)
 
   const stats = useMemo(() => computeListenStats(tracks), [tracks])
@@ -115,6 +123,13 @@ export function ProfilePage() {
       .then(setOrphanCount)
       .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
   }, [tracks.length])
+
+  useEffect(() => {
+    if (!isNativeApp() && !onPc) return
+    void ensureCarPlayPlaylist()
+      .then((id) => setCarPlayPlaylistIdState(id))
+      .catch(() => undefined)
+  }, [onPc, playlists.length])
 
   const startHostWithOptions = (options: WifiHostOptions, summary: string) => {
     setLocalError(null)
@@ -504,6 +519,51 @@ export function ProfilePage() {
             </div>
           </div>
         )}
+      </section>
+
+      {/* CarPlay / bloqueo: destino del botón “Añadir a lista” */}
+      <section className="profile-card" id="carplay-playlist">
+        <h2 className="profile-card__title">CarPlay · Añadir a lista</h2>
+        <p className="profile-card__hint">
+          En el coche (o en el bloqueo) el botón de marcador añade la canción a esta playlist. El
+          corazón hace Me gusta.
+        </p>
+        <label className="profile-card__hint" style={{ display: 'block', marginTop: 10 }}>
+          Playlist destino
+          <select
+            value={
+              carPlayPlaylistId && playlists.some((p) => p.id === carPlayPlaylistId)
+                ? carPlayPlaylistId
+                : ''
+            }
+            onChange={(e) => {
+              const id = e.target.value
+              if (!id) return
+              setCarPlayPlaylistId(id)
+              setCarPlayPlaylistIdState(id)
+            }}
+            style={{
+              display: 'block',
+              width: '100%',
+              marginTop: 8,
+              padding: '12px 14px',
+              borderRadius: 10,
+              border: '1px solid #3e3e3e',
+              background: '#121212',
+              color: '#fff',
+              fontSize: '1rem',
+            }}
+          >
+            {!playlists.length ? (
+              <option value="">Se creará “{CAR_PLAY_DEFAULT_PLAYLIST_NAME}”</option>
+            ) : null}
+            {playlists.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        </label>
       </section>
 
       {/* Pasar música PC ↔ móvil (local Wi‑Fi; no depende de la nube) */}

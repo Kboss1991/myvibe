@@ -1,4 +1,4 @@
-import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
 type PlaybackState = 'none' | 'paused' | 'playing'
 
@@ -8,6 +8,8 @@ export type NowPlayingRemoteAction =
   | 'nexttrack'
   | 'previoustrack'
   | 'seekto'
+  | 'like'
+  | 'bookmark'
 
 export type NowPlayingRemoteEvent = {
   action: NowPlayingRemoteAction
@@ -27,6 +29,7 @@ type NowPlayingPluginApi = {
     position?: number
     playbackRate?: number
   }): Promise<void>
+  setFeedbackState(options: { liked: boolean }): Promise<void>
   clear(): Promise<void>
   addListener(
     eventName: 'remote',
@@ -37,8 +40,11 @@ type NowPlayingPluginApi = {
 const NowPlaying = registerPlugin<NowPlayingPluginApi>('NowPlaying')
 
 export function isNativeNowPlayingAvailable(): boolean {
-  // Plugin no registrado (Dynamic Island abandonada) — evita spam UNIMPLEMENTED
-  return false
+  try {
+    return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
+  } catch {
+    return false
+  }
 }
 
 /** Preferir JPEG data-URL (el nativo no puede leer blob:). */
@@ -46,7 +52,6 @@ export function pickNativeArtwork(artwork: MediaImage[] | undefined | null): Med
   if (!artwork?.length) return []
   const data = artwork.filter((a) => typeof a.src === 'string' && a.src.startsWith('data:'))
   if (data.length) {
-    // Una sola imagen ~300–600px basta para Dynamic Island / bloqueo
     const best =
       data.find((a) => (a.sizes || '').includes('300')) ||
       data.find((a) => (a.sizes || '').includes('600')) ||
@@ -108,6 +113,15 @@ export async function nativeSetPositionState(
   }
 }
 
+export async function nativeSetLikeState(liked: boolean): Promise<void> {
+  if (!isNativeNowPlayingAvailable()) return
+  try {
+    await NowPlaying.setFeedbackState({ liked })
+  } catch (err) {
+    console.warn('[NowPlaying] setFeedbackState failed', err)
+  }
+}
+
 export async function nativeClearNowPlaying(): Promise<void> {
   if (!isNativeNowPlayingAvailable()) return
   try {
@@ -119,13 +133,15 @@ export async function nativeClearNowPlaying(): Promise<void> {
 
 let remoteHandle: PluginListenerHandle | null = null
 
-/** Enlaza botones de Dynamic Island / bloqueo a callbacks de la app. */
+/** Enlaza botones de CarPlay / bloqueo / Centro de Control. */
 export async function bindNativeRemoteControls(handlers: {
   play?: () => void
   pause?: () => void
   nexttrack?: () => void
   previoustrack?: () => void
   seekto?: (time: number) => void
+  like?: () => void
+  bookmark?: () => void
 }): Promise<void> {
   if (!isNativeNowPlayingAvailable()) return
   try {
@@ -151,6 +167,12 @@ export async function bindNativeRemoteControls(handlers: {
           break
         case 'seekto':
           if (typeof event.seekTime === 'number') handlers.seekto?.(event.seekTime)
+          break
+        case 'like':
+          handlers.like?.()
+          break
+        case 'bookmark':
+          handlers.bookmark?.()
           break
       }
     })

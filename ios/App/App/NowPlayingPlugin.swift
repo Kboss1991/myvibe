@@ -17,6 +17,7 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setMetadata", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPlaybackState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPositionState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setFeedbackState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clear", returnType: CAPPluginReturnPromise),
     ]
 
@@ -132,6 +133,23 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /** Estado del botón Me gusta en CarPlay / bloqueo / Control Center. */
+    @objc func setFeedbackState(_ call: CAPPluginCall) {
+        let liked = call.getBool("liked") ?? false
+        DispatchQueue.main.async {
+            self.wireRemoteCommandsIfNeeded()
+            let center = MPRemoteCommandCenter.shared()
+            center.likeCommand.isEnabled = true
+            center.likeCommand.isActive = liked
+            center.likeCommand.localizedTitle = liked ? "Quitar me gusta" : "Me gusta"
+            center.likeCommand.localizedShortTitle = liked ? "No me gusta" : "Me gusta"
+            center.bookmarkCommand.isEnabled = true
+            center.bookmarkCommand.localizedTitle = "Añadir a lista"
+            center.bookmarkCommand.localizedShortTitle = "A lista"
+            call.resolve()
+        }
+    }
+
     private func apply(_ info: [String: Any]) {
         nowPlayingInfo = info
         // Forzar escritura completa: WKWebView a veces deja un diccionario vacío
@@ -214,6 +232,25 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
 
         center.skipForwardCommand.isEnabled = false
         center.skipBackwardCommand.isEnabled = false
+
+        // CarPlay / bloqueo: Me gusta
+        center.likeCommand.isEnabled = true
+        center.likeCommand.localizedTitle = "Me gusta"
+        center.likeCommand.localizedShortTitle = "Me gusta"
+        center.likeCommand.addTarget { [weak self] _ in
+            self?.notifyListeners("remote", data: ["action": "like"])
+            return .success
+        }
+        center.dislikeCommand.isEnabled = false
+
+        // CarPlay / bloqueo: añadir a playlist destino (configurada en la app)
+        center.bookmarkCommand.isEnabled = true
+        center.bookmarkCommand.localizedTitle = "Añadir a lista"
+        center.bookmarkCommand.localizedShortTitle = "A lista"
+        center.bookmarkCommand.addTarget { [weak self] _ in
+            self?.notifyListeners("remote", data: ["action": "bookmark"])
+            return .success
+        }
     }
 
     private static func firstArtworkSrc(from call: CAPPluginCall) -> String? {

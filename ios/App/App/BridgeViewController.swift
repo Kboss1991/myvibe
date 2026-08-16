@@ -5,8 +5,9 @@ import Capacitor
 /// Capacitor 6+ no registra plugins locales del target App solos.
 final class BridgeViewController: CAPBridgeViewController {
     override public func capacitorDidLoad() {
-        // Sin NativeAudio/AVPlayer: la biblioteca vuelve a HTML5 (calidad PWA).
-        // NowPlaying/AVPlayer se dejan fuera a propósito.
+        // NowPlaying: metadatos + remotes (like/bookmark) para CarPlay/bloqueo.
+        // Sin NativeAudio/AVPlayer: la biblioteca sigue en HTML5.
+        bridge?.registerPluginInstance(NowPlayingPlugin())
     }
 
     override public func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
