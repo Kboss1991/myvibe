@@ -284,11 +284,31 @@ function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | nu
 
 /** Reasigna src desde Blob/fichero + play() (mismo motor que la PWA). */
 function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
+  // Por si quedó un AVPlayer de pruebas de Dynamic Island
+  void import('../lib/nativeAudioPlayer')
+    .then((m) => m.nativeAvStop())
+    .catch(() => undefined)
+
   const url = reassignAudioObjectUrl(trackId) ?? urlHint ?? peekAudioObjectUrl(trackId)
   if (!url) return
   const el = audio()
   el.muted = false
   el.volume = 1
+  try {
+    el.playbackRate = 1
+  } catch {
+    /* ignore */
+  }
+  // Evitar capacitor://.bin cacheado de builds anteriores
+  if (url.includes('.bin') || (url.includes('/myvibe/audio/') && !url.includes('.mp3'))) {
+    void getAudioObjectUrl(trackId).then((fresh) => {
+      if (!fresh || useLibraryPlayerStore.getState().currentTrackId !== trackId) return
+      el.src = fresh
+      useLibraryPlayerStore.setState({ currentAudioUrl: fresh })
+      el.play().catch(() => {})
+    })
+    return
+  }
   el.src = url
   useLibraryPlayerStore.setState({ currentAudioUrl: url })
   el.play().catch(() => {

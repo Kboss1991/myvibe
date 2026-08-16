@@ -24,7 +24,6 @@ import {
   isNativeApp,
   writeNativeAudio,
   readNativeAudioBlob,
-  getNativeAudioSrc,
   deleteNativeAudio,
   writeNativeCover,
   readNativeCoverBlob,
@@ -283,7 +282,14 @@ function cachePlayableBlob(id: string, blob: Blob, mimeHint?: string): Blob {
  */
 export function reassignAudioObjectUrl(id: string): string | null {
   const blob = audioBlobCache.get(id)
-  if (!blob) return objectUrlCache.get(`audio:${id}`) ?? null
+  if (!blob) {
+    const cached = objectUrlCache.get(`audio:${id}`) ?? null
+    if (isBadNativePlayUrl(cached)) {
+      objectUrlCache.delete(`audio:${id}`)
+      return null
+    }
+    return cached
+  }
   const old = objectUrlCache.get(`audio:${id}`)
   if (old?.startsWith('blob:')) {
     try {
@@ -301,21 +307,39 @@ export function peekAudioBlob(id: string): Blob | null {
   return audioBlobCache.get(id) ?? null
 }
 
+/** URLs nativas .bin / Documents/audio sin extensión correcta → decode horrible. */
+function isBadNativePlayUrl(url: string | null | undefined): boolean {
+  if (!url) return false
+  if (url.startsWith('blob:')) return false
+  if (url.includes('.bin')) return true
+  // Legacy file URLs bajo myvibe/audio/ (antes de migrar a .mp3)
+  if (url.includes('/myvibe/audio/') && !url.includes('.mp3')) return true
+  if (url.includes('_capacitor_file_') && url.includes('/audio/') && !url.includes('.mp3')) {
+    return true
+  }
+  return false
+}
+
 export async function getAudioObjectUrl(id: string): Promise<string | null> {
-  // Nativo: URL de fichero (Documents) — no carga el MP3 entero en RAM
+  // iOS Capacitor: siempre .mp3 por file URL (o blob: audio/mpeg). Nunca .bin.
   if (isNativeApp()) {
-    const nativeSrc = await getNativeAudioSrc(id)
-    if (nativeSrc) {
-      const old = objectUrlCache.get(`audio:${id}`)
-      if (old?.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(old)
-        } catch {
-          /* ignore */
+    try {
+      const { getNativePlayableFileSrc } = await import('./nativeAudioFs')
+      const fileSrc = await getNativePlayableFileSrc(id)
+      if (fileSrc && !isBadNativePlayUrl(fileSrc)) {
+        const old = objectUrlCache.get(`audio:${id}`)
+        if (old?.startsWith('blob:')) {
+          try {
+            URL.revokeObjectURL(old)
+          } catch {
+            /* ignore */
+          }
         }
+        objectUrlCache.set(`audio:${id}`, fileSrc)
+        return fileSrc
       }
-      objectUrlCache.set(`audio:${id}`, nativeSrc)
-      return nativeSrc
+    } catch {
+      /* fall through a blob */
     }
   }
 
@@ -358,7 +382,12 @@ export async function getAudioObjectUrl(id: string): Promise<string | null> {
 
 /** Cache hit síncrono de URL (puede estar stale tras suspensión — preferir reassign). */
 export function peekAudioObjectUrl(id: string): string | null {
-  return objectUrlCache.get(`audio:${id}`) ?? null
+  const url = objectUrlCache.get(`audio:${id}`) ?? null
+  if (isBadNativePlayUrl(url)) {
+    objectUrlCache.delete(`audio:${id}`)
+    return null
+  }
+  return url
 }
 
 export async function getCoverObjectUrl(id: string): Promise<string | null> {

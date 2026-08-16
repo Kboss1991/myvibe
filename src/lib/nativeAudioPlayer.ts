@@ -41,6 +41,10 @@ export function isNativeAvPlayerAvailable(): boolean {
 }
 
 function audioPath(id: string): string {
+  return `myvibe/audio/${id}.mp3`
+}
+
+function audioPathBin(id: string): string {
   return `myvibe/audio/${id}.bin`
 }
 
@@ -50,16 +54,17 @@ function playCachePath(id: string): string {
 
 /** file:// URI para AVPlayer (no capacitor://). */
 export async function resolveNativePlayFileUrl(trackId: string): Promise<string | null> {
-  // Preferir copia en Documents (transfer Wi‑Fi / nativo)
-  try {
-    await Filesystem.stat({ path: audioPath(trackId), directory: Directory.Documents })
-    const { uri } = await Filesystem.getUri({
-      path: audioPath(trackId),
-      directory: Directory.Documents,
-    })
-    if (uri) return uri
-  } catch {
-    /* fall through */
+  for (const path of [audioPath(trackId), audioPathBin(trackId)]) {
+    try {
+      await Filesystem.stat({ path, directory: Directory.Documents })
+      const { uri } = await Filesystem.getUri({
+        path,
+        directory: Directory.Documents,
+      })
+      if (uri) return uri
+    } catch {
+      /* try next */
+    }
   }
 
   // Fallback: volcar blob a Cache como .mp3 para que AVPlayer lo lea

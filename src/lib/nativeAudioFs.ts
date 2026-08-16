@@ -13,7 +13,13 @@ export function isNativeApp(): boolean {
   }
 }
 
-function audioPath(id: string): string {
+/** Extensión .mp3: WKWebView / AVFoundation decodifican mal los .bin. */
+function audioPathMp3(id: string): string {
+  return `${AUDIO_DIR}/${id}.mp3`
+}
+
+/** Legacy: builds anteriores guardaban como .bin */
+function audioPathBin(id: string): string {
   return `${AUDIO_DIR}/${id}.bin`
 }
 
@@ -53,15 +59,45 @@ async function ensureParentDirs(path: string): Promise<void> {
   }
 }
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    const st = await Filesystem.stat({ path, directory: Directory.Documents })
+    return typeof st.size === 'number' ? st.size > 0 : true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Ruta real en disco. Migra .bin → .mp3 la primera vez (calidad de decode).
+ */
+async function resolveAudioPath(id: string): Promise<string | null> {
+  const mp3 = audioPathMp3(id)
+  const bin = audioPathBin(id)
+  if (await pathExists(mp3)) return mp3
+  if (!(await pathExists(bin))) return null
+  try {
+    await Filesystem.rename({
+      from: bin,
+      to: mp3,
+      directory: Directory.Documents,
+    })
+    return mp3
+  } catch {
+    return bin
+  }
+}
+
 /** Escribe audio en Documents privados de la app (nativo). */
 export async function writeNativeAudio(id: string, blob: Blob): Promise<void> {
-  const path = audioPath(id)
+  const path = audioPathMp3(id)
   await ensureParentDirs(path)
-  // Borrar previo si existe (writeFile no siempre trunca bien en append scenarios)
-  try {
-    await Filesystem.deleteFile({ path, directory: Directory.Documents })
-  } catch {
-    /* ignore */
+  for (const p of [path, audioPathBin(id)]) {
+    try {
+      await Filesystem.deleteFile({ path: p, directory: Directory.Documents })
+    } catch {
+      /* ignore */
+    }
   }
 
   if (blob.size <= WRITE_CHUNK * 2) {
@@ -101,19 +137,12 @@ export async function writeNativeAudio(id: string, blob: Blob): Promise<void> {
 }
 
 export async function readNativeAudioBlob(id: string): Promise<Blob | null> {
-  try {
-    const res = await Filesystem.stat({
-      path: audioPath(id),
-      directory: Directory.Documents,
-    })
-    if (!res || (typeof res.size === 'number' && res.size <= 0)) return null
-  } catch {
-    return null
-  }
+  const path = await resolveAudioPath(id)
+  if (!path) return null
 
   try {
     const file = await Filesystem.readFile({
-      path: audioPath(id),
+      path,
       directory: Directory.Documents,
     })
     const data = file.data
@@ -123,37 +152,86 @@ export async function readNativeAudioBlob(id: string): Promise<Blob | null> {
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
       return new Blob([bytes], { type: 'audio/mpeg' })
     }
-    if (data instanceof Blob) return data
+    if (data instanceof Blob) {
+      return data.type ? data : new Blob([data], { type: 'audio/mpeg' })
+    }
     return null
   } catch {
     return null
   }
 }
 
-/** URI nativa → URL usable en <audio src> (sin cargar el MP3 en RAM). */
+/** URI nativa → URL usable en <audio src>. Nunca sirve .bin. */
 export async function getNativeAudioSrc(id: string): Promise<string | null> {
+  return getNativePlayableFileSrc(id)
+}
+
+/**
+ * URL de reproducción con extensión .mp3 (WKWebView decodifica mal los .bin).
+ */
+export async function getNativePlayableFileSrc(id: string): Promise<string | null> {
+  const path = await resolveAudioPath(id)
+  if (!path) return null
+
+  // Ya es .mp3 en Documents → URL directa
+  if (path.endsWith('.mp3')) {
+    try {
+      const { uri } = await Filesystem.getUri({
+        path,
+        directory: Directory.Documents,
+      })
+      if (!uri) return null
+      return Capacitor.convertFileSrc(uri)
+    } catch {
+      return null
+    }
+  }
+
+  // Legacy .bin que no se pudo renombrar: copia a Cache como .mp3
   try {
-    const { uri } = await Filesystem.getUri({
-      path: audioPath(id),
+    const playPath = `myvibe/play/${id}.mp3`
+    try {
+      await Filesystem.mkdir({
+        path: 'myvibe/play',
+        directory: Directory.Cache,
+        recursive: true,
+      })
+    } catch {
+      /* exists */
+    }
+    try {
+      await Filesystem.deleteFile({ path: playPath, directory: Directory.Cache })
+    } catch {
+      /* ignore */
+    }
+    await Filesystem.copy({
+      from: path,
+      to: playPath,
       directory: Directory.Documents,
+      toDirectory: Directory.Cache,
+    })
+    const { uri } = await Filesystem.getUri({
+      path: playPath,
+      directory: Directory.Cache,
     })
     if (!uri) return null
-    // Confirmar que existe
-    await Filesystem.stat({ path: audioPath(id), directory: Directory.Documents })
     return Capacitor.convertFileSrc(uri)
   } catch {
+    // Nunca devolver .bin (suena fatal). El caller usará blob: audio/mpeg.
     return null
   }
 }
 
 export async function deleteNativeAudio(id: string): Promise<void> {
-  try {
-    await Filesystem.deleteFile({
-      path: audioPath(id),
-      directory: Directory.Documents,
-    })
-  } catch {
-    /* ignore */
+  for (const path of [audioPathMp3(id), audioPathBin(id)]) {
+    try {
+      await Filesystem.deleteFile({
+        path,
+        directory: Directory.Documents,
+      })
+    } catch {
+      /* ignore */
+    }
   }
 }
 
@@ -225,14 +303,16 @@ export type NativeAppendWriter = {
   bytesWritten: () => number
 }
 
-/** Streaming PC→móvil en nativo: escribe directo a Documents. */
+/** Streaming PC→móvil en nativo: escribe directo a Documents como .mp3. */
 export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWriter> {
-  const path = audioPath(id)
+  const path = audioPathMp3(id)
   await ensureParentDirs(path)
-  try {
-    await Filesystem.deleteFile({ path, directory: Directory.Documents })
-  } catch {
-    /* ignore */
+  for (const p of [path, audioPathBin(id)]) {
+    try {
+      await Filesystem.deleteFile({ path: p, directory: Directory.Documents })
+    } catch {
+      /* ignore */
+    }
   }
   let written = 0
   let closed = false
@@ -313,22 +393,16 @@ export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWri
 }
 
 export async function nativeAudioExists(id: string): Promise<boolean> {
-  try {
-    const st = await Filesystem.stat({
-      path: audioPath(id),
-      directory: Directory.Documents,
-    })
-    return typeof st.size === 'number' ? st.size > 0 : true
-  } catch {
-    return false
-  }
+  return (await resolveAudioPath(id)) != null
 }
 
 /** Tamaño en disco sin leer el MP3 a RAM (crítico en transferencias largas). */
 export async function nativeAudioByteSize(id: string): Promise<number> {
+  const path = await resolveAudioPath(id)
+  if (!path) return 0
   try {
     const st = await Filesystem.stat({
-      path: audioPath(id),
+      path,
       directory: Directory.Documents,
     })
     return typeof st.size === 'number' ? st.size : 0
