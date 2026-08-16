@@ -620,6 +620,72 @@
   color: var(--text-muted);
 }
 
+.wifi-progress {
+  margin-top: 16px;
+  padding: 14px 14px 12px;
+  border-radius: 12px;
+  background: var(--bg-soft, #1a1a1a);
+}
+
+.wifi-progress__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.wifi-progress__label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.wifi-progress__pct {
+  font-size: 0.85rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.wifi-progress__bar {
+  height: 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.wifi-progress__bar > div {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-2, #1db954), var(--accent, #1ed760));
+  transition: width 0.15s ease-out;
+}
+
+.wifi-progress__bar--track {
+  height: 6px;
+  margin-top: 4px;
+}
+
+.wifi-progress__track {
+  margin-top: 14px;
+}
+
+.wifi-progress__track-name {
+  margin: 0 0 6px;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wifi-progress__meta {
+  margin: 10px 0 0;
+  font-size: 0.78rem;
+  color: var(--text-dim, #888);
+}
+
 .form-error {
   margin-top: 12px;
   color: var(--danger);

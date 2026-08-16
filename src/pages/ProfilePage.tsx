@@ -16,7 +16,7 @@ import {
 import { UserAvatar } from '../components/UserAvatar'
 import { formatLastSeen, isLibraryHostDevice } from '../lib/devices'
 import { isLibraryHostCapable } from '../lib/folderImport'
-import { startWifiHost } from '../lib/wifiTransfer'
+import { startWifiHost, type WifiTransferProgress } from '../lib/wifiTransfer'
 import {
   computeListenStats,
   formatListenMinutes,
@@ -68,6 +68,7 @@ export function ProfilePage() {
   const [wifiSyncing, setWifiSyncing] = useState(false)
   const [wifiCode, setWifiCode] = useState<string | null>(null)
   const [wifiHostStatus, setWifiHostStatus] = useState<string | null>(null)
+  const [wifiProgress, setWifiProgress] = useState<WifiTransferProgress | null>(null)
   const [manualCode, setManualCode] = useState('')
   const wifiStopRef = useRef<(() => void) | null>(null)
 
@@ -451,22 +452,32 @@ export function ProfilePage() {
                 onClick={() => {
                   setLocalError(null)
                   setOkMsg(null)
+                  setWifiProgress(null)
                   setWifiHostStatus('Preparando…')
                   wifiStopRef.current?.()
                   void startWifiHost({
                     onCode: (c) => setWifiCode(c),
                     onStatus: setWifiHostStatus,
-                    onProgress: (done, total, name) =>
-                      setWifiHostStatus(
-                        `Enviando ${done + 1}/${total}${name ? ` · ${name}` : ''}`,
-                      ),
+                    onProgress: setWifiProgress,
                     onError: (msg) => {
                       setLocalError(msg)
                       setWifiHostStatus(null)
+                      setWifiProgress(null)
                     },
                     onFinished: () => {
                       setOkMsg('Biblioteca enviada al móvil')
                       setWifiHostStatus('Listo. Puedes generar otro código si hace falta.')
+                      setWifiProgress((p) =>
+                        p
+                          ? { ...p, overallPercent: 100, trackPercent: 100, name: '' }
+                          : {
+                              done: 0,
+                              total: 0,
+                              name: '',
+                              trackPercent: 100,
+                              overallPercent: 100,
+                            },
+                      )
                     },
                   })
                     .then((session) => {
@@ -475,6 +486,7 @@ export function ProfilePage() {
                     .catch((e) => {
                       setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar Wi‑Fi')
                       setWifiHostStatus(null)
+                      setWifiProgress(null)
                     })
                 }}
               >
@@ -495,9 +507,37 @@ export function ProfilePage() {
                 >
                   {wifiCode}
                 </p>
-                <p className="profile-card__hint">
-                  {wifiHostStatus || 'Deja esta pestaña abierta hasta que termine el envío.'}
-                </p>
+                {wifiProgress && wifiProgress.total > 0 ? (
+                  <div className="wifi-progress" aria-live="polite">
+                    <div className="wifi-progress__row">
+                      <span className="wifi-progress__label">Total</span>
+                      <span className="wifi-progress__pct">{wifiProgress.overallPercent}%</span>
+                    </div>
+                    <div className="wifi-progress__bar">
+                      <div style={{ width: `${wifiProgress.overallPercent}%` }} />
+                    </div>
+                    <div className="wifi-progress__track">
+                      <p className="wifi-progress__track-name">
+                        {wifiProgress.name || 'Preparando…'}
+                      </p>
+                      <div className="wifi-progress__row">
+                        <span className="wifi-progress__label">Esta canción</span>
+                        <span className="wifi-progress__pct">{wifiProgress.trackPercent}%</span>
+                      </div>
+                      <div className="wifi-progress__bar wifi-progress__bar--track">
+                        <div style={{ width: `${wifiProgress.trackPercent}%` }} />
+                      </div>
+                    </div>
+                    <p className="wifi-progress__meta">
+                      {wifiProgress.done}/{wifiProgress.total} confirmadas
+                      {wifiHostStatus ? ` · ${wifiHostStatus}` : ''}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="profile-card__hint">
+                    {wifiHostStatus || 'Deja esta pestaña abierta hasta que termine el envío.'}
+                  </p>
+                )}
                 <button
                   type="button"
                   className="chip"
@@ -507,6 +547,7 @@ export function ProfilePage() {
                     wifiStopRef.current = null
                     setWifiCode(null)
                     setWifiHostStatus(null)
+                    setWifiProgress(null)
                   }}
                 >
                   Detener
@@ -558,25 +599,19 @@ export function ProfilePage() {
                 setWifiSyncing(true)
                 setLocalError(null)
                 setOkMsg(null)
+                setWifiProgress(null)
                 void import('../lib/wifiTransfer')
                   .then(({ startWifiClient }) =>
                     startWifiClient(manualCode, {
-                      onStatus: (msg) =>
-                        useLibraryStore.setState({ lastSyncMessage: msg }),
-                      onProgress: (done, total, name) =>
-                        useLibraryStore.setState({
-                          downloadProgress: {
-                            done,
-                            total,
-                            name,
-                            trackId: null,
-                            percent: total ? Math.round((done / total) * 100) : 0,
-                            ids: [],
-                          },
-                        }),
+                      onStatus: (msg) => {
+                        setWifiHostStatus(msg)
+                        useLibraryStore.setState({ lastSyncMessage: msg })
+                      },
+                      onProgress: setWifiProgress,
                       onError: (msg) => {
                         setLocalError(msg)
                         setWifiSyncing(false)
+                        setWifiProgress(null)
                         useLibraryStore.setState({ downloadProgress: null })
                       },
                       onFinished: (imported, _files, playlists) => {
@@ -585,6 +620,11 @@ export function ProfilePage() {
                             (playlists ? ` · ${playlists} playlists` : ''),
                         )
                         setWifiSyncing(false)
+                        setWifiProgress((p) =>
+                          p
+                            ? { ...p, overallPercent: 100, trackPercent: 100 }
+                            : null,
+                        )
                         useLibraryStore.setState({
                           downloadProgress: null,
                           lastSyncAt: Date.now(),
@@ -596,14 +636,49 @@ export function ProfilePage() {
                   .catch((e) => {
                     setLocalError(e instanceof Error ? e.message : 'Error Wi‑Fi')
                     setWifiSyncing(false)
+                    setWifiProgress(null)
                   })
               }}
             >
-              {wifiSyncing ? 'Conectando…' : 'Conectar con el PC'}
+              {wifiSyncing ? 'Recibiendo…' : 'Conectar con el PC'}
             </button>
-            <p className="profile-card__hint" style={{ marginTop: 10 }}>
-              En el PC (Chrome): Perfil → <strong>Generar código de 6 dígitos</strong>. Misma Wi‑Fi.
-            </p>
+            {wifiSyncing || (wifiProgress && wifiProgress.total > 0) ? (
+              <div className="wifi-progress" aria-live="polite">
+                <div className="wifi-progress__row">
+                  <span className="wifi-progress__label">Total</span>
+                  <span className="wifi-progress__pct">
+                    {wifiProgress?.overallPercent ?? 0}%
+                  </span>
+                </div>
+                <div className="wifi-progress__bar">
+                  <div style={{ width: `${wifiProgress?.overallPercent ?? 0}%` }} />
+                </div>
+                <div className="wifi-progress__track">
+                  <p className="wifi-progress__track-name">
+                    {wifiProgress?.name || wifiHostStatus || 'Conectando…'}
+                  </p>
+                  <div className="wifi-progress__row">
+                    <span className="wifi-progress__label">Esta canción</span>
+                    <span className="wifi-progress__pct">
+                      {wifiProgress?.trackPercent ?? 0}%
+                    </span>
+                  </div>
+                  <div className="wifi-progress__bar wifi-progress__bar--track">
+                    <div style={{ width: `${wifiProgress?.trackPercent ?? 0}%` }} />
+                  </div>
+                </div>
+                {wifiProgress && wifiProgress.total > 0 ? (
+                  <p className="wifi-progress__meta">
+                    {wifiProgress.done}/{wifiProgress.total} recibidas
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <p className="profile-card__hint" style={{ marginTop: 10 }}>
+                En el PC (Chrome): Perfil → <strong>Generar código de 6 dígitos</strong>. Misma
+                Wi‑Fi.
+              </p>
+            )}
           </div>
         )}
       </section>

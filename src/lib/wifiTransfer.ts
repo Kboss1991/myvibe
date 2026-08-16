@@ -46,6 +46,7 @@ type PlaylistWire = {
 
 type JsonMsg =
   | { t: 'hello'; v: number; trackCount: number; from?: string }
+  | { t: 'plan'; trackCount: number; skipped?: number }
   | { t: 'playlists'; items: PlaylistWire[] }
   | { t: 'have'; ids: string[] }
   | {
@@ -114,10 +115,44 @@ async function sendPayload(
   conn.send(payload)
 }
 
+export type WifiTransferProgress = {
+  /** Canciones ya confirmadas */
+  done: number
+  /** Canciones pendientes en este envío */
+  total: number
+  name: string
+  /** 0–100 de la canción actual */
+  trackPercent: number
+  /** 0–100 del lote completo (incluye parcial de la actual) */
+  overallPercent: number
+}
+
+function emitProgress(
+  onProgress: (p: WifiTransferProgress) => void,
+  done: number,
+  total: number,
+  name: string,
+  trackPercent: number,
+) {
+  const safeTotal = Math.max(total, 1)
+  const tp = Math.min(100, Math.max(0, Math.round(trackPercent)))
+  const overall = Math.min(
+    100,
+    Math.round(((done + tp / 100) / safeTotal) * 100),
+  )
+  onProgress({
+    done,
+    total,
+    name,
+    trackPercent: tp,
+    overallPercent: overall,
+  })
+}
+
 export type HostHandlers = {
   onCode: (code: string) => void
   onStatus: (msg: string) => void
-  onProgress: (done: number, total: number, name: string) => void
+  onProgress: (p: WifiTransferProgress) => void
   onError: (msg: string) => void
   onFinished: () => void
 }
@@ -264,12 +299,23 @@ async function sendLibrary(
         ? `Enviando ${tracks.length} pendientes (${alreadyOnPhone} ya en el móvil)…`
         : `Enviando ${tracks.length} canciones…`,
     )
+    await sendPayload(
+      conn,
+      {
+        t: 'plan',
+        trackCount: tracks.length,
+        skipped: alreadyOnPhone,
+      } satisfies JsonMsg,
+      isStopped,
+    )
 
     let sent = 0
+    let lastReportedTrackPct = -1
     for (let i = 0; i < tracks.length; i++) {
       if (isStopped()) return
       const track = tracks[i]!
-      handlers.onProgress(i, tracks.length, track.title)
+      lastReportedTrackPct = -1
+      emitProgress(handlers.onProgress, sent, tracks.length, track.title, 0)
 
       const audio = await getAudioBlob(track.id)
       if (!audio) continue
@@ -277,6 +323,8 @@ async function sendLibrary(
       const cover = track.hasCover ? await getCoverBlob(track.id) : null
       const coverBuf = cover ? new Uint8Array(await cover.arrayBuffer()) : null
       const hasCover = Boolean(coverBuf?.byteLength)
+      const coverBytes = hasCover ? coverBuf!.byteLength : 0
+      const payloadBytes = totalSize + coverBytes
 
       await sendPayload(
         conn,
@@ -300,6 +348,7 @@ async function sendLibrary(
         isStopped,
       )
 
+      let sentBytes = 0
       for (let offset = 0; offset < totalSize; offset += CHUNK) {
         if (isStopped()) return
         const end = Math.min(offset + CHUNK, totalSize)
@@ -316,6 +365,14 @@ async function sendLibrary(
           isStopped,
         )
         await sendPayload(conn, ab, isStopped)
+        sentBytes = end
+        const trackPct = payloadBytes
+          ? (sentBytes / payloadBytes) * 100
+          : 100
+        if (trackPct - lastReportedTrackPct >= 2 || end >= totalSize) {
+          lastReportedTrackPct = trackPct
+          emitProgress(handlers.onProgress, sent, tracks.length, track.title, trackPct)
+        }
       }
 
       await sendPayload(conn, { t: 'track-end', i } satisfies JsonMsg, isStopped)
@@ -346,14 +403,23 @@ async function sendLibrary(
             isStopped,
           )
           await sendPayload(conn, slice.slice().buffer, isStopped)
+          sentBytes = totalSize + end
+          const trackPct = payloadBytes
+            ? (sentBytes / payloadBytes) * 100
+            : 100
+          if (trackPct - lastReportedTrackPct >= 2 || end >= coverBuf.byteLength) {
+            lastReportedTrackPct = trackPct
+            emitProgress(handlers.onProgress, sent, tracks.length, track.title, trackPct)
+          }
         }
         await sendPayload(conn, { t: 'cover-end', id: track.id } satisfies JsonMsg, isStopped)
       }
 
+      emitProgress(handlers.onProgress, sent, tracks.length, track.title, 99)
+
       try {
         const ack = await waitForMsg(conn, 'ack', ACK_TIMEOUT_MS)
         if (ack.t === 'ack' && ack.id !== track.id) {
-          // ack desfasado: seguir esperando un poco más
           const again = await waitForMsg(conn, 'ack', 30_000)
           if (again.t !== 'ack' || again.id !== track.id) {
             throw new Error(`ACK incorrecto para ${track.title}`)
@@ -365,11 +431,12 @@ async function sendLibrary(
         )
       }
       sent += 1
+      emitProgress(handlers.onProgress, sent, tracks.length, track.title, 100)
       handlers.onStatus(`Confirmadas ${sent}/${tracks.length}…`)
     }
 
     await sendPayload(conn, { t: 'done' } satisfies JsonMsg, isStopped)
-    handlers.onProgress(tracks.length, tracks.length, '')
+    emitProgress(handlers.onProgress, tracks.length, tracks.length, '', 100)
     handlers.onStatus(
       `Envío terminado · ${sent} canciones` +
         (alreadyOnPhone ? ` · ${alreadyOnPhone} ya estaban` : '') +
@@ -416,7 +483,7 @@ function waitForMsg(
 
 export type ClientHandlers = {
   onStatus: (msg: string) => void
-  onProgress: (done: number, total: number, name: string) => void
+  onProgress: (p: WifiTransferProgress) => void
   onError: (msg: string) => void
   onFinished: (
     imported: number,
@@ -534,6 +601,8 @@ async function receiveLibrary(
   let playlistsIn = 0
   const visibleFiles: { fileName: string; blob: Blob }[] = []
   let keepVisibleBlobs = false
+  let lastReportedTrackPct = -1
+  let lastTrackTitle = ''
   let current: {
     meta: Extract<JsonMsg, { t: 'track-start' }>
     parts: Uint8Array[]
@@ -544,6 +613,7 @@ async function receiveLibrary(
     size: number
     mimeType: string
     parts: Uint8Array[]
+    received: number
   } | null = null
   let pendingAck: { id: string; i: number } | null = null
 
@@ -573,6 +643,12 @@ async function receiveLibrary(
     }
   }
 
+  const reportTrack = (name: string, trackPct: number, force = false) => {
+    if (!force && trackPct - lastReportedTrackPct < 2 && trackPct < 100) return
+    lastReportedTrackPct = trackPct
+    emitProgress(handlers.onProgress, imported, Math.max(expected, 1), name, trackPct)
+  }
+
   conn.send({ t: 'ready' } satisfies JsonMsg)
 
   try {
@@ -592,11 +668,20 @@ async function receiveLibrary(
               : new Uint8Array(data)
         if (currentCover) {
           currentCover.parts.push(bytes)
+          currentCover.received += bytes.byteLength
+          const coverPct = currentCover.size
+            ? (currentCover.received / currentCover.size) * 100
+            : 100
+          reportTrack(lastTrackTitle || 'Portada', 85 + coverPct * 0.15)
           continue
         }
         if (!current) continue
         current.parts.push(bytes)
         current.received += bytes.byteLength
+        const trackPct = current.meta.size
+          ? Math.min(95, (current.received / current.meta.size) * 95)
+          : 0
+        reportTrack(current.meta.title, trackPct)
         continue
       }
 
@@ -616,7 +701,6 @@ async function receiveLibrary(
           return
         }
         expected = data.trackCount
-        // No acumular todos los blobs en RAM (rompe el iPhone a ~40–50 canciones)
         keepVisibleBlobs = expected > 0 && expected <= 20
         handlers.onStatus(`Biblioteca del PC: ${expected}. Comprobando qué falta…`)
         const haveIds = await listLocalAudioIds()
@@ -626,6 +710,18 @@ async function receiveLibrary(
             ? `Ya tienes ${haveIds.length}. Recibiendo el resto…`
             : `Recibiendo hasta ${expected} canciones…`,
         )
+        continue
+      }
+
+      if (data.t === 'plan') {
+        expected = data.trackCount
+        keepVisibleBlobs = expected > 0 && expected <= 20
+        handlers.onStatus(
+          data.skipped
+            ? `Pendientes: ${expected} (${data.skipped} ya en este móvil)…`
+            : `Recibiendo ${expected} canciones…`,
+        )
+        emitProgress(handlers.onProgress, 0, Math.max(expected, 1), '', 0)
         continue
       }
 
@@ -653,8 +749,10 @@ async function receiveLibrary(
 
       if (data.t === 'track-start') {
         currentCover = null
+        lastReportedTrackPct = -1
+        lastTrackTitle = data.title
         current = { meta: data, parts: [], received: 0 }
-        handlers.onProgress(data.i, expected || data.i + 1, data.title)
+        reportTrack(data.title, 0, true)
         continue
       }
 
@@ -672,6 +770,7 @@ async function receiveLibrary(
           merged.set(part, offset)
           offset += part.byteLength
         }
+        const title = meta.title
         current = null
 
         if (offset < total * 0.98) {
@@ -681,6 +780,7 @@ async function receiveLibrary(
         }
 
         try {
+          reportTrack(title, 96, true)
           const blob = new Blob(
             [merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)],
             {
@@ -732,10 +832,12 @@ async function receiveLibrary(
               blob,
             })
           }
-          imported += 1
           if (meta.hasCover) {
             pendingAck = { id, i: meta.i }
+            reportTrack(title, 90, true)
           } else {
+            imported += 1
+            emitProgress(handlers.onProgress, imported, Math.max(expected, 1), title, 100)
             sendAck(id, meta.i)
           }
         } catch (e) {
@@ -746,12 +848,12 @@ async function receiveLibrary(
       }
 
       if (data.t === 'cover-start') {
-        current = null
         currentCover = {
           id: data.id,
           size: data.size,
           mimeType: data.mimeType || 'image/jpeg',
           parts: [],
+          received: 0,
         }
         continue
       }
@@ -760,6 +862,14 @@ async function receiveLibrary(
         if (!currentCover || currentCover.id !== data.id) {
           currentCover = null
           if (pendingAck && pendingAck.id === data.id) {
+            imported += 1
+            emitProgress(
+              handlers.onProgress,
+              imported,
+              Math.max(expected, 1),
+              '',
+              100,
+            )
             sendAck(pendingAck.id, pendingAck.i)
             pendingAck = null
           }
@@ -786,6 +896,8 @@ async function receiveLibrary(
           console.warn('Portada incompleta', coverMeta.id, received, coverMeta.size)
         }
         if (pendingAck && pendingAck.id === coverMeta.id) {
+          imported += 1
+          emitProgress(handlers.onProgress, imported, Math.max(expected, 1), '', 100)
           sendAck(pendingAck.id, pendingAck.i)
           pendingAck = null
         }
@@ -797,6 +909,7 @@ async function receiveLibrary(
           sendAck(pendingAck.id, pendingAck.i)
           pendingAck = null
         }
+        emitProgress(handlers.onProgress, imported, Math.max(expected, imported, 1), '', 100)
         handlers.onStatus(
           `Listo: ${imported} canciones nuevas` +
             (playlistsIn ? ` · ${playlistsIn} playlists` : '') +

@@ -4,7 +4,7 @@ import { AppIcon } from '../components/AppIcon'
 import { BrandWordmark } from '../components/BrandWordmark'
 import { isAppleMobile } from '../lib/folderImport'
 import { saveFilesVisibly, type VisibleFile } from '../lib/visibleStorage'
-import { startWifiClient } from '../lib/wifiTransfer'
+import { startWifiClient, type WifiTransferProgress } from '../lib/wifiTransfer'
 import { useAuthStore } from '../store/authStore'
 import './pages.css'
 
@@ -16,11 +16,7 @@ export function ReceivePage() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [progress, setProgress] = useState<{
-    done: number
-    total: number
-    name: string
-  } | null>(null)
+  const [progress, setProgress] = useState<WifiTransferProgress | null>(null)
   const [doneCount, setDoneCount] = useState<number | null>(null)
   const [visibleFiles, setVisibleFiles] = useState<VisibleFile[]>([])
   const [exportBusy, setExportBusy] = useState(false)
@@ -53,7 +49,7 @@ export function ReceivePage() {
     try {
       const session = await startWifiClient(useCode, {
         onStatus: setStatus,
-        onProgress: (done, total, name) => setProgress({ done, total, name }),
+        onProgress: setProgress,
         onError: (msg) => {
           setError(msg)
           setBusy(false)
@@ -157,21 +153,34 @@ export function ReceivePage() {
 
         {busy && (
           <>
-            <div className="import-progress">
-              <div className="import-progress__bar">
-                <div
-                  style={{
-                    width: `${
-                      progress?.total ? (progress.done / progress.total) * 100 : 8
-                    }%`,
-                  }}
-                />
+            <div className="wifi-progress" aria-live="polite">
+              <div className="wifi-progress__row">
+                <span className="wifi-progress__label">Total</span>
+                <span className="wifi-progress__pct">{progress?.overallPercent ?? 0}%</span>
               </div>
-              <p>
-                {status}
-                {progress?.name ? ` · ${progress.name}` : ''}
-                {progress ? ` (${progress.done}/${progress.total})` : ''}
-              </p>
+              <div className="wifi-progress__bar">
+                <div style={{ width: `${progress?.overallPercent ?? 0}%` }} />
+              </div>
+              <div className="wifi-progress__track">
+                <p className="wifi-progress__track-name">
+                  {progress?.name || status || 'Conectando…'}
+                </p>
+                <div className="wifi-progress__row">
+                  <span className="wifi-progress__label">Esta canción</span>
+                  <span className="wifi-progress__pct">{progress?.trackPercent ?? 0}%</span>
+                </div>
+                <div className="wifi-progress__bar wifi-progress__bar--track">
+                  <div style={{ width: `${progress?.trackPercent ?? 0}%` }} />
+                </div>
+              </div>
+              {progress && progress.total > 0 ? (
+                <p className="wifi-progress__meta">
+                  {progress.done}/{progress.total}
+                  {status ? ` · ${status}` : ''}
+                </p>
+              ) : status ? (
+                <p className="wifi-progress__meta">{status}</p>
+              ) : null}
             </div>
             <button type="button" className="btn-outline" style={{ width: '100%' }} onClick={cancel}>
               Cancelar
