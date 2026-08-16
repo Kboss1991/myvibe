@@ -1,9 +1,9 @@
 import { Capacitor } from '@capacitor/core'
 import { Directory, Filesystem } from '@capacitor/filesystem'
+import write_blob from 'capacitor-blob-writer'
 
 const AUDIO_DIR = 'myvibe/audio'
 const COVER_DIR = 'myvibe/covers'
-const WRITE_CHUNK = 258 * 1024 // múltiplo de 3 (base64-safe)
 
 export function isNativeApp(): boolean {
   try {
@@ -25,20 +25,6 @@ function audioPathBin(id: string): string {
 
 function coverPath(id: string): string {
   return `${COVER_DIR}/${id}.jpg`
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const step = 0x8000
-  for (let i = 0; i < bytes.length; i += step) {
-    const slice = bytes.subarray(i, Math.min(i + step, bytes.length))
-    binary += String.fromCharCode(...slice)
-  }
-  return btoa(binary)
-}
-
-async function blobChunkToBase64(blob: Blob): Promise<string> {
-  return bytesToBase64(new Uint8Array(await blob.arrayBuffer()))
 }
 
 async function ensureParentDirs(path: string): Promise<void> {
@@ -88,10 +74,31 @@ async function resolveAudioPath(id: string): Promise<string | null> {
   }
 }
 
+/**
+ * Escritura binaria bit-a-bit (HTTP local). Evita base64+appendFile que
+ * corrompe MP3 y suena a distorsión.
+ */
+async function writeBinaryBlob(path: string, blob: Blob): Promise<void> {
+  await ensureParentDirs(path)
+  try {
+    await Filesystem.deleteFile({ path, directory: Directory.Documents })
+  } catch {
+    /* ignore */
+  }
+  await write_blob({
+    path,
+    directory: Directory.Documents,
+    blob,
+    recursive: true,
+    on_fallback(error) {
+      console.warn('[nativeAudioFs] blob-writer fallback', error)
+    },
+  })
+}
+
 /** Escribe audio en Documents privados de la app (nativo). */
 export async function writeNativeAudio(id: string, blob: Blob): Promise<void> {
   const path = audioPathMp3(id)
-  await ensureParentDirs(path)
   for (const p of [path, audioPathBin(id)]) {
     try {
       await Filesystem.deleteFile({ path: p, directory: Directory.Documents })
@@ -99,41 +106,8 @@ export async function writeNativeAudio(id: string, blob: Blob): Promise<void> {
       /* ignore */
     }
   }
-
-  if (blob.size <= WRITE_CHUNK * 2) {
-    await Filesystem.writeFile({
-      path,
-      data: await blobChunkToBase64(blob),
-      directory: Directory.Documents,
-      recursive: true,
-    })
-    return
-  }
-
-  // Archivos grandes: trozos en base64 para no OOM
-  let offset = 0
-  let first = true
-  while (offset < blob.size) {
-    const end = Math.min(offset + WRITE_CHUNK, blob.size)
-    const part = blob.slice(offset, end)
-    const data = await blobChunkToBase64(part)
-    if (first) {
-      await Filesystem.writeFile({
-        path,
-        data,
-        directory: Directory.Documents,
-        recursive: true,
-      })
-      first = false
-    } else {
-      await Filesystem.appendFile({
-        path,
-        data,
-        directory: Directory.Documents,
-      })
-    }
-    offset = end
-  }
+  const typed = blob.type ? blob : new Blob([blob], { type: 'audio/mpeg' })
+  await writeBinaryBlob(path, typed)
 }
 
 export async function readNativeAudioBlob(id: string): Promise<Blob | null> {
@@ -262,21 +236,27 @@ export async function deleteNativeAudio(id: string): Promise<void> {
 
 export async function writeNativeCover(id: string, blob: Blob): Promise<void> {
   const path = coverPath(id)
-  await ensureParentDirs(path)
-  try {
-    await Filesystem.deleteFile({ path, directory: Directory.Documents })
-  } catch {
-    /* ignore */
-  }
-  await Filesystem.writeFile({
-    path,
-    data: await blobChunkToBase64(blob),
-    directory: Directory.Documents,
-    recursive: true,
-  })
+  const typed = blob.type ? blob : new Blob([blob], { type: 'image/jpeg' })
+  await writeBinaryBlob(path, typed)
 }
 
 export async function readNativeCoverBlob(id: string): Promise<Blob | null> {
+  try {
+    const { uri } = await Filesystem.getUri({
+      path: coverPath(id),
+      directory: Directory.Documents,
+    })
+    if (uri) {
+      const src = Capacitor.convertFileSrc(uri)
+      const res = await fetch(src)
+      if (res.ok) {
+        const blob = await res.blob()
+        if (blob.size > 0) return blob
+      }
+    }
+  } catch {
+    /* fall through */
+  }
   try {
     const file = await Filesystem.readFile({
       path: coverPath(id),
@@ -328,10 +308,12 @@ export type NativeAppendWriter = {
   bytesWritten: () => number
 }
 
-/** Streaming PC→móvil en nativo: escribe directo a Documents como .mp3. */
+/**
+ * Streaming PC→móvil: acumula bytes y al cerrar escribe binario limpio
+ * (sin base64/appendFile). Una pista a la vez en fase heavy.
+ */
 export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWriter> {
   const path = audioPathMp3(id)
-  await ensureParentDirs(path)
   for (const p of [path, audioPathBin(id)]) {
     try {
       await Filesystem.deleteFile({ path: p, directory: Directory.Documents })
@@ -341,44 +323,7 @@ export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWri
   }
   let written = 0
   let closed = false
-  let started = false
-  /** Acumula ~256 KiB antes de base64+bridge (menos picos de RAM/CPU). */
-  let pending: Uint8Array[] = []
-  let pendingBytes = 0
-  const FLUSH_AT = 258 * 1024 // múltiplo de 3 (base64-safe)
-
-  const flush = async () => {
-    if (!pendingBytes) return
-    let merged: Uint8Array
-    if (pending.length === 1) {
-      merged = pending[0]!
-    } else {
-      merged = new Uint8Array(pendingBytes)
-      let o = 0
-      for (const p of pending) {
-        merged.set(p, o)
-        o += p.byteLength
-      }
-    }
-    pending = []
-    pendingBytes = 0
-    const data = bytesToBase64(merged)
-    if (!started) {
-      await Filesystem.writeFile({
-        path,
-        data,
-        directory: Directory.Documents,
-        recursive: true,
-      })
-      started = true
-    } else {
-      await Filesystem.appendFile({
-        path,
-        data,
-        directory: Directory.Documents,
-      })
-    }
-  }
+  const parts: Uint8Array[] = []
 
   return {
     write: async (chunk) => {
@@ -389,24 +334,22 @@ export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWri
       } else if (chunk instanceof ArrayBuffer) {
         bytes = new Uint8Array(chunk)
       } else {
-        // Copia propia: el buffer de PeerJS puede reutilizarse
         bytes = new Uint8Array(chunk.byteLength)
         bytes.set(chunk)
       }
-      pending.push(bytes)
-      pendingBytes += bytes.byteLength
+      parts.push(bytes)
       written += bytes.byteLength
-      if (pendingBytes >= FLUSH_AT) await flush()
     },
     close: async () => {
       if (closed) return
-      await flush()
       closed = true
+      const blob = new Blob(parts as BlobPart[], { type: 'audio/mpeg' })
+      parts.length = 0
+      await writeBinaryBlob(path, blob)
     },
     abort: async () => {
       closed = true
-      pending = []
-      pendingBytes = 0
+      parts.length = 0
       try {
         await Filesystem.deleteFile({ path, directory: Directory.Documents })
       } catch {
@@ -434,4 +377,40 @@ export async function nativeAudioByteSize(id: string): Promise<number> {
   } catch {
     return 0
   }
+}
+
+/**
+ * Una sola vez: borra audio guardado con el writer base64 corrupto
+ * para forzar re-transferencia Wi‑Fi bit-perfect.
+ */
+export async function invalidateCorruptNativeAudioOnce(): Promise<number> {
+  if (!isNativeApp()) return 0
+  const KEY = 'myvibe.bitPerfectAudio.v2'
+  try {
+    if (localStorage.getItem(KEY) === '1') return 0
+  } catch {
+    return 0
+  }
+
+  const { db } = await import('../db')
+  const tracks = await db.tracks.toArray()
+  let cleared = 0
+  for (const t of tracks) {
+    const had =
+      t.hasLocalAudio === true || (typeof t.audioBytes === 'number' && t.audioBytes > 1024)
+    if (!had) continue
+    await deleteNativeAudio(t.id).catch(() => undefined)
+    await db.tracks.update(t.id, {
+      hasLocalAudio: false,
+      audioBytes: 0,
+      needsAudioUpdate: true,
+    })
+    cleared += 1
+  }
+  try {
+    localStorage.setItem(KEY, '1')
+  } catch {
+    /* ignore */
+  }
+  return cleared
 }

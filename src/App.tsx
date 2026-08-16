@@ -150,6 +150,18 @@ export default function App() {
         } catch (e) {
           console.warn('Purge stubs', e)
         }
+        // Audio guardado con base64 corrupto → forzar re-transfer Wi‑Fi una vez
+        try {
+          const { invalidateCorruptNativeAudioOnce } = await import('./lib/nativeAudioFs')
+          const cleared = await invalidateCorruptNativeAudioOnce()
+          if (cleared > 0) {
+            useLibraryStore.setState({
+              lastSyncMessage: `${cleared} canciones listas para reenviar por Wi‑Fi (calidad bit-perfect)`,
+            })
+          }
+        } catch (e) {
+          console.warn('Invalidate native audio', e)
+        }
       }
 
       if (isLibraryHostDevice()) {

@@ -144,14 +144,14 @@ export async function finishHugeAudioWriteSize(
   let size = 0
   if (isNativeApp()) {
     size = await nativeAudioByteSize(id)
-    if (size < expectedSize * 0.98) {
+    if (size < expectedSize * 0.995) {
       await deleteNativeAudio(id).catch(() => undefined)
       throw new Error(`Archivo incompleto en disco (${size}/${expectedSize} bytes)`)
     }
   } else {
     const file = await readBinary('audio', id)
     size = file?.size ?? 0
-    if (!file || size < expectedSize * 0.98) {
+    if (!file || size < expectedSize * 0.995) {
       await deleteBinary('audio', id).catch(() => undefined)
       throw new Error(`Archivo incompleto en disco (${size}/${expectedSize} bytes)`)
     }

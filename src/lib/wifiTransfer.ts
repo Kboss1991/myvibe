@@ -1176,11 +1176,11 @@ async function receiveLibraryRound(
 
         if (discard) {
           console.warn('Descartada (sin escritura a disco)', meta.title)
-          sendAck(meta.id, meta.i)
+          // Sin ACK → el PC la reenviará en la siguiente sesión
           continue
         }
 
-        if (received < meta.size * 0.98) {
+        if (received < meta.size * 0.995) {
           if (stream) {
             try {
               await stream.abort()
@@ -1188,8 +1188,8 @@ async function receiveLibraryRound(
               /* ignore */
             }
           }
-          console.warn('Pista incompleta', meta.title, received, meta.size)
-          sendAck(meta.id, meta.i)
+          console.warn('Pista incompleta (sin ACK)', meta.title, received, meta.size)
+          // Sin ACK: no marcar como recibida; se reintenta
           continue
         }
 
