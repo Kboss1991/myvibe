@@ -49,7 +49,6 @@ export function LibraryPage() {
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
   const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
   const downloadFromPc = useLibraryStore((s) => s.downloadFromPc)
-  const syncFromPcWifi = useLibraryStore((s) => s.syncFromPcWifi)
   const downloadProgress = useLibraryStore((s) => s.downloadProgress)
   const artists = useLibraryStore((s) => s.artists)
   const albums = useLibraryStore((s) => s.albums)
@@ -70,7 +69,6 @@ export function LibraryPage() {
   const [enrichBusy, setEnrichBusy] = useState(false)
   const [restoreBusy, setRestoreBusy] = useState(false)
   const [updateBusy, setUpdateBusy] = useState(false)
-  const [wifiBusy, setWifiBusy] = useState(false)
   const restoreInputRef = useRef<HTMLInputElement>(null)
   const canHost = isLibraryHostCapable()
 
@@ -298,35 +296,15 @@ export function LibraryPage() {
       {tab === 'songs' && !canHost && (
         <div className="enrich-banner" role="status">
           <div>
-            <strong>Biblioteca desde el PC (Wi‑Fi)</strong>
+            <strong>Biblioteca desde el PC (código Wi‑Fi)</strong>
             <span>
-              Las canciones no se guardan en la nube. Abre MyVibe en el ordenador (misma cuenta y
-              Wi‑Fi) y sincroniza aquí.
+              En el PC (Chrome): Perfil → Compartir biblioteca. Luego aquí o en Perfil escribe el
+              código de 6 dígitos.
             </span>
           </div>
-          <button
-            type="button"
-            className="enrich-banner__btn"
-            disabled={wifiBusy || Boolean(downloadProgress)}
-            onClick={() => {
-              setWifiBusy(true)
-              void syncFromPcWifi()
-                .then((r) => {
-                  alert(
-                    `Sincronizadas ${r.imported} canciones` +
-                      (r.playlists ? ` y ${r.playlists} playlists` : '') +
-                      ' por Wi‑Fi.',
-                  )
-                })
-                .catch((err) => {
-                  alert(err instanceof Error ? err.message : 'No se pudo sincronizar')
-                })
-                .finally(() => setWifiBusy(false))
-            }}
-          >
-            <IconDownload size={16} />{' '}
-            {wifiBusy || downloadProgress ? 'Sincronizando…' : 'Sincronizar con PC'}
-          </button>
+          <Link to="/profile" className="enrich-banner__btn">
+            <IconDownload size={16} /> Ir a Perfil
+          </Link>
         </div>
       )}
 

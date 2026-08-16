@@ -18,6 +18,7 @@ import { db } from '../db'
 import { myVibeDownloadName, type VisibleFile } from './visibleStorage'
 import { isAppleMobile } from './folderImport'
 import { findBestTrackMatch } from './trackDedupe'
+import { peerOptions } from './wifiTransfer'
 import type { Playlist, Track } from '../types'
 
 /** v4: biblioteca completa + playlists por Wi‑Fi (sin catálogo cloud). */
@@ -116,7 +117,7 @@ export type LibraryHostSession = {
 /** PC: publica peer y sirve canciones bajo demanda al móvil. */
 export async function startLibraryHost(userId: string): Promise<LibraryHostSession> {
   const peerId = makePeerId(userId)
-  const peer = new Peer(peerId, { debug: 0 })
+  const peer = new Peer(peerId, peerOptions())
   let stopped = false
 
   const stop = () => {
@@ -425,7 +426,7 @@ export async function downloadTracksFromPc(
     )
   }
 
-  const peer = new Peer({ debug: 0 })
+  const peer = new Peer(peerOptions())
   let conn: DataConnection | null = null
 
   const cleanup = () => {
@@ -877,7 +878,7 @@ export async function syncFullLibraryFromPc(
     )
   }
 
-  const peer = new Peer({ debug: 0 })
+  const peer = new Peer(peerOptions())
   let conn: DataConnection | null = null
 
   const cleanup = () => {

@@ -1,12 +1,13 @@
-import Peer, { type DataConnection } from 'peerjs'
+import Peer, { type DataConnection, type PeerJSOption } from 'peerjs'
 import { db } from '../db'
 import { createId } from './fileImport'
 import { getAudioBlob, saveAudioBlob } from './library'
 import { tracksLookSame } from './trackDedupe'
-import type { Track } from '../types'
+import type { Playlist, Track } from '../types'
 
-const PROTOCOL = 1
-const CHUNK = 256 * 1024 // 256 KB — fiable en móvil
+/** v2: playlists + ids estables del PC */
+const PROTOCOL = 2
+const CHUNK = 256 * 1024
 const PEER_PREFIX = 'mv'
 
 export function makeTransferCode(): string {
@@ -18,11 +19,36 @@ export function peerIdFromCode(code: string): string {
   return `${PEER_PREFIX}${clean}`
 }
 
+/** Opciones PeerJS más tolerantes (Chrome Windows ↔ iPhone). */
+export function peerOptions(): PeerJSOption {
+  return {
+    debug: 0,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+      ],
+    },
+  }
+}
+
+type PlaylistWire = {
+  id: string
+  name: string
+  description: string
+  trackIds: string[]
+  themeColor?: string
+  createdAt: number
+  updatedAt: number
+}
+
 type JsonMsg =
   | { t: 'hello'; v: number; trackCount: number; from?: string }
+  | { t: 'playlists'; items: PlaylistWire[] }
   | {
       t: 'track-start'
       i: number
+      id: string
       title: string
       artist: string
       album: string
@@ -32,6 +58,7 @@ type JsonMsg =
       fileName: string
       size: number
       duration: number
+      liked?: boolean
     }
   | { t: 'chunk-info'; i: number; offset: number; total: number }
   | { t: 'track-end'; i: number }
@@ -56,14 +83,12 @@ export type HostSession = {
   stop: () => void
 }
 
-/** PC: espera al móvil y envía la biblioteca. */
+/** PC: espera al móvil y envía la biblioteca + playlists. */
 export async function startWifiHost(
   handlers: HostHandlers,
 ): Promise<HostSession> {
   const code = makeTransferCode()
-  const peer = new Peer(peerIdFromCode(code), {
-    debug: 0,
-  })
+  const peer = new Peer(peerIdFromCode(code), peerOptions())
 
   let stopped = false
   let conn: DataConnection | null = null
@@ -88,7 +113,9 @@ export async function startWifiHost(
 
   peer.on('open', () => {
     handlers.onCode(code)
-    handlers.onStatus('Esperando al móvil… Abre MyVibe ahí y pulsa Recibir por Wi‑Fi.')
+    handlers.onStatus(
+      'Esperando al móvil… En el iPhone: Perfil → introducir este código (misma Wi‑Fi).',
+    )
   })
 
   peer.on('connection', (c) => {
@@ -97,8 +124,7 @@ export async function startWifiHost(
       return
     }
     conn = c
-    // Escuchar ready desde ya (puede llegar antes que 'open' en el host)
-    const readyPromise = waitForMsg(c, 'ready', 45000)
+    const readyPromise = waitForMsg(c, 'ready', 60000)
     c.on('open', () => {
       void (async () => {
         try {
@@ -127,12 +153,28 @@ async function sendLibrary(
   isStopped: () => boolean,
 ) {
   try {
-    const tracks = await db.tracks.toArray()
+    const all = await db.tracks.toArray()
+    const tracks: Track[] = []
+    for (const t of all) {
+      if (t.hasLocalAudio === false) continue
+      if (await getAudioBlob(t.id)) tracks.push(t)
+    }
     if (!tracks.length) {
-      conn.send({ t: 'error', message: 'No hay canciones en el PC' } satisfies JsonMsg)
+      conn.send({ t: 'error', message: 'No hay canciones con audio en el PC' } satisfies JsonMsg)
       handlers.onError('No hay canciones para enviar')
       return
     }
+
+    const playlists = await db.playlists.toArray()
+    const wire: PlaylistWire[] = playlists.map((p) => ({
+      id: p.id,
+      name: p.name,
+      description: p.description || '',
+      trackIds: p.trackIds.filter((id) => tracks.some((t) => t.id === id)),
+      themeColor: p.themeColor,
+      createdAt: p.createdAt,
+      updatedAt: p.updatedAt,
+    }))
 
     handlers.onStatus(`Conectado. Enviando ${tracks.length} canciones…`)
     conn.send({
@@ -140,6 +182,7 @@ async function sendLibrary(
       v: PROTOCOL,
       trackCount: tracks.length,
     } satisfies JsonMsg)
+    conn.send({ t: 'playlists', items: wire } satisfies JsonMsg)
 
     for (let i = 0; i < tracks.length; i++) {
       if (isStopped()) return
@@ -148,11 +191,12 @@ async function sendLibrary(
 
       const audio = await getAudioBlob(track.id)
       if (!audio) continue
-      const buf = new Uint8Array(await audio.arrayBuffer())
+      const totalSize = audio.size
 
       conn.send({
         t: 'track-start',
         i,
+        id: track.id,
         title: track.title,
         artist: track.artist,
         album: track.album,
@@ -160,24 +204,24 @@ async function sendLibrary(
         year: track.year,
         mimeType: track.mimeType || audio.type || 'audio/mpeg',
         fileName: track.fileName || `${track.title}.mp3`,
-        size: buf.byteLength,
+        size: totalSize,
         duration: track.duration || 0,
+        liked: Boolean(track.liked),
       } satisfies JsonMsg)
 
-      for (let offset = 0; offset < buf.byteLength; offset += CHUNK) {
+      for (let offset = 0; offset < totalSize; offset += CHUNK) {
         if (isStopped()) return
-        const end = Math.min(offset + CHUNK, buf.byteLength)
-        const slice = buf.subarray(offset, end)
+        const end = Math.min(offset + CHUNK, totalSize)
+        const part = audio.slice(offset, end)
+        const ab = await part.arrayBuffer()
         conn.send({
           t: 'chunk-info',
           i,
           offset,
-          total: buf.byteLength,
+          total: totalSize,
         } satisfies JsonMsg)
-        // Copia para ArrayBuffer “limpio”
-        const copy = slice.slice().buffer
-        conn.send(copy)
-        await new Promise((r) => setTimeout(r, 0))
+        conn.send(ab)
+        await new Promise((r) => setTimeout(r, totalSize > 80_000_000 ? 2 : 0))
       }
 
       conn.send({ t: 'track-end', i } satisfies JsonMsg)
@@ -185,7 +229,10 @@ async function sendLibrary(
 
     conn.send({ t: 'done' } satisfies JsonMsg)
     handlers.onProgress(tracks.length, tracks.length, '')
-    handlers.onStatus('Envío terminado')
+    handlers.onStatus(
+      `Envío terminado · ${tracks.length} canciones` +
+        (wire.length ? ` · ${wire.length} playlists` : ''),
+    )
     handlers.onFinished()
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'Error al enviar'
@@ -232,6 +279,7 @@ export type ClientHandlers = {
   onFinished: (
     imported: number,
     visibleFiles: { fileName: string; blob: Blob }[],
+    playlists?: number,
   ) => void
 }
 
@@ -249,7 +297,7 @@ export async function startWifiClient(
     throw new Error('El código debe tener 6 dígitos')
   }
 
-  const peer = new Peer({ debug: 0 })
+  const peer = new Peer(peerOptions())
   let stopped = false
   let conn: DataConnection | null = null
 
@@ -270,14 +318,25 @@ export async function startWifiClient(
   await new Promise<void>((resolve, reject) => {
     peer.on('open', () => resolve())
     peer.on('error', (err) => reject(err))
-    window.setTimeout(() => reject(new Error('No se pudo iniciar la conexión')), 15000)
+    window.setTimeout(
+      () => reject(new Error('No se pudo iniciar PeerJS. Revisa la conexión a internet.')),
+      20000,
+    )
   })
 
   handlers.onStatus('Conectando con el PC…')
   conn = peer.connect(peerIdFromCode(clean), { reliable: true })
 
   await new Promise<void>((resolve, reject) => {
-    const timer = window.setTimeout(() => reject(new Error('No hay respuesta del PC. ¿Código correcto y misma Wi‑Fi?')), 20000)
+    const timer = window.setTimeout(
+      () =>
+        reject(
+          new Error(
+            'No hay respuesta del PC. Comprueba: código correcto, misma Wi‑Fi, y en el PC el modo “Compartir por código” activo.',
+          ),
+        ),
+      45000,
+    )
     conn!.on('open', () => {
       window.clearTimeout(timer)
       resolve()
@@ -294,7 +353,6 @@ export async function startWifiClient(
   }
 
   handlers.onStatus('Conectado. Recibiendo…')
-  // Reenviar ready hasta que el PC responda con hello (evita carrera de listeners)
   const readyPulse = window.setInterval(() => {
     try {
       conn?.send({ t: 'ready' } satisfies JsonMsg)
@@ -321,6 +379,7 @@ async function receiveLibrary(
 ) {
   let expected = 0
   let imported = 0
+  let playlistsIn = 0
   const visibleFiles: { fileName: string; blob: Blob }[] = []
   let current: {
     meta: Extract<JsonMsg, { t: 'track-start' }>
@@ -352,9 +411,14 @@ async function receiveLibrary(
     while (!isStopped()) {
       const data = await nextData()
 
-      if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+      if (data instanceof ArrayBuffer || data instanceof Uint8Array || (typeof Blob !== 'undefined' && data instanceof Blob)) {
         if (!current) continue
-        const bytes = data instanceof Uint8Array ? data : new Uint8Array(data)
+        const bytes =
+          data instanceof Uint8Array
+            ? data
+            : data instanceof Blob
+              ? new Uint8Array(await data.arrayBuffer())
+              : new Uint8Array(data)
         current.parts.push(bytes)
         current.received += bytes.byteLength
         continue
@@ -369,12 +433,36 @@ async function receiveLibrary(
 
       if (data.t === 'hello') {
         onHello?.()
-        if (data.v !== PROTOCOL) {
-          handlers.onError('Versión de transferencia incompatible. Actualiza MyVibe en ambos.')
+        if (data.v < 1 || data.v > PROTOCOL) {
+          handlers.onError(
+            'Versión incompatible. En el PC abre MyVibe con el código nuevo (no la web antigua de Vercel).',
+          )
           return
         }
         expected = data.trackCount
         handlers.onStatus(`Recibiendo ${expected} canciones…`)
+        continue
+      }
+
+      if (data.t === 'playlists') {
+        const now = Date.now()
+        for (const item of data.items) {
+          const row: Playlist = {
+            id: item.id,
+            name: item.name || 'Playlist',
+            description: item.description || '',
+            trackIds: item.trackIds || [],
+            hasCover: false,
+            themeColor: item.themeColor,
+            createdAt: item.createdAt || now,
+            updatedAt: item.updatedAt || now,
+          }
+          await db.playlists.put(row)
+          playlistsIn += 1
+        }
+        if (playlistsIn) {
+          handlers.onStatus(`Playlists: ${playlistsIn}. Descargando audio…`)
+        }
         continue
       }
 
@@ -385,7 +473,6 @@ async function receiveLibrary(
       }
 
       if (data.t === 'chunk-info') {
-        // informativo; el binario llega justo después
         continue
       }
 
@@ -401,6 +488,11 @@ async function receiveLibrary(
         }
         current = null
 
+        if (offset < total * 0.98) {
+          console.warn('Pista incompleta', meta.title, offset, total)
+          continue
+        }
+
         try {
           const blob = new Blob(
             [merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)],
@@ -408,15 +500,19 @@ async function receiveLibrary(
               type: meta.mimeType || 'audio/mpeg',
             },
           )
-          const existing = (await db.tracks.toArray()).find((t) =>
-            tracksLookSame(t, {
-              title: meta.title,
-              artist: meta.artist || '',
-              duration: meta.duration || 0,
-              fileName: meta.fileName || '',
-            }),
-          )
-          const id = existing?.id ?? createId()
+          const preferredId = meta.id || ''
+          const existingById = preferredId ? await db.tracks.get(preferredId) : undefined
+          const existing =
+            existingById ??
+            (await db.tracks.toArray()).find((t) =>
+              tracksLookSame(t, {
+                title: meta.title,
+                artist: meta.artist || '',
+                duration: meta.duration || 0,
+                fileName: meta.fileName || '',
+              }),
+            )
+          const id = preferredId || existing?.id || createId()
           await saveAudioBlob(id, blob)
           const track: Track = {
             id,
@@ -429,12 +525,15 @@ async function receiveLibrary(
             mimeType: meta.mimeType || 'audio/mpeg',
             fileName: meta.fileName || `${meta.title}.mp3`,
             hasCover: existing?.hasCover ?? false,
-            liked: existing?.liked ?? false,
+            liked: meta.liked ?? existing?.liked ?? false,
             playCount: existing?.playCount ?? 0,
             lastPlayedAt: existing?.lastPlayedAt ?? null,
             createdAt: existing?.createdAt ?? Date.now(),
             enriched: existing?.enriched ?? false,
             hasLocalAudio: true,
+            origin: 'local',
+            audioBytes: blob.size,
+            audioUpdatedAt: Date.now(),
           }
           await db.tracks.put(track)
           visibleFiles.push({
@@ -452,8 +551,11 @@ async function receiveLibrary(
       }
 
       if (data.t === 'done') {
-        handlers.onStatus(`Listo: ${imported} canciones importadas`)
-        handlers.onFinished(imported, visibleFiles)
+        handlers.onStatus(
+          `Listo: ${imported} canciones` +
+            (playlistsIn ? ` · ${playlistsIn} playlists` : ''),
+        )
+        handlers.onFinished(imported, visibleFiles, playlistsIn)
         return
       }
     }
