@@ -63,7 +63,7 @@ export default defineConfig({
       },
       workbox: {
         // Sube esto cuando la UI no se actualice en el móvil (caché PWA)
-        cacheId: 'myvibe-wifi-ios-safe-20260816',
+        cacheId: 'myvibe-wifi-light-then-heavy-20260816',
         globPatterns: ['**/*.{js,css,html,ico,svg,woff2,png}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,

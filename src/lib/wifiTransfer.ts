@@ -15,24 +15,19 @@ import type { OpfsAppendWriter } from './opfs'
 import type { Playlist, Track } from '../types'
 
 /**
- * v5: lotes + reconexión + streaming a disco.
- * iOS: lotes muy pequeños y sin releer MP3 a RAM (evita matar la app).
+ * v6: primero todas las canciones “normales” de golpe (con portada);
+ * las pesadas (> HEAVY_BYTES) van después, de una en una con reconexión.
  */
-const PROTOCOL = 5
+const PROTOCOL = 6
 const CHUNK = 64 * 1024
 const PEER_PREFIX = 'mv'
 const BUFFER_HIGH = 192 * 1024
-const ACK_TIMEOUT_MS = 120_000
-/** En nativo, lotes cortos: WebRTC + base64 tumba el proceso ~40 pistas. */
-const BATCH_SIZE_NATIVE = 5
-const BATCH_SIZE_WEB = 12
-const RECONNECT_PAUSE_MS = 2500
-const TRACK_PAUSE_NATIVE_MS = 250
-const TRACK_PAUSE_WEB_MS = 40
-
-function batchSize(): number {
-  return isNativeApp() ? BATCH_SIZE_NATIVE : BATCH_SIZE_WEB
-}
+const ACK_TIMEOUT_MS = 180_000
+/** Por encima de esto = pesada → solo de 1 en 1. */
+const HEAVY_BYTES = 12 * 1024 * 1024
+const RECONNECT_PAUSE_MS = 2000
+const TRACK_PAUSE_NATIVE_MS = 200
+const TRACK_PAUSE_WEB_MS = 30
 
 export function makeTransferCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000))
@@ -68,7 +63,7 @@ type PlaylistWire = {
 
 type JsonMsg =
   | { t: 'hello'; v: number; trackCount: number; from?: string }
-  | { t: 'plan'; trackCount: number; skipped?: number; batch?: number }
+  | { t: 'plan'; trackCount: number; skipped?: number; batch?: number; phase?: 'normal' | 'heavy' }
   | { t: 'playlists'; items: PlaylistWire[] }
   | { t: 'have'; ids: string[] }
   | { t: 'caps'; covers: boolean }
@@ -353,18 +348,17 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
           )
 
           let have = new Set<string>()
-          let sendCovers = true
           try {
             const haveMsg = await inbox.waitJson('have', 45000)
             if (haveMsg.t === 'have') have = new Set(haveMsg.ids)
           } catch {
             /* enviar todo lo que quede */
           }
+          // caps opcional (clientes antiguos); siempre preferimos portadas
           try {
-            const caps = await inbox.waitJson('caps', 8000)
-            if (caps.t === 'caps') sendCovers = caps.covers
+            await inbox.waitJson('caps', 3000)
           } catch {
-            sendCovers = true
+            /* ignore */
           }
 
           const pending = allWithAudio.filter((t) => !have.has(t.id))
@@ -379,7 +373,10 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
             return
           }
 
-          const batch = pending.slice(0, batchSize())
+          const { light, heavy } = await splitByWeight(pending)
+          const phase: 'normal' | 'heavy' = light.length ? 'normal' : 'heavy'
+          const batch = light.length ? light : heavy.slice(0, 1)
+
           await sendPayload(
             conn,
             {
@@ -387,6 +384,7 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
               trackCount: pending.length,
               skipped: already,
               batch: batch.length,
+              phase,
             },
             () => stopped,
           )
@@ -396,10 +394,18 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
             sentPlaylists = true
           }
 
-          handlers.onStatus(
-            `Lote de ${batch.length} · quedan ${pending.length} pendientes` +
-              (already ? ` (${already} ya OK)` : ''),
-          )
+          if (phase === 'normal') {
+            handlers.onStatus(
+              `Enviando ${batch.length} canciones normales` +
+                (heavy.length ? ` · luego ${heavy.length} pesadas 1 a 1` : '') +
+                (already ? ` · ${already} ya OK` : ''),
+            )
+          } else {
+            const leftHeavy = heavy.length
+            handlers.onStatus(
+              `Canción pesada (${Math.round(((await getAudioBlob(batch[0]!.id))?.size ?? 0) / 1e6)} MB) · quedan ${leftHeavy}`,
+            )
+          }
 
           await sendTrackBatch({
             conn,
@@ -407,7 +413,7 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
             batch,
             pendingTotal: pending.length,
             alreadyDone: already,
-            sendCovers,
+            sendCovers: true,
             handlers,
             isStopped: () => stopped,
           })
@@ -446,7 +452,9 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
           }
 
           handlers.onStatus(
-            `Lote OK (${globalDone}/${allWithAudio.length}). Esperando reconexión del móvil…`,
+            phase === 'normal'
+              ? `Normales listas (${globalDone}/${allWithAudio.length}). Siguen las pesadas, una a una…`
+              : `Pesada OK (${globalDone}/${allWithAudio.length}). Siguiente…`,
           )
           inbox.dispose()
           try {
@@ -503,6 +511,19 @@ async function listTracksWithAudio(): Promise<Track[]> {
     if (await getAudioBlob(t.id)) out.push(t)
   }
   return out
+}
+
+/** Separa canciones ligeras (van juntas) y pesadas (van 1 a 1). */
+async function splitByWeight(tracks: Track[]): Promise<{ light: Track[]; heavy: Track[] }> {
+  const light: Track[] = []
+  const heavy: Track[] = []
+  for (const t of tracks) {
+    const blob = await getAudioBlob(t.id)
+    if (!blob) continue
+    if (blob.size > HEAVY_BYTES) heavy.push(t)
+    else light.push(t)
+  }
+  return { light, heavy }
 }
 
 async function buildPlaylistWire(tracks: Track[]): Promise<PlaylistWire[]> {
@@ -705,7 +726,9 @@ export async function startWifiClient(
       while (!stopped) {
         round += 1
         handlers.onStatus(
-          round === 1 ? 'Conectando con el PC…' : `Reconectando (lote ${round})…`,
+          round === 1
+            ? 'Conectando con el PC…'
+            : `Reconectando para la siguiente (pesada o resto)…`,
         )
         const result = await runClientRound(clean, handlers, () => stopped, (s) => {
           currentStop = s
@@ -850,8 +873,7 @@ async function receiveLibraryRound(
     received: number
   } | null = null
   let pendingAck: { id: string; i: number } | null = null
-  /** En nativo no enviamos portadas en el mismo lote (base64 extra tumba la app). */
-  const skipCovers = isNativeApp()
+  const skipCovers = false
 
   const queue: unknown[] = []
   let wake: (() => void) | null = null
@@ -981,19 +1003,34 @@ async function receiveLibraryRound(
         handlers.onStatus(`Biblioteca PC: ${expected}. Comprobando qué falta…`)
         const haveIds = await listLocalAudioIds()
         conn.send({ t: 'have', ids: haveIds } satisfies JsonMsg)
-        conn.send({ t: 'caps', covers: !isNativeApp() } satisfies JsonMsg)
+        conn.send({ t: 'caps', covers: true } satisfies JsonMsg)
         continue
       }
 
       if (data.t === 'plan') {
         expected = data.trackCount
         skippedBase = data.skipped ?? 0
-        handlers.onStatus(
-          data.batch
-            ? `Este lote: ${data.batch} · pendientes ${expected}` +
-                (data.skipped ? ` · ya OK ${data.skipped}` : '')
-            : `Pendientes: ${expected}`,
-        )
+        if (data.phase === 'heavy') {
+          handlers.onStatus(
+            `Canción pesada (1 a 1)` +
+              (data.batch ? ` · este envío: ${data.batch}` : '') +
+              ` · pendientes ${expected}`,
+          )
+        } else if (data.phase === 'normal') {
+          handlers.onStatus(
+            `Canciones normales de golpe` +
+              (data.batch ? `: ${data.batch}` : '') +
+              ` · pendientes totales ${expected}` +
+              (data.skipped ? ` · ya OK ${data.skipped}` : ''),
+          )
+        } else {
+          handlers.onStatus(
+            data.batch
+              ? `Este lote: ${data.batch} · pendientes ${expected}` +
+                  (data.skipped ? ` · ya OK ${data.skipped}` : '')
+              : `Pendientes: ${expected}`,
+          )
+        }
         emitProgress(
           handlers.onProgress,
           skippedBase,
