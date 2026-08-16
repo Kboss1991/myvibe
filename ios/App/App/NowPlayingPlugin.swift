@@ -1,11 +1,13 @@
 import Foundation
 import MediaPlayer
 import UIKit
+import AVFoundation
 import Capacitor
 
 /**
- * Publica metadatos en MPNowPlayingInfoCenter para que iOS muestre
- * portada + ondas en la Dynamic Island / bloqueo / Centro de Control.
+ * Publica metadatos en MPNowPlayingInfoCenter.
+ * WKWebView pisa Now Playing al reproducir HTML5; por eso reafirmamos
+ * la ficha en un timer mientras suena (Safari PWA no tiene este problema).
  */
 @objc(NowPlayingPlugin)
 public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
@@ -20,14 +22,18 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private var nowPlayingInfo: [String: Any] = [:]
     private var commandsWired = false
+    private var reassertTimer: Timer?
+    private var isPlaying = false
 
     public override func load() {
         super.load()
         wireRemoteCommandsIfNeeded()
+        print("[NowPlaying] plugin loaded")
     }
 
     @objc func setMetadata(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            self.activateAudioSession()
             var info = self.nowPlayingInfo
 
             if let title = call.getString("title") {
@@ -39,8 +45,7 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             if let album = call.getString("album") {
                 info[MPMediaItemPropertyAlbumTitle] = album
             }
-
-            // Mantener rate por defecto para que iOS trate la sesión como media activa
+            info[MPNowPlayingInfoPropertyMediaType] = NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue)
             if info[MPNowPlayingInfoPropertyDefaultPlaybackRate] == nil {
                 info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
             }
@@ -68,16 +73,24 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         DispatchQueue.main.async {
+            self.activateAudioSession()
             var info = self.nowPlayingInfo
             switch state {
             case "playing":
+                self.isPlaying = true
                 info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+                self.startReassertTimer()
             case "paused":
+                self.isPlaying = false
                 info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+                self.stopReassertTimer()
             default:
+                self.isPlaying = false
                 info[MPNowPlayingInfoPropertyPlaybackRate] = 0.0
+                self.stopReassertTimer()
             }
             info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+            info[MPNowPlayingInfoPropertyMediaType] = NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue)
             self.apply(info)
             call.resolve()
         }
@@ -97,8 +110,13 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             }
             if let rate = call.getDouble("playbackRate") {
                 info[MPNowPlayingInfoPropertyPlaybackRate] = rate
+                self.isPlaying = rate > 0.01
+                if self.isPlaying {
+                    self.startReassertTimer()
+                }
             }
             info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
+            info[MPNowPlayingInfoPropertyMediaType] = NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue)
             self.apply(info)
             call.resolve()
         }
@@ -106,6 +124,8 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func clear(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
+            self.isPlaying = false
+            self.stopReassertTimer()
             self.nowPlayingInfo = [:]
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
             call.resolve()
@@ -114,11 +134,45 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func apply(_ info: [String: Any]) {
         nowPlayingInfo = info
+        // Forzar escritura completa: WKWebView a veces deja un diccionario vacío
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        DispatchQueue.main.async {
-            UIApplication.shared.beginReceivingRemoteControlEvents()
-        }
+        UIApplication.shared.beginReceivingRemoteControlEvents()
         wireRemoteCommandsIfNeeded()
+    }
+
+    private func startReassertTimer() {
+        guard reassertTimer == nil else { return }
+        // WKWebView pisa Now Playing tras cada play(); reescribir ~2×/s
+        let timer = Timer(timeInterval: 0.45, repeats: true) { [weak self] _ in
+            guard let self, self.isPlaying, !self.nowPlayingInfo.isEmpty else { return }
+            var info = self.nowPlayingInfo
+            // Avanzar posición estimada entre updates JS
+            if let elapsed = info[MPNowPlayingInfoPropertyElapsedPlaybackTime] as? Double,
+               let rate = info[MPNowPlayingInfoPropertyPlaybackRate] as? Double,
+               rate > 0 {
+                info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = elapsed + 0.45 * rate
+                self.nowPlayingInfo = info
+            }
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        reassertTimer = timer
+    }
+
+    private func stopReassertTimer() {
+        reassertTimer?.invalidate()
+        reassertTimer = nil
+    }
+
+    private func activateAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [])
+            try session.setActive(true)
+        } catch {
+            print("[NowPlaying] AVAudioSession error: \(error)")
+        }
     }
 
     private func wireRemoteCommandsIfNeeded() {
@@ -171,7 +225,6 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private static func loadImage(from src: String, completion: @escaping (UIImage?) -> Void) {
-        // data:image/jpeg;base64,... (preferido: blob: no llega al nativo)
         if src.hasPrefix("data:"), let comma = src.firstIndex(of: ",") {
             let meta = String(src[..<comma])
             let payload = String(src[src.index(after: comma)...])
