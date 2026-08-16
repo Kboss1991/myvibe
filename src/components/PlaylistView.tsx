@@ -404,80 +404,11 @@ export function PlaylistView({
               type="button"
               className="sp-icon"
               aria-label="Más opciones"
+              aria-expanded={moreOpen}
               onClick={() => setMoreOpen((v) => !v)}
             >
               <IconMore size={20} />
             </button>
-            {moreOpen && (
-              <div className="sp-menu">
-                {onEditInfo && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditName(title)
-                      setEditDesc(description)
-                      setEditTheme(
-                        normalizeThemeColor(themeColor) || DEFAULT_PLAYLIST_THEME,
-                      )
-                      setEditOpen(true)
-                      setMoreOpen(false)
-                    }}
-                  >
-                    <IconEdit size={18} /> Nombre e información
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={!tracks.length}
-                  onClick={() => {
-                    exportM3u()
-                    setMoreOpen(false)
-                  }}
-                >
-                  <IconDownload size={18} /> Exportar M3U
-                </button>
-                {onShare && (
-                  <button
-                    type="button"
-                    disabled={!tracks.length || sharing}
-                    onClick={() => {
-                      setMoreOpen(false)
-                      setSharing(true)
-                      void Promise.resolve(onShare())
-                        .catch((e) => {
-                          if (e instanceof DOMException && e.name === 'AbortError') return
-                          alert(e instanceof Error ? e.message : 'No se pudo compartir')
-                        })
-                        .finally(() => setSharing(false))
-                    }}
-                  >
-                    <IconShare size={18} /> Compartir
-                  </button>
-                )}
-                <button
-                  type="button"
-                  disabled={!tracks.length}
-                  onClick={() => {
-                    tracks.forEach((t) => addToQueue(t.id))
-                    setMoreOpen(false)
-                  }}
-                >
-                  <IconQueue size={18} /> Añadir a la cola
-                </button>
-                {onDelete && (
-                  <button
-                    type="button"
-                    className="danger"
-                    onClick={() => {
-                      setMoreOpen(false)
-                      onDelete()
-                    }}
-                  >
-                    <IconTrash size={18} /> Eliminar lista
-                  </button>
-                )}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -726,12 +657,87 @@ export function PlaylistView({
       )}
 
       {moreOpen && (
-        <button
-          type="button"
-          className="sp-dismiss"
-          aria-label="Cerrar menú"
-          onClick={() => setMoreOpen(false)}
-        />
+        <>
+          <button
+            type="button"
+            className="sp-dismiss"
+            aria-label="Cerrar menú"
+            onClick={() => setMoreOpen(false)}
+          />
+          <div className="sp-menu sp-menu--sheet" role="menu">
+            {onEditInfo && (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setEditName(title)
+                  setEditDesc(description)
+                  setEditTheme(
+                    normalizeThemeColor(themeColor) || DEFAULT_PLAYLIST_THEME,
+                  )
+                  setEditOpen(true)
+                  setMoreOpen(false)
+                }}
+              >
+                <IconEdit size={18} /> Nombre e información
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!tracks.length}
+              onClick={() => {
+                exportM3u()
+                setMoreOpen(false)
+              }}
+            >
+              <IconDownload size={18} /> Exportar M3U
+            </button>
+            {onShare && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!tracks.length || sharing}
+                onClick={() => {
+                  setMoreOpen(false)
+                  setSharing(true)
+                  void Promise.resolve(onShare())
+                    .catch((e) => {
+                      if (e instanceof DOMException && e.name === 'AbortError') return
+                      alert(e instanceof Error ? e.message : 'No se pudo compartir')
+                    })
+                    .finally(() => setSharing(false))
+                }}
+              >
+                <IconShare size={18} /> Compartir
+              </button>
+            )}
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!tracks.length}
+              onClick={() => {
+                tracks.forEach((t) => addToQueue(t.id))
+                setMoreOpen(false)
+              }}
+            >
+              <IconQueue size={18} /> Añadir a la cola
+            </button>
+            {onDelete && (
+              <button
+                type="button"
+                role="menuitem"
+                className="danger"
+                onClick={() => {
+                  setMoreOpen(false)
+                  onDelete()
+                }}
+              >
+                <IconTrash size={18} /> Eliminar lista
+              </button>
+            )}
+          </div>
+        </>
       )}
 
       {cropSource && onPickCover && (
