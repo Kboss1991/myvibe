@@ -8,12 +8,15 @@ export type NowPlayingRemoteAction =
   | 'nexttrack'
   | 'previoustrack'
   | 'seekto'
+  | 'seekforward'
+  | 'seekbackward'
   | 'like'
   | 'bookmark'
 
 export type NowPlayingRemoteEvent = {
   action: NowPlayingRemoteAction
   seekTime?: number
+  seekOffset?: number
 }
 
 type NowPlayingPluginApi = {
@@ -30,6 +33,7 @@ type NowPlayingPluginApi = {
     playbackRate?: number
   }): Promise<void>
   setFeedbackState(options: { liked: boolean }): Promise<void>
+  setSeekSkipEnabled(options: { enabled: boolean; seconds?: number }): Promise<void>
   clear(): Promise<void>
   addListener(
     eventName: 'remote',
@@ -122,9 +126,23 @@ export async function nativeSetLikeState(liked: boolean): Promise<void> {
   }
 }
 
+/** Podcasts: ±N s y sin next/prev. Música/radio: al revés. */
+export async function nativeSetSeekSkipEnabled(
+  enabled: boolean,
+  seconds = 10,
+): Promise<void> {
+  if (!isNativeNowPlayingAvailable()) return
+  try {
+    await NowPlaying.setSeekSkipEnabled({ enabled, seconds })
+  } catch (err) {
+    console.warn('[NowPlaying] setSeekSkipEnabled failed', err)
+  }
+}
+
 export async function nativeClearNowPlaying(): Promise<void> {
   if (!isNativeNowPlayingAvailable()) return
   try {
+    await nativeSetSeekSkipEnabled(false)
     await NowPlaying.clear()
   } catch (err) {
     console.warn('[NowPlaying] clear failed', err)
@@ -140,6 +158,8 @@ export async function bindNativeRemoteControls(handlers: {
   nexttrack?: () => void
   previoustrack?: () => void
   seekto?: (time: number) => void
+  seekForward?: (seconds: number) => void
+  seekBackward?: (seconds: number) => void
   like?: () => void
   bookmark?: () => void
 }): Promise<void> {
@@ -168,6 +188,22 @@ export async function bindNativeRemoteControls(handlers: {
         case 'seekto':
           if (typeof event.seekTime === 'number') handlers.seekto?.(event.seekTime)
           break
+        case 'seekforward': {
+          const sec =
+            typeof event.seekOffset === 'number' && event.seekOffset > 0
+              ? event.seekOffset
+              : 10
+          handlers.seekForward?.(sec)
+          break
+        }
+        case 'seekbackward': {
+          const sec =
+            typeof event.seekOffset === 'number' && event.seekOffset > 0
+              ? event.seekOffset
+              : 10
+          handlers.seekBackward?.(sec)
+          break
+        }
         case 'like':
           handlers.like?.()
           break

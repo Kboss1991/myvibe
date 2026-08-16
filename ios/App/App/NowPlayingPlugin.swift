@@ -18,6 +18,7 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPlaybackState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPositionState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setFeedbackState", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setSeekSkipEnabled", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clear", returnType: CAPPluginReturnPromise),
     ]
 
@@ -25,6 +26,9 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
     private var commandsWired = false
     private var reassertTimer: Timer?
     private var isPlaying = false
+    /// Podcasts: ±10 s y sin next/prev. Música: al revés.
+    private var seekSkipEnabled = false
+    private var seekSkipSeconds: Double = 10
 
     public override func load() {
         super.load()
@@ -150,6 +154,19 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    /** Podcasts: activa ±N s y desactiva next/prev. Música: lo contrario. */
+    @objc func setSeekSkipEnabled(_ call: CAPPluginCall) {
+        let enabled = call.getBool("enabled") ?? false
+        let seconds = max(1, call.getDouble("seconds") ?? 10)
+        DispatchQueue.main.async {
+            self.seekSkipEnabled = enabled
+            self.seekSkipSeconds = seconds
+            self.wireRemoteCommandsIfNeeded()
+            self.applyTransportMode()
+            call.resolve()
+        }
+    }
+
     private func apply(_ info: [String: Any]) {
         nowPlayingInfo = info
         // Forzar escritura completa: WKWebView a veces deja un diccionario vacío
@@ -230,8 +247,25 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             return .success
         }
 
-        center.skipForwardCommand.isEnabled = false
-        center.skipBackwardCommand.isEnabled = false
+        center.skipForwardCommand.addTarget { [weak self] event in
+            guard let self else { return .commandFailed }
+            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.seekSkipSeconds
+            self.notifyListeners("remote", data: [
+                "action": "seekforward",
+                "seekOffset": interval,
+            ])
+            return .success
+        }
+        center.skipBackwardCommand.addTarget { [weak self] event in
+            guard let self else { return .commandFailed }
+            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.seekSkipSeconds
+            self.notifyListeners("remote", data: [
+                "action": "seekbackward",
+                "seekOffset": interval,
+            ])
+            return .success
+        }
+        applyTransportMode()
 
         // CarPlay / bloqueo: Me gusta
         center.likeCommand.isEnabled = true
@@ -250,6 +284,24 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         center.bookmarkCommand.addTarget { [weak self] _ in
             self?.notifyListeners("remote", data: ["action": "bookmark"])
             return .success
+        }
+    }
+
+    private func applyTransportMode() {
+        let center = MPRemoteCommandCenter.shared()
+        let interval = NSNumber(value: seekSkipSeconds)
+        center.skipForwardCommand.preferredIntervals = [interval]
+        center.skipBackwardCommand.preferredIntervals = [interval]
+        if seekSkipEnabled {
+            center.skipForwardCommand.isEnabled = true
+            center.skipBackwardCommand.isEnabled = true
+            center.nextTrackCommand.isEnabled = false
+            center.previousTrackCommand.isEnabled = false
+        } else {
+            center.skipForwardCommand.isEnabled = false
+            center.skipBackwardCommand.isEnabled = false
+            center.nextTrackCommand.isEnabled = true
+            center.previousTrackCommand.isEnabled = true
         }
     }
 

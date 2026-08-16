@@ -392,70 +392,79 @@ export function PlayerBar() {
       <div className="player-bar__center">
         <div className="player-bar__controls">
           {podcastEp ? (
-            <button
-              type="button"
-              className="icon-btn player-bar__ctrl"
-              aria-label="Retroceder 15 segundos"
-              onClick={() => skipBack(15)}
-            >
-              <IconSkipBack15 size={18} />
-            </button>
+            <>
+              <button
+                type="button"
+                className="icon-btn player-bar__skip"
+                aria-label="Retroceder 10 segundos"
+                onClick={() => skipBack(10)}
+              >
+                <IconSkipBack15 size={20} />
+              </button>
+              <button
+                type="button"
+                className="player-bar__play"
+                aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+                onClick={() => void toggle()}
+              >
+                {isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
+              </button>
+              <button
+                type="button"
+                className="icon-btn player-bar__skip"
+                aria-label="Avanzar 10 segundos"
+                onClick={() => skipForward(10)}
+              >
+                <IconSkipForward15 size={20} />
+              </button>
+            </>
           ) : (
-            <button
-              type="button"
-              className={`icon-btn player-bar__ctrl ${shuffle ? 'is-on' : ''}`}
-              aria-label={shuffle ? 'Desactivar orden aleatorio' : 'Activar orden aleatorio'}
-              aria-pressed={shuffle}
-              title={shuffle ? 'Aleatorio: sí' : 'Aleatorio: no'}
-              onClick={() => toggleShuffle()}
-            >
-              <IconShuffle size={16} />
-            </button>
-          )}
-          <button
-            type="button"
-            className="icon-btn player-bar__skip"
-            aria-label="Anterior"
-            onClick={() => void previous()}
-          >
-            <IconSkipBack size={20} />
-          </button>
-          <button
-            type="button"
-            className="player-bar__play"
-            aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
-            onClick={() => void toggle()}
-          >
-            {isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
-          </button>
-          <button
-            type="button"
-            className="icon-btn player-bar__skip"
-            aria-label="Siguiente"
-            onClick={() => void next()}
-          >
-            <IconSkipForward size={20} />
-          </button>
-          {podcastEp ? (
-            <button
-              type="button"
-              className="icon-btn player-bar__ctrl"
-              aria-label="Avanzar 15 segundos"
-              onClick={() => skipForward(15)}
-            >
-              <IconSkipForward15 size={18} />
-            </button>
-          ) : (
-            <button
-              type="button"
-              className={`icon-btn player-bar__ctrl ${repeat !== 'off' ? 'is-on' : ''}`}
-              aria-label={repeatAriaLabel(repeat)}
-              aria-pressed={repeat !== 'off'}
-              title={repeatAriaLabel(repeat)}
-              onClick={() => cycleRepeat()}
-            >
-              {repeat === 'one' ? <IconRepeatOne size={16} /> : <IconRepeat size={16} />}
-            </button>
+            <>
+              <button
+                type="button"
+                className={`icon-btn player-bar__ctrl ${shuffle ? 'is-on' : ''}`}
+                aria-label={shuffle ? 'Desactivar orden aleatorio' : 'Activar orden aleatorio'}
+                aria-pressed={shuffle}
+                title={shuffle ? 'Aleatorio: sí' : 'Aleatorio: no'}
+                onClick={() => toggleShuffle()}
+              >
+                <IconShuffle size={16} />
+              </button>
+              <button
+                type="button"
+                className="icon-btn player-bar__skip"
+                aria-label="Anterior"
+                onClick={() => void previous()}
+              >
+                <IconSkipBack size={20} />
+              </button>
+              <button
+                type="button"
+                className="player-bar__play"
+                aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+                onClick={() => void toggle()}
+              >
+                {isPlaying ? <IconPause size={18} /> : <IconPlay size={18} />}
+              </button>
+              <button
+                type="button"
+                className="icon-btn player-bar__skip"
+                aria-label="Siguiente"
+                onClick={() => void next()}
+              >
+                <IconSkipForward size={20} />
+              </button>
+              <button
+                type="button"
+                className={`icon-btn player-bar__ctrl ${repeat !== 'off' ? 'is-on' : ''}`}
+                aria-label={repeatAriaLabel(repeat)}
+                aria-pressed={repeat !== 'off'}
+                title={repeatAriaLabel(repeat)}
+                onClick={() => cycleRepeat()}
+              >
+                {repeat === 'one' ? <IconRepeatOne size={16} /> : <IconRepeat size={16} />}
+              </button>
+            </>
           )}
         </div>
 
@@ -739,13 +748,10 @@ export function NowPlaying() {
           <button
             type="button"
             className="icon-btn"
-            aria-label="Retroceder 15 segundos"
-            onClick={() => skipBack(15)}
+            aria-label="Retroceder 10 segundos"
+            onClick={() => skipBack(10)}
           >
-            <IconSkipBack15 size={24} />
-          </button>
-          <button type="button" className="icon-btn" aria-label="Anterior" onClick={() => void previous()}>
-            <IconSkipBack size={28} />
+            <IconSkipBack15 size={28} />
           </button>
           <button
             type="button"
@@ -755,16 +761,13 @@ export function NowPlaying() {
           >
             {isPlaying ? <IconPause size={32} /> : <IconPlay size={32} />}
           </button>
-          <button type="button" className="icon-btn" aria-label="Siguiente" onClick={() => void next()}>
-            <IconSkipForward size={28} />
-          </button>
           <button
             type="button"
             className="icon-btn"
-            aria-label="Avanzar 15 segundos"
-            onClick={() => skipForward(15)}
+            aria-label="Avanzar 10 segundos"
+            onClick={() => skipForward(10)}
           >
-            <IconSkipForward15 size={24} />
+            <IconSkipForward15 size={28} />
           </button>
         </div>
       </div>

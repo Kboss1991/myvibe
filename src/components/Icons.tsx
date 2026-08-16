@@ -318,7 +318,7 @@ export function IconPodcast(p: IconProps) {
   )
 }
 
-/** Retroceso −15 s (podcasts). */
+/** Retroceso −10 s (podcasts). */
 export function IconSkipBack15(p: IconProps) {
   return (
     <svg {...base(p)}>
@@ -334,13 +334,13 @@ export function IconSkipBack15(p: IconProps) {
         fontWeight="700"
         fontFamily="system-ui, sans-serif"
       >
-        15
+        10
       </text>
     </svg>
   )
 }
 
-/** Avance +15 s (podcasts). */
+/** Avance +10 s (podcasts). */
 export function IconSkipForward15(p: IconProps) {
   return (
     <svg {...base(p)}>
@@ -356,7 +356,7 @@ export function IconSkipForward15(p: IconProps) {
         fontWeight="700"
         fontFamily="system-ui, sans-serif"
       >
-        15
+        10
       </text>
     </svg>
   )

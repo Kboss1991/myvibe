@@ -6,6 +6,7 @@ import {
   nativeSetMetadata,
   nativeSetPlaybackState,
   nativeSetPositionState,
+  nativeSetSeekSkipEnabled,
 } from './nativeNowPlaying'
 
 export function formatTime(seconds: number): string {
@@ -261,7 +262,10 @@ function bindMediaHandlers(handlers: {
   nexttrack?: () => void
   seekto?: (time: number) => void
   getPosition?: () => number
+  /** Podcasts: ±10s en lugar de anterior/siguiente episodio. */
   seekSkip?: boolean
+  seekBackward?: (seconds: number) => void
+  seekForward?: (seconds: number) => void
 }) {
   // Biblioteca tiene el control: no pisar next/prev
   if (libraryOwnsMediaSession) return
@@ -281,30 +285,58 @@ function bindMediaHandlers(handlers: {
       /* ignore */
     }
   })
-  // NUNCA poner next/prev a null (iOS muestra ±10s). Solo actualizar si hay handler.
-  if (handlers.previoustrack) {
-    navigator.mediaSession.setActionHandler('previoustrack', () => {
-      try {
-        handlers.previoustrack!()
-      } catch {
-        /* ignore */
-      }
-    })
-  }
-  if (handlers.nexttrack) {
-    navigator.mediaSession.setActionHandler('nexttrack', () => {
-      try {
-        handlers.nexttrack!()
-      } catch {
-        /* ignore */
-      }
-    })
-  }
 
-  // Nunca seek±: en iOS sustituyen las flechas de pista por +10s/-10s
   try {
-    navigator.mediaSession.setActionHandler('seekbackward', null)
-    navigator.mediaSession.setActionHandler('seekforward', null)
+    if (handlers.seekSkip) {
+      // Podcasts: iOS muestra ±10s cuando next/prev están a null
+      navigator.mediaSession.setActionHandler('previoustrack', null)
+      navigator.mediaSession.setActionHandler('nexttrack', null)
+      navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+        const sec =
+          typeof details.seekOffset === 'number' && details.seekOffset > 0
+            ? details.seekOffset
+            : 10
+        try {
+          handlers.seekBackward?.(sec)
+        } catch {
+          /* ignore */
+        }
+      })
+      navigator.mediaSession.setActionHandler('seekforward', (details) => {
+        const sec =
+          typeof details.seekOffset === 'number' && details.seekOffset > 0
+            ? details.seekOffset
+            : 10
+        try {
+          handlers.seekForward?.(sec)
+        } catch {
+          /* ignore */
+        }
+      })
+    } else {
+      // Música / radio: next/prev de pista; sin seek± (sustituyen las flechas en iOS)
+      if (handlers.previoustrack) {
+        navigator.mediaSession.setActionHandler('previoustrack', () => {
+          try {
+            handlers.previoustrack!()
+          } catch {
+            /* ignore */
+          }
+        })
+      }
+      if (handlers.nexttrack) {
+        navigator.mediaSession.setActionHandler('nexttrack', () => {
+          try {
+            handlers.nexttrack!()
+          } catch {
+            /* ignore */
+          }
+        })
+      }
+      navigator.mediaSession.setActionHandler('seekbackward', null)
+      navigator.mediaSession.setActionHandler('seekforward', null)
+    }
+
     if (handlers.seekto) {
       navigator.mediaSession.setActionHandler('seekto', (details) => {
         if (typeof details.seekTime === 'number') handlers.seekto?.(details.seekTime)
@@ -383,6 +415,8 @@ export async function updateMediaSession(
     seekto?: (time: number) => void
     getPosition?: () => number
     seekSkip?: boolean
+    seekBackward?: (seconds: number) => void
+    seekForward?: (seconds: number) => void
   },
   opts?: { playing?: boolean; skipArtworkUpgrade?: boolean },
 ) {
@@ -394,10 +428,13 @@ export async function updateMediaSession(
   void bindNativeRemoteControls({
     play: handlers.play,
     pause: handlers.pause,
-    nexttrack: handlers.nexttrack,
-    previoustrack: handlers.previoustrack,
+    nexttrack: handlers.seekSkip ? undefined : handlers.nexttrack,
+    previoustrack: handlers.seekSkip ? undefined : handlers.previoustrack,
     seekto: handlers.seekto,
+    seekForward: handlers.seekForward,
+    seekBackward: handlers.seekBackward,
   })
+  void nativeSetSeekSkipEnabled(Boolean(handlers.seekSkip), 10)
 
   let artwork = peekCachedLockScreenArtwork(track.id)
   if (!opts?.skipArtworkUpgrade) {
@@ -449,6 +486,7 @@ export async function updateRadioMediaSession(
     nexttrack: handlers.nexttrack,
     previoustrack: handlers.previoustrack,
   })
+  void nativeSetSeekSkipEnabled(false)
 
   publishMetadata({
     title: station.name,
