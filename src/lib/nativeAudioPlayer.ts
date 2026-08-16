@@ -168,14 +168,24 @@ export async function nativeAvPlay(opts: {
   }
 
   try {
+    // Sin artwork en play(): data-URLs grandes rompen el bridge Capacitor
     await NativeAudio.play({
       url,
       title: opts.title,
       artist: opts.artist || 'MyVibe',
       album: opts.album || 'MyVibe',
-      artwork,
       position: opts.position ?? 0,
     })
+    // Portada después, en llamada pequeña
+    if (artwork) {
+      void NativeAudio.setMetadata({
+        title: opts.title,
+        artist: opts.artist || 'MyVibe',
+        album: opts.album || 'MyVibe',
+        artwork,
+      }).catch(() => undefined)
+    }
+    console.info('[NativeAudio] AVPlayer OK', opts.title)
     return true
   } catch (err) {
     console.warn('[NativeAudio] play failed', err)

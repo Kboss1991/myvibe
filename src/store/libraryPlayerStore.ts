@@ -337,6 +337,15 @@ async function playWithPreferredEngine(
       })
       if (ok) {
         nativeAvActive = true
+        // Evitar que WKWebView robe la sesión de Now Playing
+        try {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.metadata = null
+            navigator.mediaSession.playbackState = 'none'
+          }
+        } catch {
+          /* ignore */
+        }
         useLibraryPlayerStore.setState({
           isPlaying: true,
           position,
@@ -536,6 +545,17 @@ async function publishMetadata(track: Track) {
   }
 
   if (useLibraryPlayerStore.getState().currentTrackId !== track.id) return
+
+  // AVPlayer ya publica Now Playing: no pisar con Media Session / NowPlayingPlugin
+  if (nativeAvActive) {
+    try {
+      navigator.mediaSession.metadata = null
+      navigator.mediaSession.playbackState = 'none'
+    } catch {
+      /* ignore */
+    }
+    return
+  }
 
   if ('mediaSession' in navigator) {
     try {

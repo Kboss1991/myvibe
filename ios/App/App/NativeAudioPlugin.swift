@@ -40,6 +40,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         removeObservers()
     }
 
+    private var statusObserver: NSKeyValueObservation?
+
     @objc func play(_ call: CAPPluginCall) {
         guard let urlString = call.getString("url"), !urlString.isEmpty else {
             call.reject("url required")
@@ -48,52 +50,105 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         DispatchQueue.main.async {
             self.activateAudioSession()
             guard let url = self.resolvePlayUrl(urlString) else {
-                call.reject("invalid url")
+                call.reject("invalid url: \(urlString.prefix(80))")
                 return
             }
 
+            print("[NativeAudio] play file=\(url.lastPathComponent)")
             self.removeObservers()
+            self.statusObserver?.invalidate()
+            self.statusObserver = nil
+
             let item = AVPlayerItem(url: url)
             let player = self.player ?? AVPlayer()
+            if #available(iOS 15.0, *) {
+                player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
+            }
             self.player = player
             player.replaceCurrentItem(with: item)
             self.currentFileUrl = url.absoluteString
 
-            var info = self.nowPlayingInfo
+            var info: [String: Any] = [:]
             if let title = call.getString("title") { info[MPMediaItemPropertyTitle] = title }
             if let artist = call.getString("artist") { info[MPMediaItemPropertyArtist] = artist }
             if let album = call.getString("album") { info[MPMediaItemPropertyAlbumTitle] = album }
             info[MPNowPlayingInfoPropertyMediaType] = NSNumber(value: MPNowPlayingInfoMediaType.audio.rawValue)
             info[MPNowPlayingInfoPropertyDefaultPlaybackRate] = 1.0
             info[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+            info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = call.getDouble("position") ?? 0
 
             let position = call.getDouble("position") ?? 0
-            if position > 0.25 {
-                let t = CMTime(seconds: position, preferredTimescale: 600)
-                player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
-                info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = position
-            } else {
-                info[MPNowPlayingInfoPropertyElapsedPlaybackTime] = 0
-            }
-
+            // Portada en llamada aparte (data-URL grande tumba el bridge)
             let artworkSrc = call.getString("artwork")
-            let finish: () -> Void = {
+            var settled = false
+
+            let startPlayback = {
+                guard !settled else { return }
+                settled = true
+                if position > 0.25 {
+                    let t = CMTime(seconds: position, preferredTimescale: 600)
+                    player.seek(to: t, toleranceBefore: .zero, toleranceAfter: .zero)
+                }
                 self.applyNowPlaying(info)
                 self.attachObservers(player)
                 player.play()
+                // Reafirmar tras empezar audio (iOS a veces ignora el primer write)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    var again = self.nowPlayingInfo
+                    again[MPNowPlayingInfoPropertyPlaybackRate] = 1.0
+                    let t = player.currentTime().seconds
+                    if t.isFinite {
+                        again[MPNowPlayingInfoPropertyElapsedPlaybackTime] = max(0, t)
+                    }
+                    let d = player.currentItem?.duration.seconds ?? .nan
+                    if d.isFinite, d > 0 {
+                        again[MPMediaItemPropertyPlaybackDuration] = d
+                    }
+                    self.applyNowPlaying(again)
+                }
                 self.notifyListeners("state", data: ["playing": true])
+                print("[NativeAudio] playing OK")
                 call.resolve()
+
+                if let artworkSrc, !artworkSrc.isEmpty {
+                    Self.loadImage(from: artworkSrc) { image in
+                        guard let image else { return }
+                        var withArt = self.nowPlayingInfo
+                        withArt[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                        self.applyNowPlaying(withArt)
+                    }
+                }
             }
 
-            if let artworkSrc, !artworkSrc.isEmpty {
-                Self.loadImage(from: artworkSrc) { image in
-                    if let image {
-                        info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
-                    }
-                    finish()
+            self.statusObserver = item.observe(\.status, options: [.new, .initial]) { [weak self] item, _ in
+                guard let self else { return }
+                switch item.status {
+                case .readyToPlay:
+                    self.statusObserver?.invalidate()
+                    self.statusObserver = nil
+                    startPlayback()
+                case .failed:
+                    self.statusObserver?.invalidate()
+                    self.statusObserver = nil
+                    guard !settled else { return }
+                    settled = true
+                    let msg = item.error?.localizedDescription ?? "AVPlayerItem failed"
+                    print("[NativeAudio] item failed: \(msg)")
+                    call.reject(msg)
+                default:
+                    break
                 }
-            } else {
-                finish()
+            }
+
+            // Timeout si el fichero no carga
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+                guard let self, self.statusObserver != nil else { return }
+                self.statusObserver?.invalidate()
+                self.statusObserver = nil
+                guard !settled else { return }
+                settled = true
+                print("[NativeAudio] timeout loading item")
+                call.reject("timeout loading audio")
             }
         }
     }
@@ -279,6 +334,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func removeObservers() {
+        statusObserver?.invalidate()
+        statusObserver = nil
         if let obs = timeObserver, let player {
             player.removeTimeObserver(obs)
         }

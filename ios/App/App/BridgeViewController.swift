@@ -5,9 +5,9 @@ import Capacitor
 /// Capacitor 6+ no registra plugins locales del target App solos.
 final class BridgeViewController: CAPBridgeViewController {
     override public func capacitorDidLoad() {
+        // Solo AVPlayer: NowPlayingPlugin pisaba MPNowPlayingInfoCenter y rompía la isla
         bridge?.registerPluginInstance(NativeAudioPlugin())
-        bridge?.registerPluginInstance(NowPlayingPlugin())
-        print("[NativeAudio] plugins registered on bridge")
+        print("[NativeAudio] plugin registered")
     }
 
     override public func webViewConfiguration(for instanceConfiguration: InstanceConfiguration) -> WKWebViewConfiguration {
