@@ -140,8 +140,7 @@ export async function readNativeAudioBlob(id: string): Promise<Blob | null> {
   const path = await resolveAudioPath(id)
   if (!path) return null
 
-  // fetch(capacitor://) → Blob: mismos bytes en disco, sin base64 del bridge.
-  // El <audio> con blob: audio/mpeg suena como la PWA; capacitor:// directo distorsiona.
+  // fetch → blob (sin base64 ni bucles atob que congelan el WebView)
   try {
     const { uri } = await Filesystem.getUri({
       path,
@@ -151,17 +150,22 @@ export async function readNativeAudioBlob(id: string): Promise<Blob | null> {
       const src = Capacitor.convertFileSrc(uri)
       const res = await fetch(src)
       if (res.ok) {
-        const buf = await res.arrayBuffer()
-        if (buf.byteLength > 0) {
-          return new Blob([buf], { type: 'audio/mpeg' })
+        const blob = await res.blob()
+        if (blob.size > 0) {
+          return blob.type === 'audio/mpeg' ? blob : blob.slice(0, blob.size, 'audio/mpeg')
         }
       }
     }
   } catch {
-    /* fall through a readFile */
+    /* fall through */
   }
 
+  // Fallback solo para ficheros pequeños (atob de MP3 grandes congela la UI)
   try {
+    const st = await Filesystem.stat({ path, directory: Directory.Documents })
+    const size = typeof st.size === 'number' ? st.size : 0
+    if (size <= 0 || size > 8 * 1024 * 1024) return null
+
     const file = await Filesystem.readFile({
       path,
       directory: Directory.Documents,

@@ -217,23 +217,39 @@ function neighborIds(): { current: string | null; next: string | null; prev: str
 }
 
 /**
- * Precarga en primer plano: IndexedDB → Cache Storage / blob URL.
- * Deja current/next/prev listos en el store para saltos en bloqueo.
+ * Precarga current/next/prev.
+ * En nativo las URL .mp3 son baratas (sin meter MP3 en RAM).
+ * En web sí materializa blobs.
  */
 async function warmReadyAudioUrls() {
   const neighbors = neighborIds()
   protectAudioUrls([neighbors.current, neighbors.next, neighbors.prev])
 
+  // En nativo: secuencial y solo file src — Promise.all de 3× fetch MP3 congelaba la UI
   const ensure = async (id: string | null): Promise<string | null> => {
     if (!id) return null
-    return peekAudioObjectUrl(id) ?? (await getAudioObjectUrl(id))
+    const peeked = peekAudioObjectUrl(id)
+    if (peeked) return peeked
+    return getAudioObjectUrl(id)
   }
 
-  const [currentAudioUrl, nextAudioUrl, prevAudioUrl] = await Promise.all([
-    ensure(neighbors.current),
-    ensure(neighbors.next),
-    ensure(neighbors.prev),
-  ])
+  let currentAudioUrl: string | null = null
+  let nextAudioUrl: string | null = null
+  let prevAudioUrl: string | null = null
+
+  if (isNativeApp()) {
+    currentAudioUrl = await ensure(neighbors.current)
+    if (useLibraryPlayerStore.getState().currentTrackId !== neighbors.current) return
+    nextAudioUrl = await ensure(neighbors.next)
+    if (useLibraryPlayerStore.getState().currentTrackId !== neighbors.current) return
+    prevAudioUrl = await ensure(neighbors.prev)
+  } else {
+    ;[currentAudioUrl, nextAudioUrl, prevAudioUrl] = await Promise.all([
+      ensure(neighbors.current),
+      ensure(neighbors.next),
+      ensure(neighbors.prev),
+    ])
+  }
 
   // Solo actualizar si seguimos en la misma pista
   if (useLibraryPlayerStore.getState().currentTrackId !== neighbors.current) return
@@ -300,8 +316,8 @@ function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
   } catch {
     /* ignore */
   }
-  // En nativo, solo blob: (capacitor:// distorsiona en WKWebView)
-  if (isNativeApp() && !url.startsWith('blob:')) {
+  // Solo rechazar .bin / URLs locales sin .mp3 (las .mp3 no cargan RAM)
+  if (isNativeApp() && (url.includes('.bin') || (!url.startsWith('blob:') && !url.includes('.mp3') && (url.includes('capacitor') || url.includes('myvibe/') || url.startsWith('file:'))))) {
     void getAudioObjectUrl(trackId).then((fresh) => {
       if (!fresh || useLibraryPlayerStore.getState().currentTrackId !== trackId) return
       el.src = fresh

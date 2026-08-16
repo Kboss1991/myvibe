@@ -307,23 +307,44 @@ export function peekAudioBlob(id: string): Blob | null {
   return audioBlobCache.get(id) ?? null
 }
 
-/** URLs capacitor:// / file nativas en <audio> suenan distorsionadas en WKWebView. */
+/** Solo rechazar .bin / rutas sin .mp3 — las URL .mp3 de Documents son OK y no usan RAM. */
 function isBadNativePlayUrl(url: string | null | undefined): boolean {
   if (!url) return false
   if (url.startsWith('blob:')) return false
   if (url.startsWith('http://') || url.startsWith('https://')) return false
-  // Cualquier file / capacitor local para audio
-  if (url.includes('capacitor://') || url.includes('_capacitor_file_')) return true
-  if (url.includes('.bin') || url.includes('/myvibe/audio/') || url.includes('/myvibe/play/')) {
+  if (url.includes('.bin')) return true
+  // capacitor://…/something.mp3 → permitido
+  if (url.includes('.mp3')) return false
+  if (url.includes('capacitor://') || url.includes('_capacitor_file_') || url.startsWith('file:')) {
     return true
   }
-  if (url.startsWith('file:')) return true
+  if (url.includes('/myvibe/audio/') || url.includes('/myvibe/play/')) return true
   return false
 }
 
 export async function getAudioObjectUrl(id: string): Promise<string | null> {
-  // iOS Capacitor: igual que la PWA — solo blob: con MIME audio/*.
-  // Nunca capacitor:// en <audio.src> (distorsión en WKWebView).
+  // iOS nativo: URL de fichero .mp3 (sin cargar el MP3 entero en JS — evita freeze).
+  if (isNativeApp()) {
+    try {
+      const { getNativePlayableFileSrc } = await import('./nativeAudioFs')
+      const fileSrc = await getNativePlayableFileSrc(id)
+      if (fileSrc && !isBadNativePlayUrl(fileSrc)) {
+        const old = objectUrlCache.get(`audio:${id}`)
+        if (old?.startsWith('blob:')) {
+          try {
+            URL.revokeObjectURL(old)
+          } catch {
+            /* ignore */
+          }
+        }
+        objectUrlCache.set(`audio:${id}`, fileSrc)
+        audioBlobCache.delete(id)
+        return fileSrc
+      }
+    } catch {
+      /* fall through a blob */
+    }
+  }
 
   const existingBlob = audioBlobCache.get(id)
   if (existingBlob) {

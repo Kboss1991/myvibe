@@ -10,12 +10,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // Reproducción continua + controles en bloqueo / Centro de Control
         do {
-            try AVAudioSession.sharedInstance().setCategory(
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(
                 .playback,
                 mode: .default,
                 options: []
             )
-            try AVAudioSession.sharedInstance().setActive(true)
+            // Evita resampling raro (distorsión) si el hardware está a otra tasa
+            try? session.setPreferredSampleRate(44_100)
+            try? session.setPreferredIOBufferDuration(0.023)
+            try session.setActive(true)
         } catch {
             print("AVAudioSession error: \(error)")
         }
