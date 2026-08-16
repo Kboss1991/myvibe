@@ -1,12 +1,12 @@
 import Peer, { type DataConnection, type PeerJSOption } from 'peerjs'
 import { db } from '../db'
 import { createId } from './fileImport'
-import { getAudioBlob, saveAudioBlob } from './library'
+import { getAudioBlob, getCoverBlob, saveAudioBlob, saveCoverBlob } from './library'
 import { tracksLookSame } from './trackDedupe'
 import type { Playlist, Track } from '../types'
 
-/** v2: playlists + ids estables del PC */
-const PROTOCOL = 2
+/** v3: playlists + ids estables + portadas */
+const PROTOCOL = 3
 const CHUNK = 256 * 1024
 const PEER_PREFIX = 'mv'
 
@@ -59,9 +59,13 @@ type JsonMsg =
       size: number
       duration: number
       liked?: boolean
+      hasCover?: boolean
+      enriched?: boolean
     }
   | { t: 'chunk-info'; i: number; offset: number; total: number }
   | { t: 'track-end'; i: number }
+  | { t: 'cover-start'; id: string; size: number; mimeType: string }
+  | { t: 'cover-end'; id: string }
   | { t: 'done' }
   | { t: 'error'; message: string }
   | { t: 'ready' }
@@ -192,6 +196,9 @@ async function sendLibrary(
       const audio = await getAudioBlob(track.id)
       if (!audio) continue
       const totalSize = audio.size
+      const cover = track.hasCover ? await getCoverBlob(track.id) : null
+      const coverBuf = cover ? new Uint8Array(await cover.arrayBuffer()) : null
+      const hasCover = Boolean(coverBuf?.byteLength)
 
       conn.send({
         t: 'track-start',
@@ -207,6 +214,8 @@ async function sendLibrary(
         size: totalSize,
         duration: track.duration || 0,
         liked: Boolean(track.liked),
+        hasCover,
+        enriched: Boolean(track.enriched),
       } satisfies JsonMsg)
 
       for (let offset = 0; offset < totalSize; offset += CHUNK) {
@@ -225,6 +234,29 @@ async function sendLibrary(
       }
 
       conn.send({ t: 'track-end', i } satisfies JsonMsg)
+
+      if (coverBuf && coverBuf.byteLength && cover) {
+        conn.send({
+          t: 'cover-start',
+          id: track.id,
+          size: coverBuf.byteLength,
+          mimeType: cover.type || 'image/jpeg',
+        } satisfies JsonMsg)
+        for (let offset = 0; offset < coverBuf.byteLength; offset += CHUNK) {
+          if (isStopped()) return
+          const end = Math.min(offset + CHUNK, coverBuf.byteLength)
+          const slice = coverBuf.subarray(offset, end)
+          conn.send({
+            t: 'chunk-info',
+            i,
+            offset,
+            total: coverBuf.byteLength,
+          } satisfies JsonMsg)
+          conn.send(slice.slice().buffer)
+          await new Promise((r) => setTimeout(r, 2))
+        }
+        conn.send({ t: 'cover-end', id: track.id } satisfies JsonMsg)
+      }
     }
 
     conn.send({ t: 'done' } satisfies JsonMsg)
@@ -386,6 +418,12 @@ async function receiveLibrary(
     parts: Uint8Array[]
     received: number
   } | null = null
+  let currentCover: {
+    id: string
+    size: number
+    mimeType: string
+    parts: Uint8Array[]
+  } | null = null
 
   const queue: unknown[] = []
   let waiting: (() => void) | null = null
@@ -412,13 +450,17 @@ async function receiveLibrary(
       const data = await nextData()
 
       if (data instanceof ArrayBuffer || data instanceof Uint8Array || (typeof Blob !== 'undefined' && data instanceof Blob)) {
-        if (!current) continue
         const bytes =
           data instanceof Uint8Array
             ? data
             : data instanceof Blob
               ? new Uint8Array(await data.arrayBuffer())
               : new Uint8Array(data)
+        if (currentCover) {
+          currentCover.parts.push(bytes)
+          continue
+        }
+        if (!current) continue
         current.parts.push(bytes)
         current.received += bytes.byteLength
         continue
@@ -467,6 +509,7 @@ async function receiveLibrary(
       }
 
       if (data.t === 'track-start') {
+        currentCover = null
         current = { meta: data, parts: [], received: 0 }
         handlers.onProgress(data.i, expected || data.i + 1, data.title)
         continue
@@ -524,12 +567,13 @@ async function receiveLibrary(
             duration: meta.duration || 0,
             mimeType: meta.mimeType || 'audio/mpeg',
             fileName: meta.fileName || `${meta.title}.mp3`,
+            // Portada llega justo después (cover-start); no marcar true aún
             hasCover: existing?.hasCover ?? false,
             liked: meta.liked ?? existing?.liked ?? false,
             playCount: existing?.playCount ?? 0,
             lastPlayedAt: existing?.lastPlayedAt ?? null,
             createdAt: existing?.createdAt ?? Date.now(),
-            enriched: existing?.enriched ?? false,
+            enriched: meta.enriched ?? existing?.enriched ?? false,
             hasLocalAudio: true,
             origin: 'local',
             audioBytes: blob.size,
@@ -546,6 +590,45 @@ async function receiveLibrary(
           imported += 1
         } catch (e) {
           console.warn('Fallo al guardar pista', e)
+        }
+        continue
+      }
+
+      if (data.t === 'cover-start') {
+        current = null
+        currentCover = {
+          id: data.id,
+          size: data.size,
+          mimeType: data.mimeType || 'image/jpeg',
+          parts: [],
+        }
+        continue
+      }
+
+      if (data.t === 'cover-end') {
+        if (!currentCover || currentCover.id !== data.id) {
+          currentCover = null
+          continue
+        }
+        const coverMeta = currentCover
+        const received = coverMeta.parts.reduce((n, p) => n + p.byteLength, 0)
+        currentCover = null
+        if (received < coverMeta.size * 0.9) {
+          console.warn('Portada incompleta', coverMeta.id, received, coverMeta.size)
+          continue
+        }
+        try {
+          const coverBlob = new Blob(coverMeta.parts as BlobPart[], {
+            type: coverMeta.mimeType,
+          })
+          await saveCoverBlob(coverMeta.id, coverBlob)
+          await db.tracks.update(coverMeta.id, {
+            hasCover: true,
+            enriched: true,
+            coverUpdatedAt: Date.now(),
+          })
+        } catch (e) {
+          console.warn('Fallo al guardar portada', e)
         }
         continue
       }
