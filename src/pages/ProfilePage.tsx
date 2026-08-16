@@ -22,8 +22,6 @@ import {
   formatPlayCountLabel,
   formatStatsMonthLabel,
 } from '../lib/listenStats'
-import { checkTasteTablesReady, TASTE_SQL_HINT } from '../lib/cloudLibrary'
-import { TASTE_SYNC_SQL } from '../lib/tasteSyncSql'
 import {
   clearPlaybackDebugLog,
   formatPlaybackDebugLine,
@@ -32,18 +30,6 @@ import {
 import './pages.css'
 import '../components/TrackList.css'
 
-function supabaseSqlEditorUrl(): string | null {
-  const raw = import.meta.env.VITE_SUPABASE_URL as string | undefined
-  if (!raw) return null
-  try {
-    const host = new URL(raw).hostname // xxx.supabase.co
-    const ref = host.split('.')[0]
-    if (!ref) return null
-    return `https://supabase.com/dashboard/project/${ref}/sql/new`
-  } catch {
-    return null
-  }
-}
 
 export function ProfilePage() {
   const user = useAuthStore((s) => s.user)
@@ -62,6 +48,8 @@ export function ProfilePage() {
   const lastSyncAt = useLibraryStore((s) => s.lastSyncAt)
   const pcOnline = useLibraryStore((s) => s.pcOnline)
   const syncCloudCatalog = useLibraryStore((s) => s.syncCloudCatalog)
+  const syncFromPcWifi = useLibraryStore((s) => s.syncFromPcWifi)
+  const downloadProgress = useLibraryStore((s) => s.downloadProgress)
   const navigate = useNavigate()
   const avatarInputRef = useRef<HTMLInputElement>(null)
   const [debugLog, setDebugLog] = useState(() => getPlaybackDebugLog())
@@ -78,30 +66,12 @@ export function ProfilePage() {
   const [okMsg, setOkMsg] = useState<string | null>(null)
   const [orphanCount, setOrphanCount] = useState<{ audio: number; covers: number } | null>(null)
   const [syncing, setSyncing] = useState(false)
-  const [tasteReady, setTasteReady] = useState<boolean | null>(null)
+  const [wifiSyncing, setWifiSyncing] = useState(false)
 
   const stats = useMemo(() => computeListenStats(tracks), [tracks])
   const canHost = isLibraryHostCapable()
+  const onPc = isLibraryHostDevice()
   const cloud = isCloudAuthEnabled()
-  const sqlEditorUrl = supabaseSqlEditorUrl()
-
-  async function refreshProfileExtras() {
-    if (!user) return
-    try {
-      const taste = await checkTasteTablesReady().catch(() => ({
-        ok: false,
-        likes: false,
-        playlists: false,
-        message: TASTE_SQL_HINT,
-      }))
-      setTasteReady(taste.ok)
-      if (!taste.ok && taste.message) {
-        setLocalError(taste.message)
-      }
-    } catch (e) {
-      console.warn('Perfil extras', e)
-    }
-  }
 
   useEffect(() => {
     void useLibraryStore
@@ -110,10 +80,6 @@ export function ProfilePage() {
       .then(setOrphanCount)
       .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
   }, [tracks.length])
-
-  useEffect(() => {
-    void refreshProfileExtras()
-  }, [user?.id])
 
   if (!user) return null
 
@@ -466,16 +432,20 @@ export function ProfilePage() {
               setOkMsg(null)
               void syncCloudCatalog()
                 .then(() => {
-                  setOkMsg('Me gusta, playlists y catálogo sincronizados')
-                  setTasteReady(true)
-                  void refreshProfileExtras()
+                  setOkMsg(
+                    onPc
+                      ? 'Podcasts y presencia del PC actualizados'
+                      : 'Estado del PC y podcasts actualizados',
+                  )
+                  void useLibraryStore
+                    .getState()
+                    .countOrphanStorage()
+                    .then(setOrphanCount)
+                    .catch(() => {})
                 })
                 .catch((e) => {
                   const msg = e instanceof Error ? e.message : 'Error al sincronizar'
                   setLocalError(msg)
-                  if (/library_likes|library_playlists|taste-sync|Faltan las tablas/i.test(msg)) {
-                    setTasteReady(false)
-                  }
                 })
                 .finally(() => setSyncing(false))
             }}
@@ -488,61 +458,56 @@ export function ProfilePage() {
         ) : (
           <>
             <p className="profile-card__hint">
-              Se sincroniza solo: al subir/borrar en el PC, al abrir la app y cada pocos segundos
-              (Realtime). El botón es por si quieres forzar ahora.
+              La música y las playlists <strong>no se registran en la nube</strong> (derechos de
+              autor). Solo van por Wi‑Fi local del PC al móvil. En la cuenta sí se sincronizan
+              podcasts (seguidos + progreso).
             </p>
-            {tasteReady === false ? (
-              <div className="profile-card__alert" role="alert">
-                <p>
-                  <strong>Me gusta y playlists no pueden sincronizarse:</strong> faltan tablas en
-                  Supabase.
-                </p>
-                <ol>
-                  <li>
-                    Abre el{' '}
-                    {sqlEditorUrl ? (
-                      <a href={sqlEditorUrl} target="_blank" rel="noreferrer">
-                        SQL Editor de Supabase
-                      </a>
-                    ) : (
-                      'SQL Editor de Supabase'
-                    )}
-                  </li>
-                  <li>
-                    Pega el SQL de me gusta/playlists y pulsa <strong>Run</strong>
-                  </li>
-                  <li>Vuelve aquí y pulsa «Actualizar ahora»</li>
-                </ol>
+            {!onPc ? (
+              <div style={{ marginTop: 12 }}>
                 <button
                   type="button"
-                  className="chip"
-                  style={{ marginTop: 10 }}
+                  className="chip chip-play"
+                  disabled={wifiSyncing || Boolean(downloadProgress) || !cloud}
                   onClick={() => {
-                    void navigator.clipboard
-                      ?.writeText(TASTE_SYNC_SQL)
-                      .then(() => setOkMsg('SQL copiado. Pégalo en Supabase → Run'))
-                      .catch(() => setLocalError('No se pudo copiar; abre supabase/taste-sync.sql'))
+                    setWifiSyncing(true)
+                    setLocalError(null)
+                    setOkMsg(null)
+                    void syncFromPcWifi()
+                      .then((r) => {
+                        setOkMsg(
+                          `Wi‑Fi: ${r.imported} canciones` +
+                            (r.playlists ? ` · ${r.playlists} playlists` : ''),
+                        )
+                      })
+                      .catch((e) => {
+                        setLocalError(e instanceof Error ? e.message : 'Error Wi‑Fi')
+                      })
+                      .finally(() => setWifiSyncing(false))
                   }}
                 >
-                  Copiar SQL
+                  {wifiSyncing || downloadProgress
+                    ? downloadProgress?.name || 'Sincronizando…'
+                    : 'Sincronizar biblioteca por Wi‑Fi'}
                 </button>
+                <p className="profile-card__hint" style={{ marginTop: 8 }}>
+                  Abre MyVibe en el PC con la misma cuenta y la misma Wi‑Fi. El PC debe quedar con
+                  la pestaña abierta.
+                </p>
               </div>
             ) : (
               <p className="profile-card__hint">
-                Me gusta, playlists y podcasts (seguidos + progreso de episodios) se
-                guardan en tu cuenta (PC y móvil). El audio de los podcasts se
-                reproduce por streaming; no se sube a la nube.
+                Este dispositivo es el PC host: deja la pestaña abierta para que el móvil pueda
+                descargar la biblioteca por Wi‑Fi.
               </p>
             )}
             <p className="profile-card__hint" style={{ marginTop: 8 }}>
-              Si el progreso de podcasts no cruza de PC a móvil, ejecuta también{' '}
+              Si el progreso de podcasts no cruza de PC a móvil, ejecuta{' '}
               <code>supabase/podcast-sync.sql</code> en el SQL Editor de Supabase.
             </p>
             <p className="profile-card__meta">
               Última sync:{' '}
               {lastSyncAt ? formatLastSeen(lastSyncAt) : 'aún no'}
               {pcOnline != null ? ` · PC host ${pcOnline ? 'en línea' : 'offline'}` : ''}
-              {tasteReady === true ? ' · Perfil OK' : tasteReady === false ? ' · Perfil incompleto' : ''}
             </p>
             {lastSyncMessage ? <p className="profile-card__hint">{lastSyncMessage}</p> : null}
           </>

@@ -22,6 +22,7 @@ import {
 } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
+import { isLibraryHostCapable } from '../lib/folderImport'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { usePlaylistDropTargets } from '../hooks/usePlaylistDropTargets'
 import { useLibraryStore } from '../store/libraryStore'
@@ -48,6 +49,7 @@ export function LibraryPage() {
   const enrichProgress = useLibraryStore((s) => s.enrichProgress)
   const replaceMissingAudio = useLibraryStore((s) => s.replaceMissingAudio)
   const downloadFromPc = useLibraryStore((s) => s.downloadFromPc)
+  const syncFromPcWifi = useLibraryStore((s) => s.syncFromPcWifi)
   const downloadProgress = useLibraryStore((s) => s.downloadProgress)
   const artists = useLibraryStore((s) => s.artists)
   const albums = useLibraryStore((s) => s.albums)
@@ -68,7 +70,9 @@ export function LibraryPage() {
   const [enrichBusy, setEnrichBusy] = useState(false)
   const [restoreBusy, setRestoreBusy] = useState(false)
   const [updateBusy, setUpdateBusy] = useState(false)
+  const [wifiBusy, setWifiBusy] = useState(false)
   const restoreInputRef = useRef<HTMLInputElement>(null)
+  const canHost = isLibraryHostCapable()
 
   const artistList = useMemo(() => artists(), [artists, tracks])
   const albumList = useMemo(() => albums(), [albums, tracks])
@@ -290,6 +294,41 @@ export function LibraryPage() {
             .finally(() => setRestoreBusy(false))
         }}
       />
+
+      {tab === 'songs' && !canHost && (
+        <div className="enrich-banner" role="status">
+          <div>
+            <strong>Biblioteca desde el PC (Wi‑Fi)</strong>
+            <span>
+              Las canciones no se guardan en la nube. Abre MyVibe en el ordenador (misma cuenta y
+              Wi‑Fi) y sincroniza aquí.
+            </span>
+          </div>
+          <button
+            type="button"
+            className="enrich-banner__btn"
+            disabled={wifiBusy || Boolean(downloadProgress)}
+            onClick={() => {
+              setWifiBusy(true)
+              void syncFromPcWifi()
+                .then((r) => {
+                  alert(
+                    `Sincronizadas ${r.imported} canciones` +
+                      (r.playlists ? ` y ${r.playlists} playlists` : '') +
+                      ' por Wi‑Fi.',
+                  )
+                })
+                .catch((err) => {
+                  alert(err instanceof Error ? err.message : 'No se pudo sincronizar')
+                })
+                .finally(() => setWifiBusy(false))
+            }}
+          >
+            <IconDownload size={16} />{' '}
+            {wifiBusy || downloadProgress ? 'Sincronizando…' : 'Sincronizar con PC'}
+          </button>
+        </div>
+      )}
 
       {tab === 'songs' && needsAudioUpdate.length > 0 && (
         <div className="enrich-banner audio-update-banner" role="status">

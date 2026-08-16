@@ -23,7 +23,8 @@ import {
   getAudioUpdatedAtColumnStatus,
 } from '../lib/cloudLibrary'
 import { isLibraryHostDevice } from '../lib/devices'
-import { downloadTracksFromPc } from '../lib/libraryHost'
+import { downloadTracksFromPc, syncFullLibraryFromPc } from '../lib/libraryHost'
+import { isCloudMusicSyncEnabled } from '../lib/cloudMusicPolicy'
 import {
   pullPodcastTaste,
   pushPodcastProgress,
@@ -63,6 +64,7 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
 
 /** Encola sync de catálogo (debounce). Obliga push/pull sin pulsar Actualizar. */
 export function scheduleCatalogSync(delayMs = 500) {
+  if (!isCloudMusicSyncEnabled()) return
   if (!isCloudAuthEnabled()) return
   if (!useAuthStore.getState().user?.id) return
   if (Date.now() < catalogSyncQuietUntil && delayMs < 2000) {
@@ -77,6 +79,7 @@ export function scheduleCatalogSync(delayMs = 500) {
 }
 
 async function runCatalogSync(): Promise<{ pushed: number; pulled: number }> {
+  if (!isCloudMusicSyncEnabled()) return { pushed: 0, pulled: 0 }
   if (catalogSyncInFlight) return catalogSyncInFlight
   // Lazy: evita TDZ si se llama durante la carga del módulo
   const store = useLibraryStore
@@ -96,7 +99,7 @@ async function runCatalogSync(): Promise<{ pushed: number; pulled: number }> {
 
 /** Sync automático del catálogo: realtime + poll + al volver a la app. */
 export function startLibraryCatalogAutoSync(userId: string): () => void {
-  if (!isCloudAuthEnabled()) return () => undefined
+  if (!isCloudMusicSyncEnabled() || !isCloudAuthEnabled()) return () => undefined
   catalogRealtimeStop?.()
   catalogRealtimeStop = subscribeLibraryCatalog(userId, () => {
     if (Date.now() < catalogSyncQuietUntil) return
@@ -134,6 +137,7 @@ export function startLibraryCatalogAutoSync(userId: string): () => void {
 
 /** Tras una acción local: fusionar con la nube en breve (sin botón). */
 function scheduleTasteSync(delayMs = 450) {
+  if (!isCloudMusicSyncEnabled()) return
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
@@ -148,6 +152,7 @@ function scheduleTasteSync(delayMs = 450) {
 
 /** Solo bajar (p. ej. cambio remoto en tiempo real). */
 function scheduleTastePull(delayMs = 200) {
+  if (!isCloudMusicSyncEnabled()) return
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
@@ -161,6 +166,7 @@ function scheduleTastePull(delayMs = 200) {
 }
 
 async function pushLikeNow(trackId: string) {
+  if (!isCloudMusicSyncEnabled()) return
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
@@ -179,6 +185,7 @@ async function pushLikeNow(trackId: string) {
 }
 
 async function pushPlaylistNow(playlistId?: string) {
+  if (!isCloudMusicSyncEnabled()) return
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
@@ -197,6 +204,7 @@ async function pushPlaylistNow(playlistId?: string) {
 }
 
 async function deletePlaylistNow(playlistId: string) {
+  if (!isCloudMusicSyncEnabled()) return
   if (!isCloudAuthEnabled()) return
   const userId = useAuthStore.getState().user?.id
   if (!userId) return
@@ -210,7 +218,7 @@ async function deletePlaylistNow(playlistId: string) {
 
 /** Arranca sync automático de me gusta/listas (realtime + pull periódico). */
 export function startLibraryTasteAutoSync(userId: string): () => void {
-  if (!isCloudAuthEnabled()) return () => undefined
+  if (!isCloudMusicSyncEnabled() || !isCloudAuthEnabled()) return () => undefined
   tasteRealtimeStop?.()
   tasteRealtimeStop = subscribeLibraryTaste(userId, () => scheduleTastePull(100))
 
@@ -360,6 +368,14 @@ interface LibraryState {
   exportLibraryPacks: () => Promise<{ packs: number; tracks: number }>
   exportToDownloads: () => Promise<{ saved: number; message: string }>
   syncCloudCatalog: () => Promise<{ pushed: number; pulled: number }>
+  /** Móvil: biblioteca + playlists desde el PC por Wi‑Fi (sin nube). */
+  syncFromPcWifi: () => Promise<{
+    imported: number
+    playlists: number
+    visibleFiles: import('../lib/visibleStorage').VisibleFile[]
+    errors: string[]
+    stubsRemoved: number
+  }>
   downloadFromPc: (ids: string[]) => Promise<{
     imported: number
     visibleFiles: import('../lib/visibleStorage').VisibleFile[]
@@ -687,13 +703,44 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
       return { pushed: 0, pulled: 0 }
     }
 
+    // Opción D: música fuera de la nube — solo podcasts + estado del PC (peer)
+    if (!isCloudMusicSyncEnabled()) {
+      try {
+        try {
+          const { syncPodcastTaste } = await import('../lib/cloudPodcasts')
+          await syncPodcastTaste(userId)
+        } catch (e) {
+          console.warn('Sync podcasts', e)
+        }
+        const peer = await getDevicePeer(userId)
+        const age = peer ? Date.now() - Date.parse(peer.updatedAt) : Infinity
+        const localCount = get().tracks.filter((t) => t.hasLocalAudio !== false).length
+        const playlistCount = get().playlists.length
+        const message =
+          `Música solo Wi‑Fi local · ${localCount} canciones · ${playlistCount} listas` +
+          (isLibraryHostDevice() ? ' · Este dispositivo: PC/host' : ' · Este dispositivo: móvil') +
+          (peer && age < 3 * 60 * 1000
+            ? ` · PC en línea (${peer.label})`
+            : ' · PC offline — abre MyVibe en el ordenador')
+        set({
+          pcOnline: Boolean(peer && age < 3 * 60 * 1000),
+          lastSyncAt: Date.now(),
+          lastSyncMessage: message,
+        })
+        return { pushed: 0, pulled: 0 }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : 'Error de sincronización'
+        set({ lastSyncMessage: msg, pcOnline: false })
+        throw e
+      }
+    }
+
     let pushed = 0
     let pulled = 0
     let deduped = 0
     let pruned = 0
     try {
       const tasteReady = await checkTasteTablesReady()
-      // Quita duplicados locales antes de subir, limpia la nube, baja catálogo y vuelve a fusionar
       deduped += await library.dedupeLibraryTracks()
       pushed = await pushLibraryMetadata(userId)
       pruned = await pruneCloudDuplicateTracks(userId)
@@ -765,6 +812,55 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     }
   },
 
+  syncFromPcWifi: async () => {
+    const userId = useAuthStore.getState().user?.id
+    if (!userId) throw new Error('Inicia sesión')
+    if (isLibraryHostDevice()) {
+      throw new Error('Esto es el PC host. Usa el móvil para sincronizar por Wi‑Fi.')
+    }
+    set({
+      downloadProgress: {
+        done: 0,
+        total: 1,
+        name: 'Conectando con el PC…',
+        trackId: null,
+        percent: 0,
+        ids: [],
+      },
+    })
+    try {
+      const result = await syncFullLibraryFromPc(userId, {
+        onStatus: (msg) => {
+          const prev = get().downloadProgress
+          if (!prev) return
+          set({ downloadProgress: { ...prev, name: msg } })
+        },
+        onProgress: (done, total, name, detail) => {
+          const prev = get().downloadProgress
+          set({
+            downloadProgress: {
+              done,
+              total,
+              name,
+              trackId: detail?.trackId ?? prev?.trackId ?? null,
+              percent: detail?.percent ?? prev?.percent ?? 0,
+              ids: prev?.ids ?? [],
+            },
+          })
+        },
+        onError: () => {},
+      })
+      set({
+        lastSyncAt: Date.now(),
+        lastSyncMessage: `Wi‑Fi: ${result.imported} canciones · ${result.playlists} playlists`,
+        pcOnline: true,
+      })
+      return result
+    } finally {
+      set({ downloadProgress: null })
+    }
+  },
+
   downloadFromPc: async (ids) => {
     const userId = useAuthStore.getState().user?.id
     if (!userId) throw new Error('Inicia sesión')
@@ -826,7 +922,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   deleteTracks: async (ids) => {
     await library.deleteTracks(ids)
     const userId = useAuthStore.getState().user?.id
-    if (!userId || !isCloudAuthEnabled()) return
+    if (!userId || !isCloudAuthEnabled() || !isCloudMusicSyncEnabled()) return
     if (isLibraryHostDevice()) {
       try {
         await removeCloudTracks(userId, ids)
@@ -840,7 +936,7 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
   deleteTrack: async (id) => {
     await library.deleteTrack(id)
     const userId = useAuthStore.getState().user?.id
-    if (!userId || !isCloudAuthEnabled()) return
+    if (!userId || !isCloudAuthEnabled() || !isCloudMusicSyncEnabled()) return
     if (isLibraryHostDevice()) {
       try {
         await removeCloudTracks(userId, [id])
@@ -855,9 +951,8 @@ export const useLibraryStore = create<LibraryState>((set, get) => ({
     const { useLibraryPlayerStore } = await import('./libraryPlayerStore')
     useLibraryPlayerStore.getState().stop()
     const result = await library.clearLocalMusicLibrary()
-    // En el PC, sincronizar catálogo vacío vaciaría la nube: solo avisamos vía UI.
-    // En el móvil, el próximo sync trae stubs grises otra vez.
-    if (!isLibraryHostDevice() && isCloudAuthEnabled()) {
+    // Música ya no vuelve desde la nube; en móvil no regeneramos stubs.
+    if (isLibraryHostDevice() && isCloudMusicSyncEnabled() && isCloudAuthEnabled()) {
       scheduleCatalogSync(2500)
     }
     return { tracks: result.tracks }

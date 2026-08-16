@@ -130,11 +130,27 @@ export default function App() {
       if (stopped) return
       await runDevice()
       if (stopped) return
-      // Me gusta / playlists + catálogo + podcasts: sync automático (realtime + poll)
+      // Música: no sync cloud (opción D). Podcasts sí.
+      // Me gusta/catálogo solo si isCloudMusicSyncEnabled()
       stopTasteAuto = startLibraryTasteAutoSync(user.id)
       stopCatalogAuto = startLibraryCatalogAutoSync(user.id)
       stopPodcastAuto = startPodcastTasteAutoSync(user.id)
       if (stopped) return
+
+      // Quita stubs grises que vinieron del catálogo cloud antiguo
+      if (!isLibraryHostDevice()) {
+        try {
+          const { purgeRemoteCatalogStubs } = await import('./lib/libraryHost')
+          const n = await purgeRemoteCatalogStubs()
+          if (n) {
+            useLibraryStore.setState({
+              lastSyncMessage: `Quitadas ${n} canciones sin audio (ya no se usa catálogo cloud)`,
+            })
+          }
+        } catch (e) {
+          console.warn('Purge stubs', e)
+        }
+      }
 
       if (isLibraryHostDevice()) {
         try {
