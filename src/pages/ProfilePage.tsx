@@ -440,6 +440,7 @@ export function ProfilePage() {
         <h2 className="profile-card__title">Pasar música al móvil</h2>
         <p className="profile-card__hint">
           Misma Wi‑Fi. La música <strong>no va a la nube</strong>: solo por un código de 6 dígitos.
+          Se envía en lotes (reconexión automática) para no cortarse a mitad.
         </p>
         {onPc || canHost ? (
           <div style={{ marginTop: 14 }}>
