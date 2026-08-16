@@ -237,6 +237,43 @@ export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWri
   let written = 0
   let closed = false
   let started = false
+  /** Acumula ~256 KiB antes de base64+bridge (menos picos de RAM/CPU). */
+  let pending: Uint8Array[] = []
+  let pendingBytes = 0
+  const FLUSH_AT = 256 * 1024
+
+  const flush = async () => {
+    if (!pendingBytes) return
+    let merged: Uint8Array
+    if (pending.length === 1) {
+      merged = pending[0]!
+    } else {
+      merged = new Uint8Array(pendingBytes)
+      let o = 0
+      for (const p of pending) {
+        merged.set(p, o)
+        o += p.byteLength
+      }
+    }
+    pending = []
+    pendingBytes = 0
+    const data = bytesToBase64(merged)
+    if (!started) {
+      await Filesystem.writeFile({
+        path,
+        data,
+        directory: Directory.Documents,
+        recursive: true,
+      })
+      started = true
+    } else {
+      await Filesystem.appendFile({
+        path,
+        data,
+        directory: Directory.Documents,
+      })
+    }
+  }
 
   return {
     write: async (chunk) => {
@@ -247,31 +284,24 @@ export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWri
       } else if (chunk instanceof ArrayBuffer) {
         bytes = new Uint8Array(chunk)
       } else {
-        bytes = chunk
+        // Copia propia: el buffer de PeerJS puede reutilizarse
+        bytes = new Uint8Array(chunk.byteLength)
+        bytes.set(chunk)
       }
-      const data = bytesToBase64(bytes)
-      if (!started) {
-        await Filesystem.writeFile({
-          path,
-          data,
-          directory: Directory.Documents,
-          recursive: true,
-        })
-        started = true
-      } else {
-        await Filesystem.appendFile({
-          path,
-          data,
-          directory: Directory.Documents,
-        })
-      }
+      pending.push(bytes)
+      pendingBytes += bytes.byteLength
       written += bytes.byteLength
+      if (pendingBytes >= FLUSH_AT) await flush()
     },
     close: async () => {
+      if (closed) return
+      await flush()
       closed = true
     },
     abort: async () => {
       closed = true
+      pending = []
+      pendingBytes = 0
       try {
         await Filesystem.deleteFile({ path, directory: Directory.Documents })
       } catch {
@@ -291,5 +321,18 @@ export async function nativeAudioExists(id: string): Promise<boolean> {
     return typeof st.size === 'number' ? st.size > 0 : true
   } catch {
     return false
+  }
+}
+
+/** Tamaño en disco sin leer el MP3 a RAM (crítico en transferencias largas). */
+export async function nativeAudioByteSize(id: string): Promise<number> {
+  try {
+    const st = await Filesystem.stat({
+      path: audioPath(id),
+      directory: Directory.Documents,
+    })
+    return typeof st.size === 'number' ? st.size : 0
+  } catch {
+    return 0
   }
 }

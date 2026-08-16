@@ -32,6 +32,7 @@ import {
   deleteNativeCover,
   beginNativeAudioWrite,
   nativeAudioExists,
+  nativeAudioByteSize,
 } from './nativeAudioFs'
 
 /** Umbral: no meter en IndexedDB (OOM / pantalla blanca en iPhone). */
@@ -118,28 +119,51 @@ export async function finishHugeAudioWrite(
   expectedSize: number,
   mimeType?: string,
 ): Promise<Blob> {
-  await writer.close()
+  const size = await finishHugeAudioWriteSize(id, writer, expectedSize)
   let file: Blob | null = null
   if (isNativeApp()) {
     file = await readNativeAudioBlob(id)
   } else {
     file = await readBinary('audio', id)
   }
-  if (!file || file.size < expectedSize * 0.98) {
-    if (isNativeApp()) await deleteNativeAudio(id).catch(() => undefined)
-    else await deleteBinary('audio', id).catch(() => undefined)
-    throw new Error(
-      `Archivo incompleto en disco (${file?.size ?? 0}/${expectedSize} bytes)`,
-    )
+  if (!file) {
+    throw new Error(`No se pudo leer el audio guardado (${size} bytes)`)
   }
-  const playable = ensureAudioMime(file, mimeType || 'audio/mpeg')
+  return ensureAudioMime(file, mimeType || 'audio/mpeg')
+}
+
+/**
+ * Cierra el writer y solo verifica el tamaño en disco (sin cargar el MP3 en RAM).
+ * Usar en transferencias masivas Wi‑Fi / PeerJS en iPhone.
+ */
+export async function finishHugeAudioWriteSize(
+  id: string,
+  writer: OpfsAppendWriter,
+  expectedSize: number,
+): Promise<number> {
+  await writer.close()
+  let size = 0
+  if (isNativeApp()) {
+    size = await nativeAudioByteSize(id)
+    if (size < expectedSize * 0.98) {
+      await deleteNativeAudio(id).catch(() => undefined)
+      throw new Error(`Archivo incompleto en disco (${size}/${expectedSize} bytes)`)
+    }
+  } else {
+    const file = await readBinary('audio', id)
+    size = file?.size ?? 0
+    if (!file || size < expectedSize * 0.98) {
+      await deleteBinary('audio', id).catch(() => undefined)
+      throw new Error(`Archivo incompleto en disco (${size}/${expectedSize} bytes)`)
+    }
+  }
   try {
     const row = await db.tracks.get(id)
-    if (row) await db.tracks.update(id, { audioBytes: playable.size })
+    if (row) await db.tracks.update(id, { audioBytes: size })
   } catch {
     /* ignore */
   }
-  return playable
+  return size
 }
 
 /** Marca el audio local como fresco (tras importar / reemplazar / descargar). */

@@ -3,27 +3,36 @@ import { db } from '../db'
 import { createId } from './fileImport'
 import {
   beginHugeAudioWrite,
-  finishHugeAudioWrite,
+  finishHugeAudioWriteSize,
   getAudioBlob,
   getCoverBlob,
   markLocalAudioFresh,
   saveCoverBlob,
 } from './library'
+import { nativeAudioExists } from './nativeAudioFs'
+import { isNativeApp } from './nativeShell'
 import type { OpfsAppendWriter } from './opfs'
 import type { Playlist, Track } from '../types'
 
 /**
- * v5: lotes + reconexión automática (WebRTC muere ~40–50 pistas en la misma sesión),
- * streaming a disco (sin RAM), ACK por pista, reanudación.
+ * v5: lotes + reconexión + streaming a disco.
+ * iOS: lotes muy pequeños y sin releer MP3 a RAM (evita matar la app).
  */
 const PROTOCOL = 5
 const CHUNK = 64 * 1024
 const PEER_PREFIX = 'mv'
-const BUFFER_HIGH = 256 * 1024
+const BUFFER_HIGH = 192 * 1024
 const ACK_TIMEOUT_MS = 120_000
-/** Cortar la sesión WebRTC cada N canciones y reconectar (evita el corte ~44). */
-const BATCH_SIZE = 20
-const RECONNECT_PAUSE_MS = 1200
+/** En nativo, lotes cortos: WebRTC + base64 tumba el proceso ~40 pistas. */
+const BATCH_SIZE_NATIVE = 5
+const BATCH_SIZE_WEB = 12
+const RECONNECT_PAUSE_MS = 2500
+const TRACK_PAUSE_NATIVE_MS = 250
+const TRACK_PAUSE_WEB_MS = 40
+
+function batchSize(): number {
+  return isNativeApp() ? BATCH_SIZE_NATIVE : BATCH_SIZE_WEB
+}
 
 export function makeTransferCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000))
@@ -62,6 +71,7 @@ type JsonMsg =
   | { t: 'plan'; trackCount: number; skipped?: number; batch?: number }
   | { t: 'playlists'; items: PlaylistWire[] }
   | { t: 'have'; ids: string[] }
+  | { t: 'caps'; covers: boolean }
   | {
       t: 'track-start'
       i: number
@@ -343,11 +353,18 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
           )
 
           let have = new Set<string>()
+          let sendCovers = true
           try {
             const haveMsg = await inbox.waitJson('have', 45000)
             if (haveMsg.t === 'have') have = new Set(haveMsg.ids)
           } catch {
             /* enviar todo lo que quede */
+          }
+          try {
+            const caps = await inbox.waitJson('caps', 8000)
+            if (caps.t === 'caps') sendCovers = caps.covers
+          } catch {
+            sendCovers = true
           }
 
           const pending = allWithAudio.filter((t) => !have.has(t.id))
@@ -362,7 +379,7 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
             return
           }
 
-          const batch = pending.slice(0, BATCH_SIZE)
+          const batch = pending.slice(0, batchSize())
           await sendPayload(
             conn,
             {
@@ -390,6 +407,7 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
             batch,
             pendingTotal: pending.length,
             alreadyDone: already,
+            sendCovers,
             handlers,
             isStopped: () => stopped,
           })
@@ -506,10 +524,12 @@ async function sendTrackBatch(opts: {
   batch: Track[]
   pendingTotal: number
   alreadyDone: number
+  sendCovers: boolean
   handlers: HostHandlers
   isStopped: () => boolean
 }) {
-  const { conn, inbox, batch, pendingTotal, alreadyDone, handlers, isStopped } = opts
+  const { conn, inbox, batch, pendingTotal, alreadyDone, sendCovers, handlers, isStopped } =
+    opts
   let lastReported = -1
   const ping = window.setInterval(() => {
     try {
@@ -530,7 +550,8 @@ async function sendTrackBatch(opts: {
       const audio = await getAudioBlob(track.id)
       if (!audio) continue
       const totalSize = audio.size
-      const cover = track.hasCover ? await getCoverBlob(track.id) : null
+      const cover =
+        sendCovers && track.hasCover ? await getCoverBlob(track.id) : null
       const coverBuf = cover ? new Uint8Array(await cover.arrayBuffer()) : null
       const hasCover = Boolean(coverBuf?.byteLength)
       const payloadBytes = totalSize + (hasCover ? coverBuf!.byteLength : 0)
@@ -635,8 +656,9 @@ async function sendTrackBatch(opts: {
         track.title,
         100,
       )
-      // Micro-pausa entre pistas para no saturar iOS
-      await new Promise((r) => setTimeout(r, 40))
+      await new Promise((r) =>
+        setTimeout(r, isNativeApp() ? TRACK_PAUSE_NATIVE_MS : TRACK_PAUSE_WEB_MS),
+      )
     }
   } finally {
     window.clearInterval(ping)
@@ -784,7 +806,17 @@ async function listLocalAudioIds(): Promise<string[]> {
   const ids: string[] = []
   for (const t of await db.tracks.toArray()) {
     if (t.hasLocalAudio === false) continue
-    if (await getAudioBlob(t.id)) ids.push(t.id)
+    // NUNCA getAudioBlob aquí: releer todos los MP3 a RAM mata el iPhone
+    if ((t.audioBytes ?? 0) > 1024 || t.hasLocalAudio === true) {
+      if (isNativeApp()) {
+        if (await nativeAudioExists(t.id)) ids.push(t.id)
+        else if ((t.audioBytes ?? 0) > 1024) ids.push(t.id)
+      } else {
+        ids.push(t.id)
+      }
+      continue
+    }
+    if (isNativeApp() && (await nativeAudioExists(t.id))) ids.push(t.id)
   }
   return ids
 }
@@ -808,6 +840,7 @@ async function receiveLibraryRound(
     stream: OpfsAppendWriter | null
     received: number
     parts: Uint8Array[]
+    discard: boolean
   } | null = null
   let currentCover: {
     id: string
@@ -817,6 +850,8 @@ async function receiveLibraryRound(
     received: number
   } | null = null
   let pendingAck: { id: string; i: number } | null = null
+  /** En nativo no enviamos portadas en el mismo lote (base64 extra tumba la app). */
+  const skipCovers = isNativeApp()
 
   const queue: unknown[] = []
   let wake: (() => void) | null = null
@@ -893,7 +928,7 @@ async function receiveLibraryRound(
               : new Uint8Array(data)
 
         if (currentCover) {
-          currentCover.parts.push(bytes)
+          if (!skipCovers) currentCover.parts.push(bytes)
           currentCover.received += bytes.byteLength
           const coverPct = currentCover.size
             ? (currentCover.received / currentCover.size) * 100
@@ -902,6 +937,10 @@ async function receiveLibraryRound(
           continue
         }
         if (!current) continue
+        if (current.discard) {
+          current.received += bytes.byteLength
+          continue
+        }
         if (current.stream) {
           await current.stream.write(bytes)
         } else {
@@ -942,6 +981,7 @@ async function receiveLibraryRound(
         handlers.onStatus(`Biblioteca PC: ${expected}. Comprobando qué falta…`)
         const haveIds = await listLocalAudioIds()
         conn.send({ t: 'have', ids: haveIds } satisfies JsonMsg)
+        conn.send({ t: 'caps', covers: !isNativeApp() } satisfies JsonMsg)
         continue
       }
 
@@ -988,7 +1028,6 @@ async function receiveLibraryRound(
         lastReported = -1
         lastTitle = data.title
         const id = data.id || createId()
-        // Forzar id del PC en meta
         const meta = { ...data, id }
         let stream: OpfsAppendWriter | null = null
         try {
@@ -996,7 +1035,8 @@ async function receiveLibraryRound(
         } catch {
           stream = null
         }
-        current = { meta, stream, received: 0, parts: [] }
+        const discard = !stream && isNativeApp()
+        current = { meta, stream, received: 0, parts: [], discard }
         report(data.title, 0, true)
         continue
       }
@@ -1009,7 +1049,14 @@ async function receiveLibraryRound(
         const stream = current.stream
         const parts = current.parts
         const received = current.received
+        const discard = current.discard
         current = null
+
+        if (discard) {
+          console.warn('Descartada (sin escritura a disco)', meta.title)
+          sendAck(meta.id, meta.i)
+          continue
+        }
 
         if (received < meta.size * 0.98) {
           if (stream) {
@@ -1026,14 +1073,10 @@ async function receiveLibraryRound(
 
         try {
           report(meta.title, 96, true)
-          let libraryBlob: Blob
+          let audioBytes = received
           if (stream) {
-            libraryBlob = await finishHugeAudioWrite(
-              meta.id,
-              stream,
-              meta.size,
-              meta.mimeType,
-            )
+            // Solo tamaño en disco — no releer el MP3 a RAM
+            audioBytes = await finishHugeAudioWriteSize(meta.id, stream, meta.size)
           } else {
             const merged = new Uint8Array(meta.size)
             let off = 0
@@ -1041,12 +1084,13 @@ async function receiveLibraryRound(
               merged.set(p, off)
               off += p.byteLength
             }
-            libraryBlob = new Blob(
+            const libraryBlob = new Blob(
               [merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength)],
               { type: meta.mimeType || 'audio/mpeg' },
             )
             const { saveAudioBlob } = await import('./library')
             await saveAudioBlob(meta.id, libraryBlob)
+            audioBytes = libraryBlob.size
           }
 
           const existing = await db.tracks.get(meta.id)
@@ -1069,13 +1113,14 @@ async function receiveLibraryRound(
             enriched: meta.enriched ?? existing?.enriched ?? false,
             hasLocalAudio: true,
             origin: 'local',
-            audioBytes: libraryBlob.size,
+            audioBytes,
             audioUpdatedAt: now,
             needsAudioUpdate: false,
           } satisfies Track)
-          await markLocalAudioFresh(meta.id, now, libraryBlob.size)
+          await markLocalAudioFresh(meta.id, now, audioBytes)
 
           if (meta.hasCover) {
+            // Host envía portada después; hay que consumirla aunque en nativo no la guardemos
             pendingAck = { id: meta.id, i: meta.i }
             report(meta.title, 90, true)
           } else {
@@ -1088,6 +1133,7 @@ async function receiveLibraryRound(
               100,
             )
             sendAck(meta.id, meta.i)
+            if (isNativeApp()) await new Promise((r) => setTimeout(r, 80))
           }
         } catch (e) {
           console.warn('Fallo al guardar pista', e)
@@ -1125,9 +1171,9 @@ async function receiveLibraryRound(
           continue
         }
         const coverMeta = currentCover
-        const got = coverMeta.parts.reduce((n, p) => n + p.byteLength, 0)
+        const got = coverMeta.received || coverMeta.parts.reduce((n, p) => n + p.byteLength, 0)
         currentCover = null
-        if (got >= coverMeta.size * 0.9) {
+        if (!skipCovers && got >= coverMeta.size * 0.9 && coverMeta.parts.length) {
           try {
             await saveCoverBlob(
               coverMeta.id,
@@ -1142,6 +1188,7 @@ async function receiveLibraryRound(
             console.warn('Fallo portada', e)
           }
         }
+        coverMeta.parts = []
         if (pendingAck && pendingAck.id === coverMeta.id) {
           imported += 1
           emitProgress(
