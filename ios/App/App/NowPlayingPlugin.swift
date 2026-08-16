@@ -18,7 +18,6 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "setPlaybackState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setPositionState", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setFeedbackState", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "setSeekSkipEnabled", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "clear", returnType: CAPPluginReturnPromise),
     ]
 
@@ -26,9 +25,6 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
     private var commandsWired = false
     private var reassertTimer: Timer?
     private var isPlaying = false
-    /// Podcasts: ±10 s en bloqueo / CarPlay. Música: desactivado (no sustituir next/prev).
-    private var seekSkipEnabled = false
-    private var seekSkipSeconds: Double = 10
 
     public override func load() {
         super.load()
@@ -154,19 +150,6 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
-    /** Activa o desactiva skip ±N s (podcasts) sin quitar next/prev. */
-    @objc func setSeekSkipEnabled(_ call: CAPPluginCall) {
-        let enabled = call.getBool("enabled") ?? false
-        let seconds = max(1, call.getDouble("seconds") ?? 10)
-        DispatchQueue.main.async {
-            self.seekSkipEnabled = enabled
-            self.seekSkipSeconds = seconds
-            self.wireRemoteCommandsIfNeeded()
-            self.applySeekSkipCommands()
-            call.resolve()
-        }
-    }
-
     private func apply(_ info: [String: Any]) {
         nowPlayingInfo = info
         // Forzar escritura completa: WKWebView a veces deja un diccionario vacío
@@ -247,25 +230,8 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             return .success
         }
 
-        center.skipForwardCommand.addTarget { [weak self] event in
-            guard let self else { return .commandFailed }
-            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.seekSkipSeconds
-            self.notifyListeners("remote", data: [
-                "action": "seekforward",
-                "seekOffset": interval,
-            ])
-            return .success
-        }
-        center.skipBackwardCommand.addTarget { [weak self] event in
-            guard let self else { return .commandFailed }
-            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? self.seekSkipSeconds
-            self.notifyListeners("remote", data: [
-                "action": "seekbackward",
-                "seekOffset": interval,
-            ])
-            return .success
-        }
-        applySeekSkipCommands()
+        center.skipForwardCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
 
         // CarPlay / bloqueo: Me gusta
         center.likeCommand.isEnabled = true
@@ -285,15 +251,6 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             self?.notifyListeners("remote", data: ["action": "bookmark"])
             return .success
         }
-    }
-
-    private func applySeekSkipCommands() {
-        let center = MPRemoteCommandCenter.shared()
-        let interval = NSNumber(value: seekSkipSeconds)
-        center.skipForwardCommand.preferredIntervals = [interval]
-        center.skipBackwardCommand.preferredIntervals = [interval]
-        center.skipForwardCommand.isEnabled = seekSkipEnabled
-        center.skipBackwardCommand.isEnabled = seekSkipEnabled
     }
 
     private static func firstArtworkSrc(from call: CAPPluginCall) -> String? {

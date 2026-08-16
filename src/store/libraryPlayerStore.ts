@@ -26,7 +26,6 @@ import {
   nativeSetMetadata,
   nativeSetPlaybackState,
   nativeSetPositionState,
-  nativeSetSeekSkipEnabled,
 } from '../lib/nativeNowPlaying'
 import { ensureCarPlayPlaylist } from '../lib/carPlayPrefs'
 import { isNativeApp } from '../lib/nativeAudioFs'
@@ -526,7 +525,6 @@ function reinforceLibraryMediaHandlers() {
       void handleRemoteBookmark()
     },
   })
-  void nativeSetSeekSkipEnabled(false)
 }
 
 async function handleRemoteLike() {
