@@ -293,17 +293,31 @@ export function LibraryPage() {
         }}
       />
 
+      {tab === 'songs' && canHost && (
+        <div className="enrich-banner" role="status">
+          <div>
+            <strong>Pasar música al móvil</strong>
+            <span>
+              Perfil → <em>Generar código de 6 dígitos</em>. En el iPhone: Perfil → escribe el
+              código (misma Wi‑Fi).
+            </span>
+          </div>
+          <Link to="/profile#wifi-transfer" className="enrich-banner__btn">
+            <IconUpload size={16} /> Generar código
+          </Link>
+        </div>
+      )}
+
       {tab === 'songs' && !canHost && (
         <div className="enrich-banner" role="status">
           <div>
             <strong>Biblioteca desde el PC (código Wi‑Fi)</strong>
             <span>
-              En el PC (Chrome): Perfil → Compartir biblioteca. Luego aquí o en Perfil escribe el
-              código de 6 dígitos.
+              En el PC (Chrome): Perfil → Generar código. Luego aquí escribe los 6 dígitos.
             </span>
           </div>
-          <Link to="/profile" className="enrich-banner__btn">
-            <IconDownload size={16} /> Ir a Perfil
+          <Link to="/profile#wifi-transfer" className="enrich-banner__btn">
+            <IconDownload size={16} /> Escribir código
           </Link>
         </div>
       )}

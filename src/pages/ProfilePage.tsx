@@ -83,6 +83,13 @@ export function ProfilePage() {
   }, [])
 
   useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (window.location.hash !== '#wifi-transfer') return
+    const el = document.getElementById('wifi-transfer')
+    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [])
+
+  useEffect(() => {
     void useLibraryStore
       .getState()
       .countOrphanStorage()
@@ -427,7 +434,181 @@ export function ProfilePage() {
         )}
       </section>
 
-      {/* Sincronización */}
+      {/* Pasar música PC ↔ móvil (local Wi‑Fi; no depende de la nube) */}
+      <section className="profile-card" id="wifi-transfer">
+        <h2 className="profile-card__title">Pasar música al móvil</h2>
+        <p className="profile-card__hint">
+          Misma Wi‑Fi. La música <strong>no va a la nube</strong>: solo por un código de 6 dígitos.
+        </p>
+        {onPc || canHost ? (
+          <div style={{ marginTop: 14 }}>
+            {!wifiCode ? (
+              <button
+                type="button"
+                className="chip chip-play"
+                style={{ width: '100%', justifyContent: 'center', padding: '14px 18px', fontSize: '1.05rem' }}
+                disabled={busy}
+                onClick={() => {
+                  setLocalError(null)
+                  setOkMsg(null)
+                  setWifiHostStatus('Preparando…')
+                  wifiStopRef.current?.()
+                  void startWifiHost({
+                    onCode: (c) => setWifiCode(c),
+                    onStatus: setWifiHostStatus,
+                    onProgress: (done, total, name) =>
+                      setWifiHostStatus(
+                        `Enviando ${done + 1}/${total}${name ? ` · ${name}` : ''}`,
+                      ),
+                    onError: (msg) => {
+                      setLocalError(msg)
+                      setWifiHostStatus(null)
+                    },
+                    onFinished: () => {
+                      setOkMsg('Biblioteca enviada al móvil')
+                      setWifiHostStatus('Listo. Puedes generar otro código si hace falta.')
+                    },
+                  })
+                    .then((session) => {
+                      wifiStopRef.current = session.stop
+                    })
+                    .catch((e) => {
+                      setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar Wi‑Fi')
+                      setWifiHostStatus(null)
+                    })
+                }}
+              >
+                Generar código de 6 dígitos
+              </button>
+            ) : (
+              <div>
+                <p className="profile-card__hint">Escribe este código en el iPhone → Perfil:</p>
+                <p
+                  style={{
+                    fontSize: '2.4rem',
+                    fontWeight: 800,
+                    letterSpacing: '0.28em',
+                    margin: '12px 0',
+                    fontVariantNumeric: 'tabular-nums',
+                    textAlign: 'center',
+                  }}
+                >
+                  {wifiCode}
+                </p>
+                <p className="profile-card__hint">
+                  {wifiHostStatus || 'Deja esta pestaña abierta hasta que termine el envío.'}
+                </p>
+                <button
+                  type="button"
+                  className="chip"
+                  style={{ marginTop: 8 }}
+                  onClick={() => {
+                    wifiStopRef.current?.()
+                    wifiStopRef.current = null
+                    setWifiCode(null)
+                    setWifiHostStatus(null)
+                  }}
+                >
+                  Detener
+                </button>
+              </div>
+            )}
+          </div>
+        ) : (
+          <div style={{ marginTop: 14 }}>
+            <label className="profile-card__hint" style={{ display: 'block' }}>
+              Código del PC (6 dígitos)
+              <input
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={6}
+                placeholder="123456"
+                value={manualCode}
+                disabled={wifiSyncing}
+                onChange={(e) =>
+                  setManualCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+                }
+                style={{
+                  display: 'block',
+                  width: '100%',
+                  marginTop: 8,
+                  padding: '14px 16px',
+                  fontSize: '1.35rem',
+                  letterSpacing: '0.28em',
+                  borderRadius: 10,
+                  border: '1px solid #3e3e3e',
+                  background: '#121212',
+                  color: '#fff',
+                  textAlign: 'center',
+                }}
+              />
+            </label>
+            <button
+              type="button"
+              className="chip chip-play"
+              style={{
+                marginTop: 12,
+                width: '100%',
+                justifyContent: 'center',
+                padding: '14px 18px',
+                fontSize: '1.05rem',
+              }}
+              disabled={wifiSyncing || manualCode.length !== 6}
+              onClick={() => {
+                setWifiSyncing(true)
+                setLocalError(null)
+                setOkMsg(null)
+                void import('../lib/wifiTransfer')
+                  .then(({ startWifiClient }) =>
+                    startWifiClient(manualCode, {
+                      onStatus: (msg) =>
+                        useLibraryStore.setState({ lastSyncMessage: msg }),
+                      onProgress: (done, total, name) =>
+                        useLibraryStore.setState({
+                          downloadProgress: {
+                            done,
+                            total,
+                            name,
+                            trackId: null,
+                            percent: total ? Math.round((done / total) * 100) : 0,
+                            ids: [],
+                          },
+                        }),
+                      onError: (msg) => {
+                        setLocalError(msg)
+                        setWifiSyncing(false)
+                        useLibraryStore.setState({ downloadProgress: null })
+                      },
+                      onFinished: (imported, _files, playlists) => {
+                        setOkMsg(
+                          `Recibidas ${imported} canciones` +
+                            (playlists ? ` · ${playlists} playlists` : ''),
+                        )
+                        setWifiSyncing(false)
+                        useLibraryStore.setState({
+                          downloadProgress: null,
+                          lastSyncAt: Date.now(),
+                          lastSyncMessage: `Wi‑Fi código: ${imported} canciones`,
+                        })
+                      },
+                    }),
+                  )
+                  .catch((e) => {
+                    setLocalError(e instanceof Error ? e.message : 'Error Wi‑Fi')
+                    setWifiSyncing(false)
+                  })
+              }}
+            >
+              {wifiSyncing ? 'Conectando…' : 'Conectar con el PC'}
+            </button>
+            <p className="profile-card__hint" style={{ marginTop: 10 }}>
+              En el PC (Chrome): Perfil → <strong>Generar código de 6 dígitos</strong>. Misma Wi‑Fi.
+            </p>
+          </div>
+        )}
+      </section>
+
+      {/* Sincronización nube (podcasts / presencia) */}
       <section className="profile-card">
         <div className="profile-card__head">
           <h2 className="profile-card__title">Sincronización</h2>
@@ -463,173 +644,16 @@ export function ProfilePage() {
           </button>
         </div>
         {!cloud ? (
-          <p className="profile-card__hint">Supabase no configurado — todo es local en este dispositivo.</p>
+          <p className="profile-card__hint">
+            Supabase no configurado — podcasts/cuenta en la nube no disponibles. La música se pasa
+            igual con el código de arriba.
+          </p>
         ) : (
           <>
             <p className="profile-card__hint">
-              La música y las playlists <strong>no se registran en la nube</strong>. Se pasan del PC
-              al móvil con un <strong>código de 6 dígitos</strong> (misma Wi‑Fi). Los podcasts sí
-              van en la cuenta.
+              Aquí solo se sincronizan podcasts y el estado del PC. La música va por Wi‑Fi (sección
+              de arriba).
             </p>
-            {onPc || canHost ? (
-              <div style={{ marginTop: 12 }}>
-                {!wifiCode ? (
-                  <button
-                    type="button"
-                    className="chip chip-play"
-                    disabled={busy}
-                    onClick={() => {
-                      setLocalError(null)
-                      setOkMsg(null)
-                      setWifiHostStatus('Preparando…')
-                      wifiStopRef.current?.()
-                      void startWifiHost({
-                        onCode: (c) => setWifiCode(c),
-                        onStatus: setWifiHostStatus,
-                        onProgress: (done, total, name) =>
-                          setWifiHostStatus(
-                            `Enviando ${done + 1}/${total}${name ? ` · ${name}` : ''}`,
-                          ),
-                        onError: (msg) => {
-                          setLocalError(msg)
-                          setWifiHostStatus(null)
-                        },
-                        onFinished: () => {
-                          setOkMsg('Biblioteca enviada al móvil')
-                          setWifiHostStatus('Listo. Puedes generar otro código si hace falta.')
-                        },
-                      })
-                        .then((session) => {
-                          wifiStopRef.current = session.stop
-                        })
-                        .catch((e) => {
-                          setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar Wi‑Fi')
-                          setWifiHostStatus(null)
-                        })
-                    }}
-                  >
-                    Compartir biblioteca (código)
-                  </button>
-                ) : (
-                  <div>
-                    <p className="profile-card__hint">Código para el iPhone:</p>
-                    <p
-                      style={{
-                        fontSize: '2rem',
-                        fontWeight: 800,
-                        letterSpacing: '0.25em',
-                        margin: '8px 0 12px',
-                        fontVariantNumeric: 'tabular-nums',
-                      }}
-                    >
-                      {wifiCode}
-                    </p>
-                    <p className="profile-card__hint">
-                      {wifiHostStatus ||
-                        'En el iPhone: Perfil → escribe este código → Conectar.'}
-                    </p>
-                    <button
-                      type="button"
-                      className="chip"
-                      style={{ marginTop: 8 }}
-                      onClick={() => {
-                        wifiStopRef.current?.()
-                        wifiStopRef.current = null
-                        setWifiCode(null)
-                        setWifiHostStatus(null)
-                      }}
-                    >
-                      Detener
-                    </button>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ marginTop: 12 }}>
-                <label className="profile-card__hint" style={{ display: 'block' }}>
-                  Código del PC (6 dígitos)
-                  <input
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    maxLength={6}
-                    placeholder="123456"
-                    value={manualCode}
-                    disabled={wifiSyncing}
-                    onChange={(e) =>
-                      setManualCode(e.target.value.replace(/\D/g, '').slice(0, 6))
-                    }
-                    style={{
-                      display: 'block',
-                      width: '100%',
-                      marginTop: 6,
-                      padding: '12px 14px',
-                      fontSize: '1.25rem',
-                      letterSpacing: '0.2em',
-                      borderRadius: 8,
-                      border: '1px solid #3e3e3e',
-                      background: '#121212',
-                      color: '#fff',
-                    }}
-                  />
-                </label>
-                <button
-                  type="button"
-                  className="chip chip-play"
-                  style={{ marginTop: 10 }}
-                  disabled={wifiSyncing || manualCode.length !== 6}
-                  onClick={() => {
-                    setWifiSyncing(true)
-                    setLocalError(null)
-                    setOkMsg(null)
-                    void import('../lib/wifiTransfer')
-                      .then(({ startWifiClient }) =>
-                        startWifiClient(manualCode, {
-                          onStatus: (msg) =>
-                            useLibraryStore.setState({ lastSyncMessage: msg }),
-                          onProgress: (done, total, name) =>
-                            useLibraryStore.setState({
-                              downloadProgress: {
-                                done,
-                                total,
-                                name,
-                                trackId: null,
-                                percent: total ? Math.round((done / total) * 100) : 0,
-                                ids: [],
-                              },
-                            }),
-                          onError: (msg) => {
-                            setLocalError(msg)
-                            setWifiSyncing(false)
-                            useLibraryStore.setState({ downloadProgress: null })
-                          },
-                          onFinished: (imported, _files, playlists) => {
-                            setOkMsg(
-                              `Recibidas ${imported} canciones` +
-                                (playlists ? ` · ${playlists} playlists` : ''),
-                            )
-                            setWifiSyncing(false)
-                            useLibraryStore.setState({
-                              downloadProgress: null,
-                              lastSyncAt: Date.now(),
-                              lastSyncMessage: `Wi‑Fi código: ${imported} canciones`,
-                            })
-                          },
-                        }),
-                      )
-                      .catch((e) => {
-                        setLocalError(e instanceof Error ? e.message : 'Error Wi‑Fi')
-                        setWifiSyncing(false)
-                      })
-                  }}
-                >
-                  {wifiSyncing ? 'Conectando…' : 'Conectar con el PC'}
-                </button>
-                <p className="profile-card__hint" style={{ marginTop: 8 }}>
-                  En el PC (Chrome): Perfil → <strong>Compartir biblioteca (código)</strong>. Misma
-                  Wi‑Fi.
-                </p>
-              </div>
-            )}
             <p className="profile-card__meta" style={{ marginTop: 12 }}>
               Última sync:{' '}
               {lastSyncAt ? formatLastSeen(lastSyncAt) : 'aún no'}
