@@ -115,6 +115,9 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
     private func apply(_ info: [String: Any]) {
         nowPlayingInfo = info
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        DispatchQueue.main.async {
+            UIApplication.shared.beginReceivingRemoteControlEvents()
+        }
         wireRemoteCommandsIfNeeded()
     }
 

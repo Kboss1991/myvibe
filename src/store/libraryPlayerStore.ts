@@ -500,6 +500,10 @@ async function publishMetadata(track: Track) {
     artist: track.artist || 'MyVibe',
     album: track.album || 'MyVibe',
     artwork,
+  }).then(() => {
+    const playing = !audio().paused || useLibraryPlayerStore.getState().isPlaying
+    void nativeSetPlaybackState(playing)
+    if (playing) pushPositionState(true)
   })
   reinforceLibraryMediaHandlers()
 }

@@ -72,8 +72,8 @@ export async function nativeSetMetadata(opts: {
       album: opts.album,
       artwork: pickNativeArtwork(opts.artwork),
     })
-  } catch {
-    /* ignore */
+  } catch (err) {
+    console.warn('[NowPlaying] setMetadata failed', err)
   }
 }
 
@@ -83,8 +83,8 @@ export async function nativeSetPlaybackState(playing: boolean | 'none'): Promise
     playing === 'none' ? 'none' : playing ? 'playing' : 'paused'
   try {
     await NowPlaying.setPlaybackState({ playbackState })
-  } catch {
-    /* ignore */
+  } catch (err) {
+    console.warn('[NowPlaying] setPlaybackState failed', err)
   }
 }
 
@@ -102,8 +102,8 @@ export async function nativeSetPositionState(
       position: Math.min(position, duration),
       playbackRate,
     })
-  } catch {
-    /* ignore */
+  } catch (err) {
+    console.warn('[NowPlaying] setPositionState failed', err)
   }
 }
 
@@ -111,8 +111,8 @@ export async function nativeClearNowPlaying(): Promise<void> {
   if (!isNativeNowPlayingAvailable()) return
   try {
     await NowPlaying.clear()
-  } catch {
-    /* ignore */
+  } catch (err) {
+    console.warn('[NowPlaying] clear failed', err)
   }
 }
 

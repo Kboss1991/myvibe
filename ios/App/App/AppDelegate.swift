@@ -19,6 +19,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         } catch {
             print("AVAudioSession error: \(error)")
         }
+        UIApplication.shared.beginReceivingRemoteControlEvents()
         return true
     }
 
