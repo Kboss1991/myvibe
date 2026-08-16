@@ -5,10 +5,12 @@ import { getAudioBlob, getCoverBlob, saveAudioBlob, saveCoverBlob } from './libr
 import { tracksLookSame } from './trackDedupe'
 import type { Playlist, Track } from '../types'
 
-/** v3: playlists + ids estables + portadas */
-const PROTOCOL = 3
-const CHUNK = 256 * 1024
+/** v4: portadas + ACK por pista + reanudación (omite las que ya están en el móvil) */
+const PROTOCOL = 4
+const CHUNK = 128 * 1024
 const PEER_PREFIX = 'mv'
+const BUFFER_HIGH = 512 * 1024
+const ACK_TIMEOUT_MS = 180_000
 
 export function makeTransferCode(): string {
   return String(Math.floor(100000 + Math.random() * 900000))
@@ -45,6 +47,7 @@ type PlaylistWire = {
 type JsonMsg =
   | { t: 'hello'; v: number; trackCount: number; from?: string }
   | { t: 'playlists'; items: PlaylistWire[] }
+  | { t: 'have'; ids: string[] }
   | {
       t: 'track-start'
       i: number
@@ -66,12 +69,49 @@ type JsonMsg =
   | { t: 'track-end'; i: number }
   | { t: 'cover-start'; id: string; size: number; mimeType: string }
   | { t: 'cover-end'; id: string }
+  | { t: 'ack'; id: string; i: number }
   | { t: 'done' }
   | { t: 'error'; message: string }
   | { t: 'ready' }
 
 function isJsonMsg(data: unknown): data is JsonMsg {
   return !!data && typeof data === 'object' && 't' in (data as object)
+}
+
+function getDataChannel(conn: DataConnection): RTCDataChannel | null {
+  const raw = conn as DataConnection & { dataChannel?: RTCDataChannel }
+  return raw.dataChannel ?? null
+}
+
+/** Evita saturar el DataChannel (causa típica de cortes a mitad de biblioteca). */
+async function waitConnDrain(conn: DataConnection, isStopped: () => boolean) {
+  const dc = getDataChannel(conn)
+  if (!dc) {
+    await new Promise((r) => setTimeout(r, 6))
+    return
+  }
+  while (!isStopped() && dc.bufferedAmount > BUFFER_HIGH) {
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        dc.removeEventListener('bufferedamountlow', finish)
+        window.clearTimeout(timer)
+        resolve()
+      }
+      dc.bufferedAmountLowThreshold = Math.floor(BUFFER_HIGH / 2)
+      dc.addEventListener('bufferedamountlow', finish)
+      const timer = window.setTimeout(finish, 200)
+    })
+  }
+}
+
+async function sendPayload(
+  conn: DataConnection,
+  payload: ArrayBuffer | JsonMsg,
+  isStopped: () => boolean,
+) {
+  await waitConnDrain(conn, isStopped)
+  if (isStopped()) return
+  conn.send(payload)
 }
 
 export type HostHandlers = {
@@ -158,15 +198,44 @@ async function sendLibrary(
 ) {
   try {
     const all = await db.tracks.toArray()
-    const tracks: Track[] = []
+    const withAudio: Track[] = []
     for (const t of all) {
       if (t.hasLocalAudio === false) continue
-      if (await getAudioBlob(t.id)) tracks.push(t)
+      if (await getAudioBlob(t.id)) withAudio.push(t)
     }
-    if (!tracks.length) {
-      conn.send({ t: 'error', message: 'No hay canciones con audio en el PC' } satisfies JsonMsg)
+    if (!withAudio.length) {
+      await sendPayload(
+        conn,
+        { t: 'error', message: 'No hay canciones con audio en el PC' } satisfies JsonMsg,
+        isStopped,
+      )
       handlers.onError('No hay canciones para enviar')
       return
+    }
+
+    handlers.onStatus(`Conectado. Biblioteca PC: ${withAudio.length} canciones…`)
+    await sendPayload(
+      conn,
+      {
+        t: 'hello',
+        v: PROTOCOL,
+        trackCount: withAudio.length,
+      } satisfies JsonMsg,
+      isStopped,
+    )
+
+    // Esperar `have` justo tras hello (antes de playlists) para no perder el mensaje
+    let alreadyOnPhone = 0
+    let tracks = withAudio
+    try {
+      const haveMsg = await waitForMsg(conn, 'have', 45000)
+      if (haveMsg.t === 'have') {
+        const have = new Set(haveMsg.ids)
+        alreadyOnPhone = withAudio.filter((t) => have.has(t.id)).length
+        tracks = withAudio.filter((t) => !have.has(t.id))
+      }
+    } catch {
+      // móvil antiguo o lento: enviar todo
     }
 
     const playlists = await db.playlists.toArray()
@@ -174,20 +243,29 @@ async function sendLibrary(
       id: p.id,
       name: p.name,
       description: p.description || '',
-      trackIds: p.trackIds.filter((id) => tracks.some((t) => t.id === id)),
+      trackIds: p.trackIds.filter((id) => withAudio.some((t) => t.id === id)),
       themeColor: p.themeColor,
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,
     }))
+    await sendPayload(conn, { t: 'playlists', items: wire } satisfies JsonMsg, isStopped)
 
-    handlers.onStatus(`Conectado. Enviando ${tracks.length} canciones…`)
-    conn.send({
-      t: 'hello',
-      v: PROTOCOL,
-      trackCount: tracks.length,
-    } satisfies JsonMsg)
-    conn.send({ t: 'playlists', items: wire } satisfies JsonMsg)
+    if (!tracks.length) {
+      await sendPayload(conn, { t: 'done' } satisfies JsonMsg, isStopped)
+      handlers.onStatus(
+        `Nada pendiente: las ${withAudio.length} canciones ya están en el móvil.`,
+      )
+      handlers.onFinished()
+      return
+    }
 
+    handlers.onStatus(
+      alreadyOnPhone
+        ? `Enviando ${tracks.length} pendientes (${alreadyOnPhone} ya en el móvil)…`
+        : `Enviando ${tracks.length} canciones…`,
+    )
+
+    let sent = 0
     for (let i = 0; i < tracks.length; i++) {
       if (isStopped()) return
       const track = tracks[i]!
@@ -200,69 +278,101 @@ async function sendLibrary(
       const coverBuf = cover ? new Uint8Array(await cover.arrayBuffer()) : null
       const hasCover = Boolean(coverBuf?.byteLength)
 
-      conn.send({
-        t: 'track-start',
-        i,
-        id: track.id,
-        title: track.title,
-        artist: track.artist,
-        album: track.album,
-        genre: track.genre,
-        year: track.year,
-        mimeType: track.mimeType || audio.type || 'audio/mpeg',
-        fileName: track.fileName || `${track.title}.mp3`,
-        size: totalSize,
-        duration: track.duration || 0,
-        liked: Boolean(track.liked),
-        hasCover,
-        enriched: Boolean(track.enriched),
-      } satisfies JsonMsg)
+      await sendPayload(
+        conn,
+        {
+          t: 'track-start',
+          i,
+          id: track.id,
+          title: track.title,
+          artist: track.artist,
+          album: track.album,
+          genre: track.genre,
+          year: track.year,
+          mimeType: track.mimeType || audio.type || 'audio/mpeg',
+          fileName: track.fileName || `${track.title}.mp3`,
+          size: totalSize,
+          duration: track.duration || 0,
+          liked: Boolean(track.liked),
+          hasCover,
+          enriched: Boolean(track.enriched),
+        } satisfies JsonMsg,
+        isStopped,
+      )
 
       for (let offset = 0; offset < totalSize; offset += CHUNK) {
         if (isStopped()) return
         const end = Math.min(offset + CHUNK, totalSize)
         const part = audio.slice(offset, end)
         const ab = await part.arrayBuffer()
-        conn.send({
-          t: 'chunk-info',
-          i,
-          offset,
-          total: totalSize,
-        } satisfies JsonMsg)
-        conn.send(ab)
-        await new Promise((r) => setTimeout(r, totalSize > 80_000_000 ? 2 : 0))
+        await sendPayload(
+          conn,
+          {
+            t: 'chunk-info',
+            i,
+            offset,
+            total: totalSize,
+          } satisfies JsonMsg,
+          isStopped,
+        )
+        await sendPayload(conn, ab, isStopped)
       }
 
-      conn.send({ t: 'track-end', i } satisfies JsonMsg)
+      await sendPayload(conn, { t: 'track-end', i } satisfies JsonMsg, isStopped)
 
       if (coverBuf && coverBuf.byteLength && cover) {
-        conn.send({
-          t: 'cover-start',
-          id: track.id,
-          size: coverBuf.byteLength,
-          mimeType: cover.type || 'image/jpeg',
-        } satisfies JsonMsg)
+        await sendPayload(
+          conn,
+          {
+            t: 'cover-start',
+            id: track.id,
+            size: coverBuf.byteLength,
+            mimeType: cover.type || 'image/jpeg',
+          } satisfies JsonMsg,
+          isStopped,
+        )
         for (let offset = 0; offset < coverBuf.byteLength; offset += CHUNK) {
           if (isStopped()) return
           const end = Math.min(offset + CHUNK, coverBuf.byteLength)
           const slice = coverBuf.subarray(offset, end)
-          conn.send({
-            t: 'chunk-info',
-            i,
-            offset,
-            total: coverBuf.byteLength,
-          } satisfies JsonMsg)
-          conn.send(slice.slice().buffer)
-          await new Promise((r) => setTimeout(r, 2))
+          await sendPayload(
+            conn,
+            {
+              t: 'chunk-info',
+              i,
+              offset,
+              total: coverBuf.byteLength,
+            } satisfies JsonMsg,
+            isStopped,
+          )
+          await sendPayload(conn, slice.slice().buffer, isStopped)
         }
-        conn.send({ t: 'cover-end', id: track.id } satisfies JsonMsg)
+        await sendPayload(conn, { t: 'cover-end', id: track.id } satisfies JsonMsg, isStopped)
       }
+
+      try {
+        const ack = await waitForMsg(conn, 'ack', ACK_TIMEOUT_MS)
+        if (ack.t === 'ack' && ack.id !== track.id) {
+          // ack desfasado: seguir esperando un poco más
+          const again = await waitForMsg(conn, 'ack', 30_000)
+          if (again.t !== 'ack' || again.id !== track.id) {
+            throw new Error(`ACK incorrecto para ${track.title}`)
+          }
+        }
+      } catch {
+        throw new Error(
+          `El móvil no confirmó “${track.title}” (${sent}/${tracks.length}). Vuelve a generar código: solo se enviarán las que falten.`,
+        )
+      }
+      sent += 1
+      handlers.onStatus(`Confirmadas ${sent}/${tracks.length}…`)
     }
 
-    conn.send({ t: 'done' } satisfies JsonMsg)
+    await sendPayload(conn, { t: 'done' } satisfies JsonMsg, isStopped)
     handlers.onProgress(tracks.length, tracks.length, '')
     handlers.onStatus(
-      `Envío terminado · ${tracks.length} canciones` +
+      `Envío terminado · ${sent} canciones` +
+        (alreadyOnPhone ? ` · ${alreadyOnPhone} ya estaban` : '') +
         (wire.length ? ` · ${wire.length} playlists` : ''),
     )
     handlers.onFinished()
@@ -403,6 +513,16 @@ export async function startWifiClient(
   return { stop }
 }
 
+async function listLocalAudioIds(): Promise<string[]> {
+  const ids: string[] = []
+  const all = await db.tracks.toArray()
+  for (const t of all) {
+    if (t.hasLocalAudio === false) continue
+    if (await getAudioBlob(t.id)) ids.push(t.id)
+  }
+  return ids
+}
+
 async function receiveLibrary(
   conn: DataConnection,
   handlers: ClientHandlers,
@@ -413,6 +533,7 @@ async function receiveLibrary(
   let imported = 0
   let playlistsIn = 0
   const visibleFiles: { fileName: string; blob: Blob }[] = []
+  let keepVisibleBlobs = false
   let current: {
     meta: Extract<JsonMsg, { t: 'track-start' }>
     parts: Uint8Array[]
@@ -424,6 +545,7 @@ async function receiveLibrary(
     mimeType: string
     parts: Uint8Array[]
   } | null = null
+  let pendingAck: { id: string; i: number } | null = null
 
   const queue: unknown[] = []
   let waiting: (() => void) | null = null
@@ -443,13 +565,25 @@ async function receiveLibrary(
       waiting = () => resolve(queue.shift())
     })
 
+  const sendAck = (id: string, i: number) => {
+    try {
+      conn.send({ t: 'ack', id, i } satisfies JsonMsg)
+    } catch {
+      // ignore
+    }
+  }
+
   conn.send({ t: 'ready' } satisfies JsonMsg)
 
   try {
     while (!isStopped()) {
       const data = await nextData()
 
-      if (data instanceof ArrayBuffer || data instanceof Uint8Array || (typeof Blob !== 'undefined' && data instanceof Blob)) {
+      if (
+        data instanceof ArrayBuffer ||
+        data instanceof Uint8Array ||
+        (typeof Blob !== 'undefined' && data instanceof Blob)
+      ) {
         const bytes =
           data instanceof Uint8Array
             ? data
@@ -477,12 +611,21 @@ async function receiveLibrary(
         onHello?.()
         if (data.v < 1 || data.v > PROTOCOL) {
           handlers.onError(
-            'Versión incompatible. En el PC abre MyVibe con el código nuevo (no la web antigua de Vercel).',
+            'Versión incompatible. En el PC abre MyVibe con Ctrl+Shift+R y vuelve a generar el código.',
           )
           return
         }
         expected = data.trackCount
-        handlers.onStatus(`Recibiendo ${expected} canciones…`)
+        // No acumular todos los blobs en RAM (rompe el iPhone a ~40–50 canciones)
+        keepVisibleBlobs = expected > 0 && expected <= 20
+        handlers.onStatus(`Biblioteca del PC: ${expected}. Comprobando qué falta…`)
+        const haveIds = await listLocalAudioIds()
+        conn.send({ t: 'have', ids: haveIds } satisfies JsonMsg)
+        handlers.onStatus(
+          haveIds.length
+            ? `Ya tienes ${haveIds.length}. Recibiendo el resto…`
+            : `Recibiendo hasta ${expected} canciones…`,
+        )
         continue
       }
 
@@ -533,6 +676,7 @@ async function receiveLibrary(
 
         if (offset < total * 0.98) {
           console.warn('Pista incompleta', meta.title, offset, total)
+          sendAck(meta.id, meta.i)
           continue
         }
 
@@ -567,7 +711,6 @@ async function receiveLibrary(
             duration: meta.duration || 0,
             mimeType: meta.mimeType || 'audio/mpeg',
             fileName: meta.fileName || `${meta.title}.mp3`,
-            // Portada llega justo después (cover-start); no marcar true aún
             hasCover: existing?.hasCover ?? false,
             liked: meta.liked ?? existing?.liked ?? false,
             playCount: existing?.playCount ?? 0,
@@ -580,16 +723,24 @@ async function receiveLibrary(
             audioUpdatedAt: Date.now(),
           }
           await db.tracks.put(track)
-          visibleFiles.push({
-            fileName:
-              meta.fileName && /\.mp3$/i.test(meta.fileName)
-                ? `MyVibe - ${meta.fileName}`
-                : `MyVibe - ${meta.artist || 'Artista'} - ${meta.title}.mp3`,
-            blob,
-          })
+          if (keepVisibleBlobs) {
+            visibleFiles.push({
+              fileName:
+                meta.fileName && /\.mp3$/i.test(meta.fileName)
+                  ? `MyVibe - ${meta.fileName}`
+                  : `MyVibe - ${meta.artist || 'Artista'} - ${meta.title}.mp3`,
+              blob,
+            })
+          }
           imported += 1
+          if (meta.hasCover) {
+            pendingAck = { id, i: meta.i }
+          } else {
+            sendAck(id, meta.i)
+          }
         } catch (e) {
           console.warn('Fallo al guardar pista', e)
+          sendAck(meta.id, meta.i)
         }
         continue
       }
@@ -608,35 +759,48 @@ async function receiveLibrary(
       if (data.t === 'cover-end') {
         if (!currentCover || currentCover.id !== data.id) {
           currentCover = null
+          if (pendingAck && pendingAck.id === data.id) {
+            sendAck(pendingAck.id, pendingAck.i)
+            pendingAck = null
+          }
           continue
         }
         const coverMeta = currentCover
         const received = coverMeta.parts.reduce((n, p) => n + p.byteLength, 0)
         currentCover = null
-        if (received < coverMeta.size * 0.9) {
+        if (received >= coverMeta.size * 0.9) {
+          try {
+            const coverBlob = new Blob(coverMeta.parts as BlobPart[], {
+              type: coverMeta.mimeType,
+            })
+            await saveCoverBlob(coverMeta.id, coverBlob)
+            await db.tracks.update(coverMeta.id, {
+              hasCover: true,
+              enriched: true,
+              coverUpdatedAt: Date.now(),
+            })
+          } catch (e) {
+            console.warn('Fallo al guardar portada', e)
+          }
+        } else {
           console.warn('Portada incompleta', coverMeta.id, received, coverMeta.size)
-          continue
         }
-        try {
-          const coverBlob = new Blob(coverMeta.parts as BlobPart[], {
-            type: coverMeta.mimeType,
-          })
-          await saveCoverBlob(coverMeta.id, coverBlob)
-          await db.tracks.update(coverMeta.id, {
-            hasCover: true,
-            enriched: true,
-            coverUpdatedAt: Date.now(),
-          })
-        } catch (e) {
-          console.warn('Fallo al guardar portada', e)
+        if (pendingAck && pendingAck.id === coverMeta.id) {
+          sendAck(pendingAck.id, pendingAck.i)
+          pendingAck = null
         }
         continue
       }
 
       if (data.t === 'done') {
+        if (pendingAck) {
+          sendAck(pendingAck.id, pendingAck.i)
+          pendingAck = null
+        }
         handlers.onStatus(
-          `Listo: ${imported} canciones` +
-            (playlistsIn ? ` · ${playlistsIn} playlists` : ''),
+          `Listo: ${imported} canciones nuevas` +
+            (playlistsIn ? ` · ${playlistsIn} playlists` : '') +
+            '. Si faltan, vuelve a conectar: solo se envían las pendientes.',
         )
         handlers.onFinished(imported, visibleFiles, playlistsIn)
         return

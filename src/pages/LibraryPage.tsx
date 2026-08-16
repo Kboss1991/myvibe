@@ -313,7 +313,8 @@ export function LibraryPage() {
           <div>
             <strong>Biblioteca desde el PC (código Wi‑Fi)</strong>
             <span>
-              En el PC (Chrome): Perfil → Generar código. Luego aquí escribe los 6 dígitos.
+              En el PC (Chrome): Perfil → Generar código. Si se corta, vuelve a conectar: solo
+              envía las que falten.
             </span>
           </div>
           <Link to="/profile#wifi-transfer" className="enrich-banner__btn">
