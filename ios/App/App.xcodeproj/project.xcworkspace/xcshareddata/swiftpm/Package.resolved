@@ -11,6 +11,14 @@
       }
     },
     {
+      "identity" : "gcdwebserver",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/ubiregiinc/GCDWebServer.git",
+      "state" : {
+        "revision" : "a206ce627d5a612494e1d0b77b14ccfd582c528e"
+      }
+    },
+    {
       "identity" : "ion-ios-filesystem",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ionic-team/ion-ios-filesystem.git",
