@@ -4,6 +4,7 @@ import { AppIcon } from './components/AppIcon'
 import { BrandWordmark } from './components/BrandWordmark'
 import { BottomNav } from './components/BottomNav'
 import { NowPlaying, PlayerBar, QueueSheet } from './components/Player'
+import { PlayingIsland } from './components/PlayingIsland'
 import { Sidebar } from './components/Sidebar'
 import { heartbeatDevice, isLibraryHostDevice } from './lib/devices'
 import { isCloudAuthEnabled } from './lib/auth'
@@ -239,6 +240,7 @@ export default function App() {
         </div>
       </div>
 
+      <PlayingIsland />
       <NowPlaying />
       <QueueSheet />
     </div>

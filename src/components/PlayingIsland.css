@@ -1,0 +1,123 @@
+.playing-island {
+  display: none;
+}
+
+@media (max-width: 899px) {
+  .playing-island {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    position: fixed;
+    left: 50%;
+    top: max(10px, calc(var(--safe-top, 0px) * 0.22 + 8px));
+    transform: translateX(-50%);
+    z-index: 80;
+    height: 36px;
+    padding: 4px 10px 4px 4px;
+    margin: 0;
+    border: none;
+    border-radius: 999px;
+    background: rgba(18, 18, 18, 0.92);
+    box-shadow:
+      0 0 0 1px rgba(245, 166, 35, 0.22),
+      0 8px 24px rgba(0, 0, 0, 0.35);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    animation: playing-island-in 280ms ease-out;
+  }
+
+  .playing-island:active {
+    transform: translateX(-50%) scale(0.97);
+  }
+}
+
+.playing-island__cover {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #2a2a2a;
+  flex-shrink: 0;
+}
+
+.playing-island__cover--empty {
+  display: block;
+  background: linear-gradient(135deg, #2a2a2a, #3a3208);
+}
+
+.playing-island__bars {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2.5px;
+  height: 16px;
+  padding-bottom: 1px;
+}
+
+.playing-island__bars i {
+  display: block;
+  width: 3px;
+  height: 40%;
+  border-radius: 2px;
+  background: var(--accent, #f5a623);
+  transform-origin: bottom center;
+}
+
+.playing-island.is-playing .playing-island__bars i {
+  animation: playing-island-bar 0.9s ease-in-out infinite;
+}
+
+.playing-island.is-playing .playing-island__bars i:nth-child(1) {
+  animation-delay: -0.35s;
+  height: 55%;
+}
+.playing-island.is-playing .playing-island__bars i:nth-child(2) {
+  animation-delay: -0.15s;
+  height: 90%;
+}
+.playing-island.is-playing .playing-island__bars i:nth-child(3) {
+  animation-delay: -0.55s;
+  height: 65%;
+}
+.playing-island.is-playing .playing-island__bars i:nth-child(4) {
+  animation-delay: -0.05s;
+  height: 100%;
+}
+.playing-island.is-playing .playing-island__bars i:nth-child(5) {
+  animation-delay: -0.4s;
+  height: 45%;
+}
+
+.playing-island.is-paused .playing-island__bars i {
+  height: 28%;
+  opacity: 0.55;
+}
+
+@keyframes playing-island-bar {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+@keyframes playing-island-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .playing-island,
+  .playing-island.is-playing .playing-island__bars i {
+    animation: none;
+  }
+}
