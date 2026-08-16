@@ -1,3 +1,4 @@
+/* Visible en móvil: debajo del notch / Dynamic Island, no encima */
 .playing-island {
   display: none;
 }
@@ -6,26 +7,26 @@
   .playing-island {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     position: fixed;
     left: 50%;
-    top: max(10px, calc(var(--safe-top, 0px) * 0.22 + 8px));
+    /* Justo bajo el safe-area (antes quedaba detrás de la Dynamic Island) */
+    top: calc(var(--safe-top, 0px) + 6px);
     transform: translateX(-50%);
-    z-index: 80;
-    height: 36px;
-    padding: 4px 10px 4px 4px;
+    z-index: 120;
+    height: 40px;
+    padding: 5px 14px 5px 5px;
     margin: 0;
     border: none;
     border-radius: 999px;
-    background: rgba(18, 18, 18, 0.92);
+    background: #1a1a1a;
     box-shadow:
-      0 0 0 1px rgba(245, 166, 35, 0.22),
-      0 8px 24px rgba(0, 0, 0, 0.35);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+      0 0 0 1.5px rgba(245, 166, 35, 0.55),
+      0 10px 28px rgba(0, 0, 0, 0.45);
     cursor: pointer;
     -webkit-tap-highlight-color: transparent;
     animation: playing-island-in 280ms ease-out;
+    pointer-events: auto;
   }
 
   .playing-island:active {
@@ -34,9 +35,9 @@
 }
 
 .playing-island__cover {
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
   object-fit: cover;
   background: #2a2a2a;
   flex-shrink: 0;
@@ -50,17 +51,17 @@
 .playing-island__bars {
   display: inline-flex;
   align-items: flex-end;
-  gap: 2.5px;
-  height: 16px;
+  gap: 3px;
+  height: 18px;
   padding-bottom: 1px;
 }
 
 .playing-island__bars i {
   display: block;
-  width: 3px;
+  width: 3.5px;
   height: 40%;
   border-radius: 2px;
-  background: var(--accent, #f5a623);
+  background: #f5a623;
   transform-origin: bottom center;
 }
 

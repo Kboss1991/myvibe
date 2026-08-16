@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { getRadioStation } from '../lib/myRadios'
 import { getPodcastEpisode, getPodcastShow } from '../lib/podcasts'
 import { useLibraryStore } from '../store/libraryStore'
@@ -27,7 +28,7 @@ export function PlayingIsland() {
   const podcastEp = podcastId ? getPodcastEpisode(podcastId) : null
   const podcastShow = podcastEp ? getPodcastShow(podcastEp.showId) : null
 
-  const active = Boolean(track || radio || podcastEp)
+  const active = Boolean(libTrackId || radio || podcastEp)
   const isPlaying = isLibrary ? libPlaying : rpPlaying
   const coverUrl = isLibrary ? libCoverUrl : rpCoverUrl
   const nowOpen = isLibrary ? libNowOpen : rpNowOpen
@@ -39,10 +40,10 @@ export function PlayingIsland() {
     track?.title ||
     radio?.name ||
     podcastEp?.title ||
-    podcastShow?.title ||
+    podcastShow?.name ||
     'Reproduciendo'
 
-  return (
+  return createPortal(
     <button
       type="button"
       className={`playing-island ${isPlaying ? 'is-playing' : 'is-paused'}`}
@@ -61,6 +62,7 @@ export function PlayingIsland() {
         <i />
         <i />
       </span>
-    </button>
+    </button>,
+    document.body,
   )
 }

@@ -124,8 +124,8 @@ body.sheet-open .app-dock {
     margin-bottom: 0;
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
-    /* Home indicator: no restar safe-area (recortaba “Podcasts”) */
-    padding-bottom: max(10px, calc(var(--safe-bottom, 0px) + 2px));
+    /* Home indicator + margen extra para que no se corte “Podcasts” */
+    padding-bottom: max(20px, calc(var(--safe-bottom, 0px) + 12px));
     border-top-color: #282828;
     overflow: visible;
     max-height: none;
