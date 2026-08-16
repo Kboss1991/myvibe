@@ -228,3 +228,21 @@ export async function nativeAvSeek(position: number): Promise<void> {
     console.warn('[NativeAudio] seek failed', err)
   }
 }
+
+export async function nativeAvGetStatus(): Promise<{
+  playing: boolean
+  position: number
+  duration: number
+} | null> {
+  if (!isNativeAvPlayerAvailable()) return null
+  try {
+    const st = await NativeAudio.getStatus()
+    return {
+      playing: Boolean(st.playing),
+      position: Number(st.position) || 0,
+      duration: Number(st.duration) || 0,
+    }
+  } catch {
+    return null
+  }
+}

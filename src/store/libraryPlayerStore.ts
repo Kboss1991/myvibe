@@ -29,6 +29,7 @@ import {
 import {
   bindNativeAudioListeners,
   isNativeAvPlayerAvailable,
+  nativeAvGetStatus,
   nativeAvPause,
   nativeAvPlay,
   nativeAvResume,
@@ -326,7 +327,9 @@ async function playWithPreferredEngine(
 ): Promise<boolean> {
   if (isNativeAvPlayerAvailable()) {
     const track = await db.tracks.get(trackId)
-    if (track) {
+    // Sin bytes reales: la barra de tiempo engaña (usa duration de metadatos)
+    const bytes = track?.audioBytes ?? 0
+    if (track && bytes > 1024) {
       silenceHtml5Audio()
       const ok = await nativeAvPlay({
         trackId,
@@ -336,28 +339,56 @@ async function playWithPreferredEngine(
         position,
       })
       if (ok) {
-        nativeAvActive = true
-        // Evitar que WKWebView robe la sesión de Now Playing
-        try {
-          if ('mediaSession' in navigator) {
-            navigator.mediaSession.metadata = null
-            navigator.mediaSession.playbackState = 'none'
+        // Comprobar que de verdad arrancó (fichero truncado → ready pero mudo / rate 0)
+        await new Promise((r) => window.setTimeout(r, 250))
+        const st = await nativeAvGetStatus()
+        if (st?.playing || (st && st.duration > 0)) {
+          nativeAvActive = true
+          try {
+            if ('mediaSession' in navigator) {
+              navigator.mediaSession.metadata = null
+              navigator.mediaSession.playbackState = 'none'
+            }
+          } catch {
+            /* ignore */
           }
-        } catch {
-          /* ignore */
+          useLibraryPlayerStore.setState({
+            isPlaying: Boolean(st?.playing),
+            position: st?.position ?? position,
+            duration:
+              st && st.duration > 0
+                ? st.duration
+                : track.duration || useLibraryPlayerStore.getState().duration,
+          })
+          if (st?.playing) return true
+          // Cargó duración pero no suena → forzar HTML5
+          void nativeAvStop()
+          nativeAvActive = false
+        } else {
+          void nativeAvStop()
+          nativeAvActive = false
         }
-        useLibraryPlayerStore.setState({
-          isPlaying: true,
-          position,
-          duration: track.duration || useLibraryPlayerStore.getState().duration,
-        })
-        return true
       }
     }
   }
   nativeAvActive = false
-  applySrcAndPlayHtml5(trackId, urlHint)
-  return true
+  const url =
+    urlHint ??
+    peekAudioObjectUrl(trackId) ??
+    (await getAudioObjectUrl(trackId))
+  if (!url) return false
+  applySrcAndPlayHtml5(trackId, url)
+  const el = audio()
+  try {
+    await el.play()
+  } catch {
+    return false
+  }
+  useLibraryPlayerStore.setState({
+    isPlaying: !el.paused,
+    currentAudioUrl: url,
+  })
+  return !el.paused
 }
 
 function commitTrackChange(trackId: string, index: number, url: string) {
@@ -917,25 +948,34 @@ export const useLibraryPlayerStore = create<
     await stopRivalPlayers()
     bindMediaSessionOnUserPlay()
 
-    if (nativeAvActive || isNativeAvPlayerAvailable()) {
+    // Siempre rearmar motor: resume a medias deja “puedo seek pero no play”
+    if (isNativeAvPlayerAvailable()) {
       if (nativeAvActive) {
         await nativeAvResume()
-        set({ isPlaying: true })
-        const track = await db.tracks.get(currentTrackId)
-        if (track) await publishMetadata(track)
-        return
+        await new Promise((r) => window.setTimeout(r, 200))
+        const st = await nativeAvGetStatus()
+        if (st?.playing) {
+          set({ isPlaying: true, position: st.position || position })
+          const track = await db.tracks.get(currentTrackId)
+          if (track) await publishMetadata(track)
+          return
+        }
+        void nativeAvStop()
+        nativeAvActive = false
       }
       const ok = await playWithPreferredEngine(currentTrackId, null, position)
-      if (ok && nativeAvActive) {
+      if (ok) {
         const track = await db.tracks.get(currentTrackId)
         if (track) await publishMetadata(track)
         return
       }
+      // Fichero ausente/corrupto: no fingir reproducción
+      set({ isPlaying: false })
+      return
     }
 
     const el = audio()
-    // Reasignar desde Blob en RAM antes de play (tras suspensión)
-    const url = reassignAudioObjectUrl(currentTrackId)
+    const url = reassignAudioObjectUrl(currentTrackId) ?? (await getAudioObjectUrl(currentTrackId))
     if (!url && !el.src && !el.currentSrc) {
       await loadTrack(currentTrackId, true)
       return
@@ -957,6 +997,7 @@ export const useLibraryPlayerStore = create<
     el.volume = 1
     try {
       await el.play()
+      set({ isPlaying: !el.paused })
       const track = await db.tracks.get(currentTrackId)
       if (track) await publishMetadata(track)
     } catch {
