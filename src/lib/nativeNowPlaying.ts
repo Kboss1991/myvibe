@@ -1,4 +1,4 @@
-import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 
 type PlaybackState = 'none' | 'paused' | 'playing'
 
@@ -37,7 +37,8 @@ type NowPlayingPluginApi = {
 const NowPlaying = registerPlugin<NowPlayingPluginApi>('NowPlaying')
 
 export function isNativeNowPlayingAvailable(): boolean {
-  return Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
+  // Plugin no registrado (Dynamic Island abandonada) — evita spam UNIMPLEMENTED
+  return false
 }
 
 /** Preferir JPEG data-URL (el nativo no puede leer blob:). */

@@ -1,7 +1,6 @@
 import { Directory, Filesystem } from '@capacitor/filesystem'
-import { Capacitor, registerPlugin, type PluginListenerHandle } from '@capacitor/core'
+import { registerPlugin, type PluginListenerHandle } from '@capacitor/core'
 import { buildLockScreenArtwork } from './mediaSession'
-import { isNativeApp } from './nativeAudioFs'
 
 type NativeAudioPluginApi = {
   play(options: {
@@ -37,7 +36,8 @@ type NativeAudioPluginApi = {
 const NativeAudio = registerPlugin<NativeAudioPluginApi>('NativeAudio')
 
 export function isNativeAvPlayerAvailable(): boolean {
-  return isNativeApp() && Capacitor.getPlatform() === 'ios'
+  // Plugin no registrado — evita llamadas UNIMPLEMENTED
+  return false
 }
 
 function audioPath(id: string): string {

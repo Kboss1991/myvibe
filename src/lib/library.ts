@@ -307,41 +307,23 @@ export function peekAudioBlob(id: string): Blob | null {
   return audioBlobCache.get(id) ?? null
 }
 
-/** URLs nativas .bin / Documents/audio sin extensión correcta → decode horrible. */
+/** URLs capacitor:// / file nativas en <audio> suenan distorsionadas en WKWebView. */
 function isBadNativePlayUrl(url: string | null | undefined): boolean {
   if (!url) return false
   if (url.startsWith('blob:')) return false
-  if (url.includes('.bin')) return true
-  // Legacy file URLs bajo myvibe/audio/ (antes de migrar a .mp3)
-  if (url.includes('/myvibe/audio/') && !url.includes('.mp3')) return true
-  if (url.includes('_capacitor_file_') && url.includes('/audio/') && !url.includes('.mp3')) {
+  if (url.startsWith('http://') || url.startsWith('https://')) return false
+  // Cualquier file / capacitor local para audio
+  if (url.includes('capacitor://') || url.includes('_capacitor_file_')) return true
+  if (url.includes('.bin') || url.includes('/myvibe/audio/') || url.includes('/myvibe/play/')) {
     return true
   }
+  if (url.startsWith('file:')) return true
   return false
 }
 
 export async function getAudioObjectUrl(id: string): Promise<string | null> {
-  // iOS Capacitor: siempre .mp3 por file URL (o blob: audio/mpeg). Nunca .bin.
-  if (isNativeApp()) {
-    try {
-      const { getNativePlayableFileSrc } = await import('./nativeAudioFs')
-      const fileSrc = await getNativePlayableFileSrc(id)
-      if (fileSrc && !isBadNativePlayUrl(fileSrc)) {
-        const old = objectUrlCache.get(`audio:${id}`)
-        if (old?.startsWith('blob:')) {
-          try {
-            URL.revokeObjectURL(old)
-          } catch {
-            /* ignore */
-          }
-        }
-        objectUrlCache.set(`audio:${id}`, fileSrc)
-        return fileSrc
-      }
-    } catch {
-      /* fall through a blob */
-    }
-  }
+  // iOS Capacitor: igual que la PWA — solo blob: con MIME audio/*.
+  // Nunca capacitor:// en <audio.src> (distorsión en WKWebView).
 
   const existingBlob = audioBlobCache.get(id)
   if (existingBlob) {

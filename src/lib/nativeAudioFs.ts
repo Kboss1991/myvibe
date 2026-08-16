@@ -3,7 +3,7 @@ import { Directory, Filesystem } from '@capacitor/filesystem'
 
 const AUDIO_DIR = 'myvibe/audio'
 const COVER_DIR = 'myvibe/covers'
-const WRITE_CHUNK = 512 * 1024
+const WRITE_CHUNK = 258 * 1024 // múltiplo de 3 (base64-safe)
 
 export function isNativeApp(): boolean {
   try {
@@ -139,6 +139,27 @@ export async function writeNativeAudio(id: string, blob: Blob): Promise<void> {
 export async function readNativeAudioBlob(id: string): Promise<Blob | null> {
   const path = await resolveAudioPath(id)
   if (!path) return null
+
+  // fetch(capacitor://) → Blob: mismos bytes en disco, sin base64 del bridge.
+  // El <audio> con blob: audio/mpeg suena como la PWA; capacitor:// directo distorsiona.
+  try {
+    const { uri } = await Filesystem.getUri({
+      path,
+      directory: Directory.Documents,
+    })
+    if (uri) {
+      const src = Capacitor.convertFileSrc(uri)
+      const res = await fetch(src)
+      if (res.ok) {
+        const buf = await res.arrayBuffer()
+        if (buf.byteLength > 0) {
+          return new Blob([buf], { type: 'audio/mpeg' })
+        }
+      }
+    }
+  } catch {
+    /* fall through a readFile */
+  }
 
   try {
     const file = await Filesystem.readFile({
@@ -320,7 +341,7 @@ export async function beginNativeAudioWrite(id: string): Promise<NativeAppendWri
   /** Acumula ~256 KiB antes de base64+bridge (menos picos de RAM/CPU). */
   let pending: Uint8Array[] = []
   let pendingBytes = 0
-  const FLUSH_AT = 256 * 1024
+  const FLUSH_AT = 258 * 1024 // múltiplo de 3 (base64-safe)
 
   const flush = async () => {
     if (!pendingBytes) return

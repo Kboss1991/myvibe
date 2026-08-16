@@ -26,6 +26,7 @@ import {
   nativeSetPlaybackState,
   nativeSetPositionState,
 } from '../lib/nativeNowPlaying'
+import { isNativeApp } from '../lib/nativeAudioFs'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { persistRecent } from './libraryStore'
 
@@ -299,8 +300,8 @@ function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
   } catch {
     /* ignore */
   }
-  // Evitar capacitor://.bin cacheado de builds anteriores
-  if (url.includes('.bin') || (url.includes('/myvibe/audio/') && !url.includes('.mp3'))) {
+  // En nativo, solo blob: (capacitor:// distorsiona en WKWebView)
+  if (isNativeApp() && !url.startsWith('blob:')) {
     void getAudioObjectUrl(trackId).then((fresh) => {
       if (!fresh || useLibraryPlayerStore.getState().currentTrackId !== trackId) return
       el.src = fresh
