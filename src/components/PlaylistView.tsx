@@ -71,6 +71,8 @@ type Props = {
   onRemoveTrack?: (trackId: string) => Promise<void>
   onReorderTracks?: (trackIds: string[]) => Promise<void>
   onShare?: () => Promise<void> | void
+  /** PC: enviar esta playlist por Wi‑Fi al móvil. */
+  onWifiShare?: () => void
 }
 
 export function PlaylistView({
@@ -92,6 +94,7 @@ export function PlaylistView({
   onRemoveTrack,
   onReorderTracks,
   onShare,
+  onWifiShare,
 }: Props) {
   const user = useAuthStore((s) => s.user)
   const playTracks = useLibraryPlayerStore((s) => s.playTracks)
@@ -710,6 +713,19 @@ export function PlaylistView({
                 }}
               >
                 <IconShare size={18} /> Compartir
+              </button>
+            )}
+            {onWifiShare && (
+              <button
+                type="button"
+                role="menuitem"
+                disabled={!tracks.length}
+                onClick={() => {
+                  setMoreOpen(false)
+                  onWifiShare()
+                }}
+              >
+                <IconShare size={18} /> Enviar por Wi‑Fi
               </button>
             )}
             <button

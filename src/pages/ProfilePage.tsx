@@ -4,6 +4,7 @@ import { useAuthStore } from '../store/authStore'
 import { useLibraryStore } from '../store/libraryStore'
 import { hasRealEmail, isCloudAuthEnabled } from '../lib/auth'
 import { CoverArt } from '../components/CoverArt'
+import { WifiShareWizard } from '../components/WifiShareWizard'
 import {
   IconEdit,
   IconFlame,
@@ -16,7 +17,13 @@ import {
 import { UserAvatar } from '../components/UserAvatar'
 import { formatLastSeen, isLibraryHostDevice } from '../lib/devices'
 import { isLibraryHostCapable } from '../lib/folderImport'
-import { startWifiHost, type WifiTransferProgress } from '../lib/wifiTransfer'
+import {
+  readWifiSharePrefill,
+  startWifiHost,
+  type WifiHostOptions,
+  type WifiSharePrefill,
+  type WifiTransferProgress,
+} from '../lib/wifiTransfer'
 import {
   computeListenStats,
   formatListenMinutes,
@@ -45,6 +52,9 @@ export function ProfilePage() {
   const tracks = useLibraryStore((s) => s.tracks)
   const playlists = useLibraryStore((s) => s.playlists)
   const getLiked = useLibraryStore((s) => s.getLiked)
+  const artistsFn = useLibraryStore((s) => s.artists)
+  const albumsFn = useLibraryStore((s) => s.albums)
+  const genresFn = useLibraryStore((s) => s.genres)
   const lastSyncMessage = useLibraryStore((s) => s.lastSyncMessage)
   const lastSyncAt = useLibraryStore((s) => s.lastSyncAt)
   const pcOnline = useLibraryStore((s) => s.pcOnline)
@@ -69,10 +79,16 @@ export function ProfilePage() {
   const [wifiCode, setWifiCode] = useState<string | null>(null)
   const [wifiHostStatus, setWifiHostStatus] = useState<string | null>(null)
   const [wifiProgress, setWifiProgress] = useState<WifiTransferProgress | null>(null)
+  const [wifiShareLabel, setWifiShareLabel] = useState<string | null>(null)
+  const [wifiPrefill, setWifiPrefill] = useState<WifiSharePrefill | null>(null)
   const [manualCode, setManualCode] = useState('')
   const wifiStopRef = useRef<(() => void) | null>(null)
 
   const stats = useMemo(() => computeListenStats(tracks), [tracks])
+  const likedTracks = useMemo(() => getLiked(), [getLiked, tracks])
+  const artistList = useMemo(() => artistsFn(), [artistsFn, tracks])
+  const albumList = useMemo(() => albumsFn(), [albumsFn, tracks])
+  const genreList = useMemo(() => genresFn(), [genresFn, tracks])
   const canHost = isLibraryHostCapable()
   const onPc = isLibraryHostDevice()
   const cloud = isCloudAuthEnabled()
@@ -85,7 +101,9 @@ export function ProfilePage() {
 
   useEffect(() => {
     if (typeof window === 'undefined') return
-    if (window.location.hash !== '#wifi-transfer') return
+    const prefill = readWifiSharePrefill()
+    if (prefill) setWifiPrefill(prefill)
+    if (window.location.hash !== '#wifi-transfer' && !prefill) return
     const el = document.getElementById('wifi-transfer')
     el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }, [])
@@ -98,6 +116,59 @@ export function ProfilePage() {
       .catch(() => setOrphanCount({ audio: 0, covers: 0 }))
   }, [tracks.length])
 
+  const startHostWithOptions = (options: WifiHostOptions, summary: string) => {
+    setLocalError(null)
+    setOkMsg(null)
+    setWifiProgress(null)
+    setWifiShareLabel(summary)
+    setWifiHostStatus('Preparando el lote…')
+    setWifiCode('······')
+    wifiStopRef.current?.()
+    void startWifiHost(
+      {
+        onCode: (c) => setWifiCode(c),
+        onStatus: setWifiHostStatus,
+        onProgress: setWifiProgress,
+        onError: (msg) => {
+          setLocalError(msg)
+          setWifiHostStatus(null)
+          setWifiProgress(null)
+          setWifiCode(null)
+          setWifiShareLabel(null)
+        },
+        onFinished: () => {
+          setOkMsg(
+            summary && summary !== 'Toda la biblioteca'
+              ? `Enviado al móvil: ${summary}`
+              : 'Lote enviado al móvil',
+          )
+          setWifiHostStatus('Listo. Puedes generar otro código si hace falta.')
+          setWifiProgress((p) =>
+            p
+              ? { ...p, overallPercent: 100, trackPercent: 100, name: '' }
+              : {
+                  done: 0,
+                  total: 0,
+                  name: '',
+                  trackPercent: 100,
+                  overallPercent: 100,
+                },
+          )
+        },
+      },
+      options,
+    )
+      .then((session) => {
+        wifiStopRef.current = session.stop
+      })
+      .catch((e) => {
+        setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar Wi‑Fi')
+        setWifiHostStatus(null)
+        setWifiProgress(null)
+        setWifiCode(null)
+        setWifiShareLabel(null)
+      })
+  }
   if (!user) return null
 
   const liked = getLiked().length
@@ -439,65 +510,33 @@ export function ProfilePage() {
       <section className="profile-card" id="wifi-transfer">
         <h2 className="profile-card__title">Pasar música al móvil</h2>
         <p className="profile-card__hint">
-          Misma Wi‑Fi. Primero todas las canciones normales (con portada). Las que pesan mucho
-          (más de 12 MB) van después, <strong>una a una</strong>.
+          Misma Wi‑Fi. Elige playlists o un filtro de la biblioteca; solo se envía ese lote (más
+          fiable que mandar todo de golpe).
         </p>
         {onPc || canHost ? (
           <div style={{ marginTop: 14 }}>
             {!wifiCode ? (
-              <button
-                type="button"
-                className="chip chip-play"
-                style={{ width: '100%', justifyContent: 'center', padding: '14px 18px', fontSize: '1.05rem' }}
-                disabled={busy}
-                onClick={() => {
-                  setLocalError(null)
-                  setOkMsg(null)
-                  setWifiProgress(null)
-                  setWifiHostStatus('Preparando biblioteca del PC…')
-                  setWifiCode('······')
-                  wifiStopRef.current?.()
-                  void startWifiHost({
-                    onCode: (c) => setWifiCode(c),
-                    onStatus: setWifiHostStatus,
-                    onProgress: setWifiProgress,
-                    onError: (msg) => {
-                      setLocalError(msg)
-                      setWifiHostStatus(null)
-                      setWifiProgress(null)
-                      setWifiCode(null)
-                    },
-                    onFinished: () => {
-                      setOkMsg('Biblioteca enviada al móvil')
-                      setWifiHostStatus('Listo. Puedes generar otro código si hace falta.')
-                      setWifiProgress((p) =>
-                        p
-                          ? { ...p, overallPercent: 100, trackPercent: 100, name: '' }
-                          : {
-                              done: 0,
-                              total: 0,
-                              name: '',
-                              trackPercent: 100,
-                              overallPercent: 100,
-                            },
-                      )
-                    },
-                  })
-                    .then((session) => {
-                      wifiStopRef.current = session.stop
-                    })
-                    .catch((e) => {
-                      setLocalError(e instanceof Error ? e.message : 'No se pudo iniciar Wi‑Fi')
-                      setWifiHostStatus(null)
-                      setWifiProgress(null)
-                      setWifiCode(null)
-                    })
-                }}
-              >
-                Generar código de 6 dígitos
-              </button>
+              <WifiShareWizard
+                key={
+                  wifiPrefill
+                    ? `prefill-${wifiPrefill.mode}-${(wifiPrefill.playlistIds || wifiPrefill.trackIds || []).join(',')}`
+                    : 'default'
+                }
+                tracks={tracks}
+                playlists={playlists}
+                liked={likedTracks}
+                artists={artistList}
+                albums={albumList}
+                genres={genreList}
+                busy={busy}
+                initialPrefill={wifiPrefill}
+                onStart={startHostWithOptions}
+              />
             ) : (
               <div>
+                {wifiShareLabel ? (
+                  <p className="profile-card__hint">Enviando: {wifiShareLabel}</p>
+                ) : null}
                 <p className="profile-card__hint">
                   {wifiCode === '······'
                     ? 'Preparando… en unos segundos sale el código.'
@@ -519,7 +558,7 @@ export function ProfilePage() {
                 {wifiProgress && wifiProgress.total > 0 ? (
                   <div className="wifi-progress" aria-live="polite">
                     <div className="wifi-progress__row">
-                      <span className="wifi-progress__label">Total</span>
+                      <span className="wifi-progress__label">Total del lote</span>
                       <span className="wifi-progress__pct">{wifiProgress.overallPercent}%</span>
                     </div>
                     <div className="wifi-progress__bar">
@@ -557,6 +596,7 @@ export function ProfilePage() {
                     setWifiCode(null)
                     setWifiHostStatus(null)
                     setWifiProgress(null)
+                    setWifiShareLabel(null)
                   }}
                 >
                   Detener
@@ -567,7 +607,7 @@ export function ProfilePage() {
         ) : (
           <div style={{ marginTop: 14 }}>
             <label className="profile-card__hint" style={{ display: 'block' }}>
-              Código del PC (6 dígitos)
+              Código del PC (6 dígitos). En el PC elige playlist o filtro y genera el código.
               <input
                 inputMode="numeric"
                 pattern="[0-9]*"

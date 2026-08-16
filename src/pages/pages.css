@@ -417,7 +417,20 @@
 }
 
 .playlist-list li,
-.simple-list li button,
+.simple-list li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+
+.simple-list li > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.playlist-list li > button:not(.icon-btn),
+.simple-list li > button:not(.icon-btn),
 .simple-list li .simple-list__item {
   display: flex;
   align-items: center;
@@ -3329,4 +3342,103 @@ a.library-meta-icon:hover {
   border-radius: inherit;
   background: var(--accent);
   min-width: 0;
+}
+
+.wifi-wizard {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wifi-wizard__steps {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.wifi-wizard__modes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.wifi-wizard__mode {
+  border: 1px solid #3e3e3e;
+  background: #1a1a1a;
+  color: #ddd;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.wifi-wizard__mode.is-on {
+  background: #fff;
+  color: #111;
+  border-color: #fff;
+  font-weight: 700;
+}
+
+.wifi-wizard__panel {
+  border: 1px solid #2a2a2a;
+  border-radius: 12px;
+  padding: 12px;
+  background: #121212;
+}
+
+.wifi-wizard__check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.wifi-wizard__check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+.wifi-wizard__check em {
+  display: block;
+  font-style: normal;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.wifi-wizard__filter-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 8px;
+}
+
+.wifi-wizard__filter-row select,
+.wifi-wizard__search {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #3e3e3e;
+  background: #0d0d0d;
+  color: #fff;
+  font-size: 0.92rem;
+}
+
+.wifi-wizard__search {
+  margin-top: 8px;
+}
+
+.wifi-wizard__summary {
+  margin: 0;
+  font-size: 0.95rem;
+  line-height: 1.4;
 }

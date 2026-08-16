@@ -251,15 +251,53 @@ export type HostSession = {
   stop: () => void
 }
 
-export async function startWifiHost(handlers: HostHandlers): Promise<HostSession> {
-  const code = makeTransferCode()
-  handlers.onStatus('Preparando biblioteca del PC…')
-  // Escanear ANTES de abrir Peer: si no, el móvil manda “ready” y se pierde
-  const allWithAudio = await listTracksWithAudio()
-  if (!allWithAudio.length) {
-    throw new Error('No hay canciones con audio en el PC')
+/** Qué enviar: si no hay options, toda la biblioteca con audio. */
+export type WifiHostOptions = {
+  /** IDs concretas (filtro / selección). */
+  trackIds?: string[]
+  /** Playlists a incluir (union de sus pistas + wire de esas listas). */
+  playlistIds?: string[]
+}
+
+export type WifiSharePrefill = {
+  mode: 'playlists' | 'liked' | 'filter' | 'all'
+  trackIds?: string[]
+  playlistIds?: string[]
+  label?: string
+}
+
+export const WIFI_SHARE_PREFILL_KEY = 'myvibe.wifiSharePrefill'
+
+export function saveWifiSharePrefill(prefill: WifiSharePrefill): void {
+  try {
+    sessionStorage.setItem(WIFI_SHARE_PREFILL_KEY, JSON.stringify(prefill))
+  } catch {
+    /* ignore */
   }
-  const playlistsWire = await buildPlaylistWire(allWithAudio)
+}
+
+export function readWifiSharePrefill(): WifiSharePrefill | null {
+  try {
+    const raw = sessionStorage.getItem(WIFI_SHARE_PREFILL_KEY)
+    if (!raw) return null
+    sessionStorage.removeItem(WIFI_SHARE_PREFILL_KEY)
+    return JSON.parse(raw) as WifiSharePrefill
+  } catch {
+    return null
+  }
+}
+
+export async function startWifiHost(
+  handlers: HostHandlers,
+  options?: WifiHostOptions,
+): Promise<HostSession> {
+  const code = makeTransferCode()
+  handlers.onStatus('Preparando el lote a enviar…')
+  // Escanear ANTES de abrir Peer: si no, el móvil manda “ready” y se pierde
+  const { tracks: allWithAudio, playlistsWire } = await resolveHostSelection(options)
+  if (!allWithAudio.length) {
+    throw new Error('No hay canciones con audio en la selección')
+  }
 
   const peer = new Peer(peerIdFromCode(code), peerOptions())
 
@@ -327,8 +365,11 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
 
   peer.on('open', () => {
     handlers.onCode(code)
+    const pl = playlistsWire.length
     handlers.onStatus(
-      `Listo · ${allWithAudio.length} canciones. En el iPhone: Perfil → este código (misma Wi‑Fi).`,
+      `Listo · ${allWithAudio.length} canción${allWithAudio.length === 1 ? '' : 'es'}` +
+        (pl ? ` · ${pl} playlist${pl === 1 ? '' : 's'}` : '') +
+        `. En el iPhone: Perfil → este código (misma Wi‑Fi).`,
     )
   })
 
@@ -420,9 +461,9 @@ export async function startWifiHost(handlers: HostHandlers): Promise<HostSession
 
         if (phase === 'normal') {
           handlers.onStatus(
-            `Enviando ${batch.length} normales` +
-              (heavy.length ? ` · luego ${heavy.length} pesadas 1 a 1` : '') +
-              (already ? ` · ${already} ya OK` : ''),
+            `Enviando ${batch.length} canciones` +
+              (heavy.length ? ` · luego ${heavy.length} pesadas (1 a 1)` : '') +
+              (already ? ` · ${already} ya en el móvil` : ''),
           )
         } else {
           const sz = (await getAudioBlob(batch[0]!.id))?.size ?? 0
@@ -539,6 +580,47 @@ async function listTracksWithAudio(): Promise<Track[]> {
   return out
 }
 
+/** Resuelve el lote a enviar (filtros / playlists / toda la biblio). */
+export async function resolveHostSelection(options?: WifiHostOptions): Promise<{
+  tracks: Track[]
+  playlistsWire: PlaylistWire[]
+}> {
+  const allWithAudio = await listTracksWithAudio()
+  const byId = new Map(allWithAudio.map((t) => [t.id, t]))
+  const playlistIds = options?.playlistIds?.filter(Boolean) ?? []
+  const explicitTrackIds = options?.trackIds?.filter(Boolean) ?? []
+
+  if (!playlistIds.length && !explicitTrackIds.length) {
+    return {
+      tracks: allWithAudio,
+      playlistsWire: await buildPlaylistWire(allWithAudio),
+    }
+  }
+
+  const idSet = new Set<string>()
+  for (const tid of explicitTrackIds) {
+    if (byId.has(tid)) idSet.add(tid)
+  }
+
+  if (playlistIds.length) {
+    const playlists = await db.playlists.toArray()
+    for (const pid of playlistIds) {
+      const p = playlists.find((x) => x.id === pid)
+      if (!p) continue
+      for (const tid of p.trackIds) {
+        if (byId.has(tid)) idSet.add(tid)
+      }
+    }
+  }
+
+  const tracks = [...idSet].map((id) => byId.get(id)!).filter(Boolean)
+  const playlistsWire = await buildPlaylistWire(
+    tracks,
+    playlistIds.length ? playlistIds : undefined,
+  )
+  return { tracks, playlistsWire }
+}
+
 /** Separa canciones ligeras (van juntas) y pesadas (van 1 a 1). */
 async function splitByWeight(tracks: Track[]): Promise<{ light: Track[]; heavy: Track[] }> {
   const light: Track[] = []
@@ -556,10 +638,20 @@ async function splitByWeight(tracks: Track[]): Promise<{ light: Track[]; heavy: 
   return { light, heavy }
 }
 
-async function buildPlaylistWire(tracks: Track[]): Promise<PlaylistWire[]> {
-  const playlists = await db.playlists.toArray()
+async function buildPlaylistWire(
+  tracks: Track[],
+  onlyPlaylistIds?: string[],
+): Promise<PlaylistWire[]> {
+  let playlists = await db.playlists.toArray()
+  if (onlyPlaylistIds?.length) {
+    const set = new Set(onlyPlaylistIds)
+    playlists = playlists.filter((p) => set.has(p.id))
+  }
   const wire: PlaylistWire[] = []
   for (const p of playlists) {
+    const trackIds = p.trackIds.filter((id) => tracks.some((t) => t.id === id))
+    // Sin selección explícita de playlist: omitir listas vacías respecto al lote
+    if (!trackIds.length && !onlyPlaylistIds?.length) continue
     let hasCover = false
     if (p.hasCover) {
       const blob = await getCoverBlob(playlistCoverId(p.id))
@@ -569,7 +661,7 @@ async function buildPlaylistWire(tracks: Track[]): Promise<PlaylistWire[]> {
       id: p.id,
       name: p.name,
       description: p.description || '',
-      trackIds: p.trackIds.filter((id) => tracks.some((t) => t.id === id)),
+      trackIds,
       themeColor: p.themeColor,
       createdAt: p.createdAt,
       updatedAt: p.updatedAt,

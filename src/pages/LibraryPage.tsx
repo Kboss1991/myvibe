@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { TrackList } from '../components/TrackList'
 import {
   TrackColumnsHead,
@@ -19,10 +19,12 @@ import {
   IconClose,
   IconHeart,
   IconDownload,
+  IconShare,
 } from '../components/Icons'
 import { playlistCoverArtProps } from '../lib/library'
 import { isDoubtfulMetadata } from '../lib/enrich'
 import { isLibraryHostCapable } from '../lib/folderImport'
+import { saveWifiSharePrefill } from '../lib/wifiTransfer'
 import { useMainScrollCollapse } from '../hooks/useMainScrollCollapse'
 import { usePlaylistDropTargets } from '../hooks/usePlaylistDropTargets'
 import { useLibraryStore } from '../store/libraryStore'
@@ -32,6 +34,7 @@ import './pages.css'
 type Tab = 'songs' | 'playlists' | 'artists' | 'albums' | 'genres'
 
 export function LibraryPage() {
+  const navigate = useNavigate()
   const [tab, setTab] = useState<Tab>('songs')
   const [creating, setCreating] = useState(false)
   const [genreFilter, setGenreFilter] = useState<string | null>(null)
@@ -113,6 +116,27 @@ export function LibraryPage() {
   const showSelect =
     (tab === 'songs' && tracks.length > 0) ||
     (tab === 'genres' && Boolean(genreFilter) && genreTracks.length > 0)
+
+  const canWifiShare = isLibraryHostCapable() && playQueueIds.length > 0
+  const goWifiShareCurrentView = () => {
+    const ids = playQueueIds.filter((id) => {
+      const t = tracks.find((x) => x.id === id)
+      return t && t.hasLocalAudio !== false
+    })
+    if (!ids.length) return
+    const label =
+      tab === 'genres' && genreFilter
+        ? genreFilter
+        : tab === 'songs'
+          ? 'Canciones'
+          : metaLabel
+    saveWifiSharePrefill({
+      mode: 'filter',
+      trackIds: ids,
+      label: String(label),
+    })
+    navigate('/profile#wifi-transfer')
+  }
 
   return (
     <div
@@ -249,6 +273,17 @@ export function LibraryPage() {
             >
               <IconPlay size={22} />
             </button>
+            {canWifiShare && (tab === 'songs' || (tab === 'genres' && genreFilter)) ? (
+              <button
+                type="button"
+                className="library-meta-icon"
+                aria-label="Enviar por Wi‑Fi"
+                title="Enviar esta vista por Wi‑Fi"
+                onClick={goWifiShareCurrentView}
+              >
+                <IconShare size={16} />
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -459,6 +494,28 @@ export function LibraryPage() {
                 </div>
                 <IconPlay size={18} />
               </button>
+              {isLibraryHostCapable() ? (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={`Enviar ${a.name} por Wi‑Fi`}
+                  title="Enviar por Wi‑Fi"
+                  onClick={() => {
+                    const ids = a.tracks
+                      .filter((t) => t.hasLocalAudio !== false)
+                      .map((t) => t.id)
+                    if (!ids.length) return
+                    saveWifiSharePrefill({
+                      mode: 'filter',
+                      trackIds: ids,
+                      label: a.name,
+                    })
+                    navigate('/profile#wifi-transfer')
+                  }}
+                >
+                  <IconShare size={18} />
+                </button>
+              ) : null}
             </li>
           ))}
           {artistList.length === 0 && (
@@ -485,6 +542,28 @@ export function LibraryPage() {
                 </div>
                 <IconPlay size={18} />
               </button>
+              {isLibraryHostCapable() ? (
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={`Enviar álbum ${a.name} por Wi‑Fi`}
+                  title="Enviar por Wi‑Fi"
+                  onClick={() => {
+                    const ids = a.tracks
+                      .filter((t) => t.hasLocalAudio !== false)
+                      .map((t) => t.id)
+                    if (!ids.length) return
+                    saveWifiSharePrefill({
+                      mode: 'filter',
+                      trackIds: ids,
+                      label: a.name,
+                    })
+                    navigate('/profile#wifi-transfer')
+                  }}
+                >
+                  <IconShare size={18} />
+                </button>
+              ) : null}
             </li>
           ))}
           {albumList.length === 0 && (

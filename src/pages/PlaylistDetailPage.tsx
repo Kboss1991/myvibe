@@ -2,6 +2,8 @@ import { useMemo } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { PlaylistView } from '../components/PlaylistView'
 import { playlistCoverId } from '../lib/library'
+import { isLibraryHostCapable } from '../lib/folderImport'
+import { saveWifiSharePrefill } from '../lib/wifiTransfer'
 import { useLibraryStore } from '../store/libraryStore'
 
 export function PlaylistDetailPage() {
@@ -79,6 +81,18 @@ export function PlaylistDetailPage() {
             )
           }
         }}
+        onWifiShare={
+          isLibraryHostCapable()
+            ? () => {
+                saveWifiSharePrefill({
+                  mode: 'playlists',
+                  playlistIds: [playlist.id],
+                  label: playlist.name,
+                })
+                navigate('/profile#wifi-transfer')
+              }
+            : undefined
+        }
       />
     </div>
   )
