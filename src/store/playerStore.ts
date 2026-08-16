@@ -760,7 +760,9 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
           pause: () => handleRemotePause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
-          // Sin seekto: en iOS sustituye next/prev por ±10s
+          seekSkip: true,
+          seekBackward: (sec) => usePlayerStore.getState().skipBack(sec),
+          seekForward: (sec) => usePlayerStore.getState().skipForward(sec),
         },
         { playing: !audioEngine.paused },
       )
@@ -999,7 +1001,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     }
   },
 
-  skipForward: (seconds = 15) => {
+  skipForward: (seconds = 10) => {
     if (!get().currentPodcastEpisodeId) return
     if (get().currentRadioId || audioEngine.isLive) return
     const dur = Number.isFinite(audioEngine.duration)
@@ -1013,7 +1015,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     get().seek(next)
   },
 
-  skipBack: (seconds = 15) => {
+  skipBack: (seconds = 10) => {
     if (!get().currentPodcastEpisodeId) return
     if (get().currentRadioId || audioEngine.isLive) return
     const cur = audioEngine.currentTime
@@ -1097,7 +1099,9 @@ export async function bindMediaSession(_tracks: Track[]) {
           pause: () => handleRemotePause(),
           previoustrack: () => void usePlayerStore.getState().previous(),
           nexttrack: () => void usePlayerStore.getState().next(),
-          // Sin seekto: en iOS sustituye next/prev por ±10s
+          seekSkip: true,
+          seekBackward: (sec) => usePlayerStore.getState().skipBack(sec),
+          seekForward: (sec) => usePlayerStore.getState().skipForward(sec),
         },
         { playing: mediaIsEffectivelyPlaying() },
       )

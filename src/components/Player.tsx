@@ -395,8 +395,8 @@ export function PlayerBar() {
             <button
               type="button"
               className="icon-btn player-bar__ctrl"
-              aria-label="Retroceder 15 segundos"
-              onClick={() => skipBack(15)}
+              aria-label="Retroceder 10 segundos"
+              onClick={() => skipBack(10)}
             >
               <IconSkipBack15 size={18} />
             </button>
@@ -440,8 +440,8 @@ export function PlayerBar() {
             <button
               type="button"
               className="icon-btn player-bar__ctrl"
-              aria-label="Avanzar 15 segundos"
-              onClick={() => skipForward(15)}
+              aria-label="Avanzar 10 segundos"
+              onClick={() => skipForward(10)}
             >
               <IconSkipForward15 size={18} />
             </button>
@@ -739,8 +739,8 @@ export function NowPlaying() {
           <button
             type="button"
             className="icon-btn"
-            aria-label="Retroceder 15 segundos"
-            onClick={() => skipBack(15)}
+            aria-label="Retroceder 10 segundos"
+            onClick={() => skipBack(10)}
           >
             <IconSkipBack15 size={24} />
           </button>
@@ -761,8 +761,8 @@ export function NowPlaying() {
           <button
             type="button"
             className="icon-btn"
-            aria-label="Avanzar 15 segundos"
-            onClick={() => skipForward(15)}
+            aria-label="Avanzar 10 segundos"
+            onClick={() => skipForward(10)}
           >
             <IconSkipForward15 size={24} />
           </button>
