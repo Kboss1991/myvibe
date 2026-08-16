@@ -126,7 +126,8 @@ export async function startLibraryHost(userId: string): Promise<LibraryHostSessi
     } catch {
       // ignore
     }
-    void clearDevicePeer(userId)
+    // No borramos device_peers aquí: un remount/HMR dejaba al móvil sin host.
+    // Se limpia al cerrar la pestaña (pagehide).
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -152,17 +153,34 @@ export async function startLibraryHost(userId: string): Promise<LibraryHostSessi
     })
   })
 
-  // Renueva presencia cada 40s
-  const beat = window.setInterval(() => {
+  const publish = () => {
     if (stopped) return
-    void publishDevicePeer(userId, peerId, isAppleMobile() ? 'Móvil' : 'PC')
-  }, 40000)
+    void publishDevicePeer(userId, peerId, isAppleMobile() ? 'Móvil' : 'PC').catch(
+      (e) => console.warn('Peer heartbeat', e),
+    )
+  }
+
+  // Renueva presencia a menudo (las pestañas en 2º plano se ralentizan)
+  const beat = window.setInterval(publish, 15_000)
+
+  const onVis = () => {
+    if (document.visibilityState === 'visible') publish()
+  }
+  const onPageHide = () => {
+    void clearDevicePeer(userId)
+  }
+  document.addEventListener('visibilitychange', onVis)
+  window.addEventListener('focus', publish)
+  window.addEventListener('pagehide', onPageHide)
 
   const origStop = stop
   return {
     peerId,
     stop: () => {
       window.clearInterval(beat)
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', publish)
+      window.removeEventListener('pagehide', onPageHide)
       origStop()
     },
   }
@@ -387,7 +405,7 @@ export async function downloadTracksFromPc(
   const peerInfo = await getDevicePeer(userId)
   if (!peerInfo) {
     throw new Error(
-      'No hay un PC en línea. Abre MyVibe en el ordenador con la misma cuenta (misma Wi‑Fi).',
+      'No hay un PC en línea. Abre MyVibe en el ordenador con la misma cuenta (misma Wi‑Fi) y deja la pestaña en primer plano un momento.',
     )
   }
   if (/móvil|movil|android|iphone|ipad/i.test(peerInfo.label)) {
@@ -395,11 +413,15 @@ export async function downloadTracksFromPc(
       'El dispositivo en línea no es un PC. Abre MyVibe en el ordenador, deja la pestaña abierta y pulsa Actualizar.',
     )
   }
-  // Peer “caducado” si > 3 min sin heartbeat
   const age = Date.now() - Date.parse(peerInfo.updatedAt)
-  if (Number.isFinite(age) && age > 3 * 60 * 1000) {
+  if (Number.isFinite(age) && age > 30 * 60 * 1000) {
     throw new Error(
-      'El PC parece desconectado. Abre MyVibe en el PC e inténtalo de nuevo.',
+      'El PC lleva mucho sin señal. Abre o recarga MyVibe en el ordenador (misma cuenta), espera 10 s e inténtalo de nuevo.',
+    )
+  }
+  if (Number.isFinite(age) && age > 3 * 60 * 1000) {
+    handlers.onStatus(
+      'El PC no ha renovado señal hace un rato; intentando conectar igual…',
     )
   }
 
@@ -833,7 +855,7 @@ export async function syncFullLibraryFromPc(
   const peerInfo = await getDevicePeer(userId)
   if (!peerInfo) {
     throw new Error(
-      'No hay un PC en línea. Abre MyVibe en el ordenador con la misma cuenta (misma Wi‑Fi).',
+      'No hay un PC en línea. Abre MyVibe en el ordenador con la misma cuenta (misma Wi‑Fi) y deja la pestaña en primer plano un momento.',
     )
   }
   if (/móvil|movil|android|iphone|ipad/i.test(peerInfo.label)) {
@@ -842,9 +864,16 @@ export async function syncFullLibraryFromPc(
     )
   }
   const age = Date.now() - Date.parse(peerInfo.updatedAt)
-  if (Number.isFinite(age) && age > 3 * 60 * 1000) {
+  // Soft: intentamos conectar igual. El PeerJS es la prueba real.
+  // Hard solo si el registro es muy viejo (pestaña cerrada hace rato).
+  if (Number.isFinite(age) && age > 30 * 60 * 1000) {
     throw new Error(
-      'El PC parece desconectado. Abre MyVibe en el PC e inténtalo de nuevo.',
+      'El PC lleva mucho sin señal. Abre o recarga MyVibe en el ordenador (misma cuenta), espera 10 s e inténtalo de nuevo.',
+    )
+  }
+  if (Number.isFinite(age) && age > 3 * 60 * 1000) {
+    handlers.onStatus(
+      'El PC no ha renovado señal hace un rato; intentando conectar igual…',
     )
   }
 
