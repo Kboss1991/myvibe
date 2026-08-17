@@ -27,6 +27,8 @@ import {
   nativeSetPlaybackState,
   nativeSetPositionState,
   nativeSetSeekSkipEnabled,
+  shouldIgnoreRemotePause,
+  suppressRemotePause,
 } from '../lib/nativeNowPlaying'
 import { ensureCarPlayPlaylist } from '../lib/carPlayPrefs'
 import { isNativeApp } from '../lib/nativeAudioFs'
@@ -331,6 +333,7 @@ function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
   }
   el.src = url
   useLibraryPlayerStore.setState({ currentAudioUrl: url })
+  suppressRemotePause()
   el.play().catch(() => {
     /* NotAllowedError / AbortError */
   })
@@ -403,6 +406,7 @@ function reinforceLibraryMediaHandlers() {
 
     navigator.mediaSession.setActionHandler('pause', () => {
       if (!useLibraryPlayerStore.getState().currentTrackId) return
+      if (shouldIgnoreRemotePause()) return
       audio().pause()
     })
 
@@ -689,6 +693,10 @@ function onLibraryPlaying() {
 function onLibraryPause() {
   if (!useLibraryPlayerStore.getState().currentTrackId) return
   if (audio().ended) return
+  if (shouldIgnoreRemotePause()) {
+    audio().play().catch(() => {})
+    return
+  }
   useLibraryPlayerStore.setState({ isPlaying: false })
   setPlaybackStateFromElement(false)
   persistSoon({ position: Math.max(0, audio().currentTime || 0) })
@@ -882,6 +890,7 @@ export const useLibraryPlayerStore = create<
   play: async () => {
     const { currentTrackId } = get()
     if (!currentTrackId) return
+    suppressRemotePause()
     await stopRivalPlayers()
     bindMediaSessionOnUserPlay()
 

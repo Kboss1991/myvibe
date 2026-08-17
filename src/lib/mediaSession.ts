@@ -7,6 +7,7 @@ import {
   nativeSetPlaybackState,
   nativeSetPositionState,
   nativeSetSeekSkipEnabled,
+  shouldIgnoreRemotePause,
 } from './nativeNowPlaying'
 
 export function formatTime(seconds: number): string {
@@ -279,6 +280,7 @@ function bindMediaHandlers(handlers: {
     }
   })
   navigator.mediaSession.setActionHandler('pause', () => {
+    if (shouldIgnoreRemotePause()) return
     try {
       handlers.pause?.()
     } catch {

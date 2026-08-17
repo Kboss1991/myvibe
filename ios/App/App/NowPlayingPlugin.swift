@@ -159,10 +159,13 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         let enabled = call.getBool("enabled") ?? false
         let seconds = max(1, call.getDouble("seconds") ?? 10)
         DispatchQueue.main.async {
+            self.wireRemoteCommandsIfNeeded()
+            let sameMode = self.seekSkipEnabled == enabled && abs(self.seekSkipSeconds - seconds) < 0.01
             self.seekSkipEnabled = enabled
             self.seekSkipSeconds = seconds
-            self.wireRemoteCommandsIfNeeded()
-            self.applyTransportMode()
+            if !sameMode {
+                self.applyTransportMode()
+            }
             call.resolve()
         }
     }

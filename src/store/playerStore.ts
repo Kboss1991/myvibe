@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { db, ensurePlaybackSnapshot, PLAYBACK_KEY } from '../db'
 import { audioEngine } from '../lib/audioEngine'
 import { setMediaPlaybackState, setMediaPositionState, updateMediaSession, updateRadioMediaSession, refreshMediaPlaybackState, isLibraryOwnsMediaSession } from '../lib/mediaSession'
+import { shouldIgnoreRemotePause, suppressRemotePause } from '../lib/nativeNowPlaying'
 import type { PlaybackSource, RepeatMode, Track } from '../types'
 import { getRadioStation, listMyRadios, type RadioStation } from '../lib/myRadios'
 import { roundRadioDelayMs } from '../lib/radios'
@@ -182,6 +183,7 @@ function handleRemotePlay() {
 }
 
 function handleRemotePause() {
+  if (shouldIgnoreRemotePause()) return
   audioEngine.markIntentionalPause(2000)
   interruptionBurstToken += 1
   stopInterruptionResumeWatcher()
@@ -570,6 +572,14 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
   syncFromEngine: () => {
     // Biblioteca posee el <audio> compartido: no pisar Media Session
     if (isLibraryOwnsMediaSession()) return
+    if (
+      audioEngine.paused &&
+      shouldIgnoreRemotePause() &&
+      (get().currentRadioId || get().currentPodcastEpisodeId)
+    ) {
+      void audioEngine.play()
+      return
+    }
     const playing = !audioEngine.paused
     // Solo soltar pending cuando ya suena y pasó la ventana anti-reset de CarPlay
     if (playing && pendingBackgroundPlay && Date.now() >= mediaPlayingHoldUntil) {
@@ -675,6 +685,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       playbackSource: null,
     })
     persistSoon({ playbackSource: null })
+    suppressRemotePause()
     setMediaPlaybackState(true)
     try {
       const { reportStationClick } = await import('../lib/radioBrowser')
@@ -744,6 +755,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
     persistSoon({ playbackSource: null })
 
     try {
+      suppressRemotePause()
       await audioEngine.load(episode.audioUrl, resumeAt, { live: false, skipCors: true })
       if (epoch !== podcastPlayEpoch || get().currentPodcastEpisodeId !== episode.id) return
       audioEngine.applyPlaybackSession()
@@ -814,6 +826,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioPauseStartedAt,
       radioDelay,
     } = get()
+    suppressRemotePause()
     audioEngine.applyPlaybackSession()
 
     // Ya suena: solo sincronizar UI / playbackState.

@@ -126,15 +126,33 @@ export async function nativeSetLikeState(liked: boolean): Promise<void> {
   }
 }
 
+let lastSeekSkipEnabled: boolean | null = null
+let lastSeekSkipSeconds = 10
+
+/** iOS dispara un pause remoto al reconfigurar Now Playing justo tras un play local. */
+let ignoreRemotePauseUntil = 0
+
+export function suppressRemotePause(ms = 1500) {
+  ignoreRemotePauseUntil = Date.now() + Math.max(0, ms)
+}
+
+export function shouldIgnoreRemotePause() {
+  return Date.now() < ignoreRemotePauseUntil
+}
+
 /** Podcasts: ±N s y sin next/prev. Música/radio: al revés. */
 export async function nativeSetSeekSkipEnabled(
   enabled: boolean,
   seconds = 10,
 ): Promise<void> {
   if (!isNativeNowPlayingAvailable()) return
+  if (lastSeekSkipEnabled === enabled && lastSeekSkipSeconds === seconds) return
+  lastSeekSkipEnabled = enabled
+  lastSeekSkipSeconds = seconds
   try {
     await NowPlaying.setSeekSkipEnabled({ enabled, seconds })
   } catch (err) {
+    lastSeekSkipEnabled = null
     console.warn('[NowPlaying] setSeekSkipEnabled failed', err)
   }
 }
@@ -177,6 +195,7 @@ export async function bindNativeRemoteControls(handlers: {
           handlers.play?.()
           break
         case 'pause':
+          if (shouldIgnoreRemotePause()) return
           handlers.pause?.()
           break
         case 'nexttrack':
