@@ -19,6 +19,8 @@
 		A7E1NOWP1FED79650016851F /* NowPlayingPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1NOWP0FED79650016851F /* NowPlayingPlugin.swift */; };
 		A7E1BRDG1FED79650016851F /* BridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1BRDG0FED79650016851F /* BridgeViewController.swift */; };
 		A7E1NAUD1FED79650016851F /* NativeAudioPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1NAUD0FED79650016851F /* NativeAudioPlugin.swift */; };
+		A7E1CPLY1FED79650016851F /* CarPlaySceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7E1CPLY0FED79650016851F /* CarPlaySceneDelegate.swift */; };
+		A7E1CARF1FED79650016851F /* CarPlay.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A7E1CARF0FED79650016851F /* CarPlay.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -36,6 +38,9 @@
 		A7E1NOWP0FED79650016851F /* NowPlayingPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingPlugin.swift; sourceTree = "<group>"; };
 		A7E1BRDG0FED79650016851F /* BridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BridgeViewController.swift; sourceTree = "<group>"; };
 		A7E1NAUD0FED79650016851F /* NativeAudioPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeAudioPlugin.swift; sourceTree = "<group>"; };
+		A7E1CPLY0FED79650016851F /* CarPlaySceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlaySceneDelegate.swift; sourceTree = "<group>"; };
+		A7E1ENTL0FED79650016851F /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
+		A7E1CARF0FED79650016851F /* CarPlay.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CarPlay.framework; path = System/Library/Frameworks/CarPlay.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -44,6 +49,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				4D22ABE92AF431CB00220026 /* CapApp-SPM in Frameworks */,
+				A7E1CARF1FED79650016851F /* CarPlay.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -71,9 +77,11 @@
 			isa = PBXGroup;
 			children = (
 				9582B6822FE993A50072D4E8 /* SceneDelegate.swift */,
+				A7E1CPLY0FED79650016851F /* CarPlaySceneDelegate.swift */,
 				A7E1BRDG0FED79650016851F /* BridgeViewController.swift */,
 				A7E1NAUD0FED79650016851F /* NativeAudioPlugin.swift */,
 				A7E1NOWP0FED79650016851F /* NowPlayingPlugin.swift */,
+				A7E1ENTL0FED79650016851F /* App.entitlements */,
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
@@ -172,6 +180,7 @@
 				A7E1BRDG1FED79650016851F /* BridgeViewController.swift in Sources */,
 				A7E1NAUD1FED79650016851F /* NativeAudioPlugin.swift in Sources */,
 				A7E1NOWP1FED79650016851F /* NowPlayingPlugin.swift in Sources */,
+				A7E1CPLY1FED79650016851F /* CarPlaySceneDelegate.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -311,6 +320,7 @@
 			baseConfigurationReference = 958DCC722DB07C7200EA8C5F /* debug.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VQ454UMWGG;
@@ -334,6 +344,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = VQ454UMWGG;

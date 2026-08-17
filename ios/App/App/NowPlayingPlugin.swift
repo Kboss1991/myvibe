@@ -60,6 +60,8 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
                 Self.loadImage(from: artworkSrc) { image in
                     if let image {
                         info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                    } else {
+                        Self.applyBrandArtwork(&info)
                     }
                     self.apply(info)
                     call.resolve()
@@ -67,6 +69,7 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
                 return
             }
 
+            Self.applyBrandArtwork(&info)
             self.apply(info)
             call.resolve()
         }
@@ -304,6 +307,12 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             center.nextTrackCommand.isEnabled = true
             center.previousTrackCommand.isEnabled = true
         }
+    }
+
+    private static func applyBrandArtwork(_ info: inout [String: Any]) {
+        guard info[MPMediaItemPropertyArtwork] == nil,
+              let image = UIImage(named: "BrandMark") else { return }
+        info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
     }
 
     private static func firstArtworkSrc(from call: CAPPluginCall) -> String? {
