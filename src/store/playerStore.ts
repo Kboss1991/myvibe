@@ -777,6 +777,13 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
         { playing: !audioEngine.paused },
       )
       refreshMediaPlaybackState(!audioEngine.paused)
+      // iOS/WebKit vuelve a pintar next/prev; reafirmar ±10s
+      for (const ms of [250, 800, 2000]) {
+        window.setTimeout(() => {
+          if (usePlayerStore.getState().currentPodcastEpisodeId !== episode.id) return
+          void bindMediaSession([])
+        }, ms)
+      }
     } catch (e) {
       if (epoch !== podcastPlayEpoch) return
       console.warn('Podcast', e)

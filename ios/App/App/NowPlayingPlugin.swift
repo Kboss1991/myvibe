@@ -162,12 +162,9 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         let seconds = max(1, call.getDouble("seconds") ?? 10)
         DispatchQueue.main.async {
             self.wireRemoteCommandsIfNeeded()
-            let sameMode = self.seekSkipEnabled == enabled && abs(self.seekSkipSeconds - seconds) < 0.01
             self.seekSkipEnabled = enabled
             self.seekSkipSeconds = seconds
-            if !sameMode {
-                self.applyTransportMode()
-            }
+            self.applyTransportMode()
             call.resolve()
         }
     }
@@ -178,6 +175,7 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         UIApplication.shared.beginReceivingRemoteControlEvents()
         wireRemoteCommandsIfNeeded()
+        applyTransportMode()
     }
 
     private func startReassertTimer() {
@@ -194,6 +192,8 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
                 self.nowPlayingInfo = info
             }
             MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+            // WKWebView reactiva next/prev; volver a ±10s en podcast.
+            self.applyTransportMode()
         }
         RunLoop.main.add(timer, forMode: .common)
         reassertTimer = timer

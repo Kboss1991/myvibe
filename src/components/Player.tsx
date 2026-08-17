@@ -28,8 +28,6 @@ import {
   IconClose,
   IconRadio,
   IconPodcast,
-  IconSkipBack15,
-  IconSkipForward15,
   IconClock,
 } from './Icons'
 import './Player.css'
@@ -211,7 +209,7 @@ export function PlayerBar() {
   const radioPauseStartedAt = usePlayerStore((s) => s.radioPauseStartedAt)
 
   const currentTrackId = libTrackId
-  const isLibrary = Boolean(libTrackId)
+  const isLibrary = Boolean(libTrackId) && !currentRadioId && !currentPodcastEpisodeId
   const isPlaying = isLibrary ? libPlaying : rpPlaying
   const position = isLibrary ? libPosition : rpPosition
   const duration = isLibrary ? libDuration : rpDuration
@@ -395,11 +393,11 @@ export function PlayerBar() {
             <>
               <button
                 type="button"
-                className="icon-btn player-bar__skip"
+                className="icon-btn player-bar__skip skip-10"
                 aria-label="Retroceder 10 segundos"
                 onClick={() => skipBack(10)}
               >
-                <IconSkipBack15 size={20} />
+                −10
               </button>
               <button
                 type="button"
@@ -411,11 +409,11 @@ export function PlayerBar() {
               </button>
               <button
                 type="button"
-                className="icon-btn player-bar__skip"
+                className="icon-btn player-bar__skip skip-10"
                 aria-label="Avanzar 10 segundos"
                 onClick={() => skipForward(10)}
               >
-                <IconSkipForward15 size={20} />
+                +10
               </button>
             </>
           ) : (
@@ -543,7 +541,7 @@ export function NowPlaying() {
   const setRadioDelay = usePlayerStore((s) => s.setRadioDelay)
   const coverUrlRp = usePlayerStore((s) => s.coverUrl)
 
-  const isLibrary = Boolean(libTrackId)
+  const isLibrary = Boolean(libTrackId) && !currentRadioId && !currentPodcastEpisodeId
   const open = isLibrary ? libOpen : rpOpen
   const setOpen = isLibrary ? libSetOpen : rpSetOpen
   const currentTrackId = libTrackId
@@ -747,11 +745,11 @@ export function NowPlaying() {
         <div className="transport">
           <button
             type="button"
-            className="icon-btn"
+            className="icon-btn skip-10"
             aria-label="Retroceder 10 segundos"
             onClick={() => skipBack(10)}
           >
-            <IconSkipBack15 size={28} />
+            −10
           </button>
           <button
             type="button"
@@ -763,11 +761,11 @@ export function NowPlaying() {
           </button>
           <button
             type="button"
-            className="icon-btn"
+            className="icon-btn skip-10"
             aria-label="Avanzar 10 segundos"
             onClick={() => skipForward(10)}
           >
-            <IconSkipForward15 size={28} />
+            +10
           </button>
         </div>
       </div>
