@@ -168,6 +168,17 @@ export async function nativeClearNowPlaying(): Promise<void> {
 }
 
 let remoteHandle: PluginListenerHandle | null = null
+let remoteHandlers: {
+  play?: () => void
+  pause?: () => void
+  nexttrack?: () => void
+  previoustrack?: () => void
+  seekto?: (time: number) => void
+  seekForward?: (seconds: number) => void
+  seekBackward?: (seconds: number) => void
+  like?: () => void
+  bookmark?: () => void
+} = {}
 
 /** Enlaza botones de CarPlay / bloqueo / Centro de Control. */
 export async function bindNativeRemoteControls(handlers: {
@@ -182,37 +193,44 @@ export async function bindNativeRemoteControls(handlers: {
   bookmark?: () => void
 }): Promise<void> {
   if (!isNativeNowPlayingAvailable()) return
-  try {
-    await remoteHandle?.remove()
-  } catch {
-    /* ignore */
-  }
-  remoteHandle = null
+  Object.keys(remoteHandlers).forEach((key) => {
+    delete remoteHandlers[key as keyof typeof remoteHandlers]
+  })
+  remoteHandlers.play = handlers.play
+  remoteHandlers.pause = handlers.pause
+  remoteHandlers.nexttrack = handlers.nexttrack
+  remoteHandlers.previoustrack = handlers.previoustrack
+  remoteHandlers.seekto = handlers.seekto
+  remoteHandlers.seekForward = handlers.seekForward
+  remoteHandlers.seekBackward = handlers.seekBackward
+  remoteHandlers.like = handlers.like
+  remoteHandlers.bookmark = handlers.bookmark
+  if (remoteHandle) return
   try {
     remoteHandle = await NowPlaying.addListener('remote', (event) => {
       switch (event.action) {
         case 'play':
-          handlers.play?.()
+          remoteHandlers.play?.()
           break
         case 'pause':
           if (shouldIgnoreRemotePause()) return
-          handlers.pause?.()
+          remoteHandlers.pause?.()
           break
         case 'nexttrack':
-          handlers.nexttrack?.()
+          remoteHandlers.nexttrack?.()
           break
         case 'previoustrack':
-          handlers.previoustrack?.()
+          remoteHandlers.previoustrack?.()
           break
         case 'seekto':
-          if (typeof event.seekTime === 'number') handlers.seekto?.(event.seekTime)
+          if (typeof event.seekTime === 'number') remoteHandlers.seekto?.(event.seekTime)
           break
         case 'seekforward': {
           const sec =
             typeof event.seekOffset === 'number' && event.seekOffset > 0
               ? event.seekOffset
               : 10
-          handlers.seekForward?.(sec)
+          remoteHandlers.seekForward?.(sec)
           break
         }
         case 'seekbackward': {
@@ -220,14 +238,14 @@ export async function bindNativeRemoteControls(handlers: {
             typeof event.seekOffset === 'number' && event.seekOffset > 0
               ? event.seekOffset
               : 10
-          handlers.seekBackward?.(sec)
+          remoteHandlers.seekBackward?.(sec)
           break
         }
         case 'like':
-          handlers.like?.()
+          remoteHandlers.like?.()
           break
         case 'bookmark':
-          handlers.bookmark?.()
+          remoteHandlers.bookmark?.()
           break
       }
     })

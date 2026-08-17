@@ -32,13 +32,13 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     public override func load() {
         super.load()
+        activateAudioSession()
         wireRemoteCommandsIfNeeded()
         print("[NowPlaying] plugin loaded")
     }
 
     @objc func setMetadata(_ call: CAPPluginCall) {
         DispatchQueue.main.async {
-            self.activateAudioSession()
             var info = self.nowPlayingInfo
 
             if let title = call.getString("title") {
@@ -78,7 +78,6 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
             return
         }
         DispatchQueue.main.async {
-            self.activateAudioSession()
             var info = self.nowPlayingInfo
             switch state {
             case "playing":
@@ -172,8 +171,7 @@ public class NowPlayingPlugin: CAPPlugin, CAPBridgedPlugin {
 
     private func apply(_ info: [String: Any]) {
         nowPlayingInfo = info
-        // Forzar escritura completa: WKWebView a veces deja un diccionario vacío
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        // No poner a nil antes: iOS corta el HTML5 (música y podcast) al vaciar Now Playing.
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         UIApplication.shared.beginReceivingRemoteControlEvents()
         wireRemoteCommandsIfNeeded()

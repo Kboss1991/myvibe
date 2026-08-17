@@ -31,9 +31,9 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
 
     public override func load() {
         super.load()
-        activateAudioSession()
-        wireRemoteCommandsIfNeeded()
-        print("[NativeAudio] plugin loaded")
+        // No activar sesión ni mandos aquí: el audio va por HTML5 + NowPlayingPlugin.
+        // Si se cablean remotes al arrancar, el pause nativo corta música y podcast.
+        print("[NativeAudio] plugin loaded (idle)")
     }
 
     deinit {

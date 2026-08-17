@@ -306,11 +306,6 @@ function resolveSkipTarget(dir: 1 | -1): { trackId: string; index: number } | nu
 
 /** Reasigna src desde Blob/fichero + play() (mismo motor que la PWA). */
 function applySrcAndPlay(trackId: string, urlHint?: string | null): void {
-  // Por si quedó un AVPlayer de pruebas de Dynamic Island
-  void import('../lib/nativeAudioPlayer')
-    .then((m) => m.nativeAvStop())
-    .catch(() => undefined)
-
   const url = reassignAudioObjectUrl(trackId) ?? urlHint ?? peekAudioObjectUrl(trackId)
   if (!url) return
   const el = audio()
