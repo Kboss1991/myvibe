@@ -112,6 +112,8 @@ let pendingPersist: Partial<{
   originalQueue: string[]
   index: number
   currentTrackId: string | null
+  currentRadioId: string | null
+  currentPodcastEpisodeId: string | null
   shuffle: boolean
   repeat: RepeatMode
   position: number
@@ -855,6 +857,8 @@ export const useLibraryPlayerStore = create<
       originalQueue,
       index,
       currentTrackId: trackId,
+      currentRadioId: null,
+      currentPodcastEpisodeId: null,
       shuffle: shuffleOn,
       position: 0,
       playbackSource: source,
@@ -1120,6 +1124,8 @@ export const useLibraryPlayerStore = create<
     })
     persistSoon({
       currentTrackId: null,
+      currentRadioId: null,
+      currentPodcastEpisodeId: null,
       queue: [],
       originalQueue: [],
       index: 0,

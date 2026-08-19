@@ -89,6 +89,12 @@ export async function ensurePlaybackSnapshot(): Promise<PlaybackSnapshot> {
   if (existing) {
     const normalized: PlaybackSnapshot = {
       ...existing,
+      currentRadioId:
+        typeof existing.currentRadioId === 'string' ? existing.currentRadioId : null,
+      currentPodcastEpisodeId:
+        typeof existing.currentPodcastEpisodeId === 'string'
+          ? existing.currentPodcastEpisodeId
+          : null,
       queue: Array.isArray(existing.queue) ? existing.queue : [],
       originalQueue: Array.isArray(existing.originalQueue) && existing.originalQueue.length
         ? existing.originalQueue
@@ -97,8 +103,14 @@ export async function ensurePlaybackSnapshot(): Promise<PlaybackSnapshot> {
           : [],
       index: Number.isFinite(existing.index) ? existing.index : 0,
       position: Number.isFinite(existing.position) ? existing.position : 0,
+      duration: Number.isFinite(existing.duration) ? existing.duration : 0,
       shuffle: existing.shuffle !== false,
       recentIds: Array.isArray(existing.recentIds) ? existing.recentIds : [],
+      podcastQueue: Array.isArray(existing.podcastQueue) ? existing.podcastQueue : [],
+      podcastShow: existing.podcastShow && typeof existing.podcastShow === 'object'
+        ? existing.podcastShow
+        : null,
+      coverUrl: typeof existing.coverUrl === 'string' ? existing.coverUrl : null,
     }
     if (
       !Array.isArray((existing as PlaybackSnapshot).originalQueue) ||
@@ -112,15 +124,21 @@ export async function ensurePlaybackSnapshot(): Promise<PlaybackSnapshot> {
   const snapshot: PlaybackSnapshot = {
     id: PLAYBACK_KEY,
     currentTrackId: null,
+    currentRadioId: null,
+    currentPodcastEpisodeId: null,
     queue: [],
     originalQueue: [],
     index: 0,
     shuffle: true,
     repeat: 'off',
     position: 0,
+    duration: 0,
     volume: 1,
     recentIds: [],
     playbackSource: null,
+    podcastShow: null,
+    podcastQueue: [],
+    coverUrl: null,
   }
   await db.playback.put(snapshot)
   return snapshot

@@ -341,14 +341,20 @@ function podcastSyntheticTrack(episode: PodcastEpisode, show: PodcastShow): Trac
 
 type PlaybackPersistPartial = Partial<{
   currentTrackId: string | null
+  currentRadioId: string | null
+  currentPodcastEpisodeId: string | null
   queue: string[]
   originalQueue: string[]
   index: number
   shuffle: boolean
   repeat: RepeatMode
   position: number
+  duration: number
   volume: number
   playbackSource: PlaybackSource | null
+  podcastShow: PodcastShow | null
+  podcastQueue: PodcastEpisode[]
+  coverUrl: string | null
 }>
 
 let pendingPersist: PlaybackPersistPartial = {}
@@ -381,22 +387,63 @@ function persistPlaybackNow() {
   const state = usePlayerStore.getState()
   if (!state.hydrated) return
   const livePos =
-    state.currentTrackId && !audioEngine.isLive && Number.isFinite(audioEngine.currentTime)
+    (state.currentTrackId || state.currentPodcastEpisodeId) &&
+    !audioEngine.isLive &&
+    Number.isFinite(audioEngine.currentTime)
       ? audioEngine.currentTime
       : state.position
+  const podcastEpisodes = podcastEpisodeQueue
+    .map((id) => getPodcastEpisode(id))
+    .filter((ep): ep is PodcastEpisode => Boolean(ep?.audioUrl))
+  const currentPodcast = state.currentPodcastEpisodeId
+    ? getPodcastEpisode(state.currentPodcastEpisodeId)
+    : null
+  const podcastShow = currentPodcast
+    ? getPodcastShow(currentPodcast.showId)
+    : podcastEpisodes[0]
+      ? getPodcastShow(podcastEpisodes[0].showId)
+      : null
   pendingPersist = {
     ...pendingPersist,
     currentTrackId: state.currentTrackId,
+    currentRadioId: state.currentRadioId,
+    currentPodcastEpisodeId: state.currentPodcastEpisodeId,
     queue: state.queue,
     originalQueue: state.originalQueue.length ? state.originalQueue : state.queue,
     index: state.index,
     shuffle: state.shuffle,
     repeat: state.repeat,
     position: livePos,
+    duration: state.duration,
     volume: state.volume,
     playbackSource: state.playbackSource,
+    podcastShow,
+    podcastQueue: podcastEpisodes,
+    coverUrl: state.coverUrl,
   }
   void flushPlaybackPersist()
+}
+
+function snapshotPodcastSession(
+  episode: PodcastEpisode,
+  show: PodcastShow,
+  episodes: PodcastEpisode[],
+  position: number,
+) {
+  persistSoon({
+    currentTrackId: null,
+    currentRadioId: null,
+    currentPodcastEpisodeId: episode.id,
+    queue: [],
+    originalQueue: [],
+    index: Math.max(0, episodes.findIndex((ep) => ep.id === episode.id)),
+    position,
+    duration: episode.durationSec || 0,
+    playbackSource: null,
+    podcastShow: show,
+    podcastQueue: episodes,
+    coverUrl: episode.artworkUrl || show.artworkUrl || null,
+  })
 }
 
 let persistLifecycleBound = false
@@ -464,6 +511,19 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       currentTrackId = null
     }
 
+    const savedPodcastQueue = Array.isArray(snap.podcastQueue)
+      ? snap.podcastQueue.filter((ep): ep is PodcastEpisode => Boolean(ep?.id && ep.audioUrl))
+      : []
+    const savedPodcastId =
+      typeof snap.currentPodcastEpisodeId === 'string' ? snap.currentPodcastEpisodeId : null
+    const savedPodcast =
+      (savedPodcastId && savedPodcastQueue.find((ep) => ep.id === savedPodcastId)) || null
+    const savedPodcastShow =
+      (snap.podcastShow && typeof snap.podcastShow === 'object'
+        ? snap.podcastShow
+        : null) ||
+      (savedPodcast ? getPodcastShow(savedPodcast.showId) : null)
+
     // Biblioteca: motor nuevo en libraryPlayerStore — no restaurar aquí
     queue = []
     originalQueue = []
@@ -475,14 +535,38 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       originalQueue,
       index,
       currentTrackId,
+      currentRadioId: null,
+      currentPodcastEpisodeId: savedPodcast?.id || null,
       shuffle: false,
       repeat: 'off',
-      position: 0,
+      position: savedPodcast ? snap.position || getPodcastResumeAt(savedPodcast.id) : 0,
+      duration: savedPodcast?.durationSec || 0,
+      coverUrl: savedPodcast
+        ? savedPodcast.artworkUrl || savedPodcastShow?.artworkUrl || snap.coverUrl || ''
+        : null,
       volume: snap.volume,
       playbackSource: null,
       hydrated: true,
     })
     bindPersistLifecycle()
+
+    if (savedPodcast && savedPodcastShow) {
+      rememberPodcastShow(savedPodcastShow)
+      for (const ep of savedPodcastQueue) rememberPodcastEpisode(ep)
+      podcastEpisodeQueue = savedPodcastQueue.map((ep) => ep.id)
+      try {
+        await audioEngine.load(
+          savedPodcast.audioUrl,
+          snap.position || getPodcastResumeAt(savedPodcast.id),
+          {
+            live: false,
+            skipCors: true,
+          },
+        )
+      } catch {
+        /* ignore */
+      }
+    }
 
     if (!engineUnsub) {
       engineUnsub = audioEngine.subscribe(() => get().syncFromEngine())
@@ -566,6 +650,20 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       radioPauseStartedAt: null,
       position: 0,
       duration: 0,
+    })
+    persistSoon({
+      currentTrackId: null,
+      currentRadioId: null,
+      currentPodcastEpisodeId: null,
+      queue: [],
+      originalQueue: [],
+      index: 0,
+      position: 0,
+      duration: 0,
+      playbackSource: null,
+      podcastShow: null,
+      podcastQueue: [],
+      coverUrl: null,
     })
   },
 
@@ -684,7 +782,20 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       isPlaying: true,
       playbackSource: null,
     })
-    persistSoon({ playbackSource: null })
+    persistSoon({
+      currentTrackId: null,
+      currentRadioId: station.id,
+      currentPodcastEpisodeId: null,
+      queue: [],
+      originalQueue: [],
+      index: 0,
+      position: 0,
+      duration: 0,
+      playbackSource: null,
+      podcastShow: null,
+      podcastQueue: [],
+      coverUrl: station.logoUrl || null,
+    })
     suppressRemotePause()
     setMediaPlaybackState(true)
     try {
@@ -752,7 +863,7 @@ export const usePlayerStore = create<PlayerState>((set, get) => ({
       queueOpen: false,
       playbackSource: null,
     })
-    persistSoon({ playbackSource: null })
+    snapshotPodcastSession(episode, show, list, resumeAt)
 
     try {
       suppressRemotePause()

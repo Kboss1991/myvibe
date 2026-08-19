@@ -65,6 +65,8 @@ export interface Playlist {
 export interface PlaybackSnapshot {
   id: string
   currentTrackId: string | null
+  currentRadioId?: string | null
+  currentPodcastEpisodeId?: string | null
   /** Cola de reproducción actual (puede estar mezclada). */
   queue: string[]
   /** Orden original antes del shuffle (para restaurar). */
@@ -78,6 +80,28 @@ export interface PlaybackSnapshot {
   recentIds: string[]
   /** Lista / Me gusta desde la que se lanzó la cola (Now Playing). */
   playbackSource?: PlaybackSource | null
+  /** Show del podcast para poder restaurar el mini reproductor al reabrir. */
+  podcastShow?: {
+    id: string
+    name: string
+    artist: string
+    feedUrl: string
+    artworkUrl: string
+    genre?: string
+  } | null
+  /** Cola de episodios actual para seguir sin repetir al reabrir. */
+  podcastQueue?: Array<{
+    id: string
+    showId: string
+    title: string
+    description: string
+    audioUrl: string
+    pubDate: string
+    durationSec: number
+    artworkUrl: string
+  }>
+  coverUrl?: string | null
+  duration?: number
 }
 
 export interface CoverRecord {
